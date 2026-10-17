@@ -1,0 +1,25 @@
+[importlinter]
+root_packages =
+    algodesk
+include_external_packages = True
+
+[importlinter:contract:core-never-imports-plugins]
+name = Core never imports plugins
+type = forbidden
+source_modules =
+    algodesk
+forbidden_modules =
+    plugins
+
+[importlinter:contract:api-is-standalone]
+name = algodesk.api imports no other algodesk package
+type = forbidden
+source_modules =
+    algodesk.api
+forbidden_modules =
+    algodesk.config
+    algodesk.params
+    algodesk.registry
+    algodesk.journal
+    algodesk.logs
+    algodesk.ops

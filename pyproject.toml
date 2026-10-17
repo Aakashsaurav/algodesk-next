@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "algodesk"
+version = "0.0.0"
+description = "Pluggable trading workbench for Indian markets."
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "pydantic>=2",
+    "typer>=0.9",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "mypy",
+    "pytest",
+    "pytest-cov",
+    "hypothesis",
+    "import-linter",
+    "pip-audit",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/algodesk"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

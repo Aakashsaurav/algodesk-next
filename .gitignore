@@ -1,0 +1,13 @@
+data/
+logs/
+results/
+_workbench/
+.algodesk/
+.venv/
+__pycache__/
+*.db
+.env
+*.pem
+*.key
+token*.json
+.DS_Store
