@@ -15,7 +15,7 @@ Cards are short and mechanical. Reports are short and prove things with real com
 SUMMARY: <outcome: complete | partial | blocked> in one or two sentences
 CHANGED: <files added / edited / deleted>
 EVIDENCE: <each Accept command and its real output, trimmed>
-CHECK: <last line of scripts/check.sh>
+CHECK RESULT: <exact last line printed by scripts/check.sh, verbatim>
 NOT DONE: <anything skipped and why>
 DEVIATIONS: <differences from the card, or "none">
 CONFIRM: no live orders; no secrets written; only Touch paths changed
@@ -23,7 +23,7 @@ HANDOFF (<=100 words): <state now> | <next step> | <open issues>
 ```
 
 ## Evidence rules
-- Paste real output; never paraphrase a result.
+- Paste real output; never paraphrase a result. Always include the raw `git status --short`.
 - A test that was not run is listed under NOT DONE.
 - Do not mark complete if any Accept command fails.
 - Partial work must still leave the repository committable.

@@ -21,6 +21,7 @@ Tests first, smallest change, only the allowed paths, real evidence at the end.
 - Errors: subclass `AlgoDeskError`; message = what, where, what to do next.
 - No limits or thresholds in code: use the parameter registry.
 - Never log or print secrets. Never call the network in tests; use fakes.
+- Isolation: `source scripts/env.sh` first; run everything with `uv run`; never install anything globally.
 - One implementation per concern; if a second appears, delete one.
 - Keep code short, but never at the cost of quality, documentation or speed. Size numbers are guidance, not limits.
 
