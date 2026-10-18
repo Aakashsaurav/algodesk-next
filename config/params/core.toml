@@ -1,0 +1,133 @@
+# Core system, operational, and complexity budget parameters
+
+[[param]]
+name = "ops.min_free_disk_gb"
+type = "int"
+default = 5
+min = 1
+max = 1000
+unit = "GB"
+scope = "global"
+tighten = "up"
+description = "Minimum free disk space required in gigabytes before warning or halting"
+owner = "core"
+
+[[param]]
+name = "logs.retention_days"
+type = "int"
+default = 30
+min = 1
+max = 3650
+unit = "days"
+scope = "global"
+tighten = "none"
+description = "Number of days to retain structured application log files on disk"
+owner = "core"
+
+[[param]]
+name = "journal.flush_interval_ms"
+type = "int"
+default = 50
+min = 1
+max = 5000
+unit = "ms"
+scope = "global"
+tighten = "down"
+description = "Interval in milliseconds between buffered append-only journal flushes"
+owner = "core"
+
+[[param]]
+name = "budget.core_lines_guidance"
+type = "int"
+default = 6000
+min = 1000
+max = 50000
+unit = "lines"
+scope = "global"
+tighten = "down"
+description = "Guidance limit for total non-blank, non-comment lines of core code"
+owner = "core"
+
+[[param]]
+name = "budget.core_modules_guidance"
+type = "int"
+default = 40
+min = 5
+max = 200
+unit = "modules"
+scope = "global"
+tighten = "down"
+description = "Guidance limit for total number of modules in the core codebase"
+owner = "core"
+
+[[param]]
+name = "budget.plugin_lines_guidance"
+type = "int"
+default = 1500
+min = 100
+max = 10000
+unit = "lines"
+scope = "global"
+tighten = "down"
+description = "Guidance limit for total lines of code within any single plugin"
+owner = "core"
+
+[[param]]
+name = "budget.warn_overshoot_pct"
+type = "float"
+default = 25.0
+min = 0.0
+max = 100.0
+unit = "pct"
+scope = "global"
+tighten = "down"
+description = "Percentage overshoot above complexity guidance before emitting warnings"
+owner = "core"
+
+[[param]]
+name = "budget.max_runtime_dependencies"
+type = "int"
+default = 15
+min = 1
+max = 50
+unit = "dependencies"
+scope = "global"
+tighten = "down"
+description = "Hard upper ceiling on third-party runtime dependencies allowed in pyproject"
+owner = "core"
+
+[[param]]
+name = "budget.max_core_dependencies"
+type = "int"
+default = 8
+min = 1
+max = 30
+unit = "dependencies"
+scope = "global"
+tighten = "down"
+description = "Hard upper ceiling on core dependencies required by the framework"
+owner = "core"
+
+[[param]]
+name = "docs.max_living_docs"
+type = "int"
+default = 12
+min = 1
+max = 50
+unit = "docs"
+scope = "global"
+tighten = "down"
+description = "Maximum number of living documentation files maintained under docs/"
+owner = "core"
+
+[[param]]
+name = "docs.max_summary_words"
+type = "int"
+default = 150
+min = 20
+max = 500
+unit = "words"
+scope = "global"
+tighten = "down"
+description = "Maximum word count permitted in the summary section of markdown files"
+owner = "core"

@@ -1,0 +1,169 @@
+# Default conservative risk profile parameters (PRD §8.3)
+
+[[param]]
+name = "risk.conservative.per_trade_risk_pct"
+type = "float"
+default = 0.5
+min = 0.0
+max = 100.0
+unit = "pct"
+scope = "profile"
+tighten = "down"
+description = "Maximum loss if a trade's stop is hit as a percentage of capital"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.max_position_pct"
+type = "float"
+default = 20.0
+min = 0.0
+max = 100.0
+unit = "pct"
+scope = "profile"
+tighten = "down"
+description = "Largest single position as a percentage of capital"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.max_open_positions"
+type = "int"
+default = 5
+min = 1
+max = 100
+unit = "count"
+scope = "profile"
+tighten = "down"
+description = "Maximum concurrent open positions or position groups"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.max_gross_exposure_pct"
+type = "float"
+default = 100.0
+min = 0.0
+max = 1000.0
+unit = "pct"
+scope = "profile"
+tighten = "down"
+description = "Total gross market exposure allowed as a percentage of capital"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.margin_buffer_pct"
+type = "float"
+default = 25.0
+min = 0.0
+max = 100.0
+unit = "pct"
+scope = "profile"
+tighten = "up"
+description = "Minimum free cash percentage kept for exchange margin demands"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.daily_loss_limit_pct"
+type = "float"
+default = 1.5
+min = 0.0
+max = 100.0
+unit = "pct"
+scope = "profile"
+tighten = "down"
+description = "Daily realized loss threshold percentage to stop entering new positions"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.weekly_loss_limit_pct"
+type = "float"
+default = 3.0
+min = 0.0
+max = 100.0
+unit = "pct"
+scope = "profile"
+tighten = "down"
+description = "Weekly realized loss threshold percentage to stop entering new positions"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.drawdown_halt_pct"
+type = "float"
+default = 6.0
+min = 0.0
+max = 100.0
+unit = "pct"
+scope = "profile"
+tighten = "down"
+description = "Peak-to-trough drawdown percentage that halts trading until reviewed"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.max_order_value_pct"
+type = "float"
+default = 25.0
+min = 0.0
+max = 100.0
+unit = "pct"
+scope = "profile"
+tighten = "down"
+description = "Fat-finger order size guard limiting any single order value"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.price_deviation_pct"
+type = "float"
+default = 2.0
+min = 0.0
+max = 50.0
+unit = "pct"
+scope = "profile"
+tighten = "down"
+description = "Maximum price deviation percentage allowed from last traded price"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.max_orders_per_minute"
+type = "int"
+default = 20
+min = 1
+max = 1000
+unit = "count/min"
+scope = "profile"
+tighten = "down"
+description = "Self-imposed order rate throttle per minute below broker limits"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.max_daily_trades"
+type = "int"
+default = 20
+min = 1
+max = 1000
+unit = "count/day"
+scope = "profile"
+tighten = "down"
+description = "Overtrading guard capping maximum completed trades in a day"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.stale_data_seconds"
+type = "float"
+default = 5.0
+min = 0.1
+max = 300.0
+unit = "s"
+scope = "profile"
+tighten = "down"
+description = "Maximum feed staleness in seconds allowed before blocking new entries"
+owner = "core"
+
+[[param]]
+name = "risk.conservative.max_unhedged_seconds"
+type = "float"
+default = 5.0
+min = 0.1
+max = 300.0
+unit = "s"
+scope = "profile"
+tighten = "down"
+description = "Maximum duration in seconds a multi-leg order group may stay unhedged"
+owner = "core"

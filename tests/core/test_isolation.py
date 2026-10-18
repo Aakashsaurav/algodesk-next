@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -42,3 +43,14 @@ def test_uv_python_install_dir_starts_with_root() -> None:
     root = _get_root()
     install_dir = os.environ.get("UV_PYTHON_INSTALL_DIR", "")
     assert install_dir.startswith(str(root))
+
+
+def test_pyproject_uv_isolation_settings() -> None:
+    """pyproject.toml [tool.uv] must enforce python-preference and python-downloads."""
+    root = _get_root()
+    pyproject_path = root / "pyproject.toml"
+    with open(pyproject_path, "rb") as f:
+        data = tomllib.load(f)
+    uv_conf = data.get("tool", {}).get("uv", {})
+    assert uv_conf.get("python-preference") == "only-managed"
+    assert uv_conf.get("python-downloads") == "manual"
