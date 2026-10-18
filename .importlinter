@@ -23,3 +23,13 @@ forbidden_modules =
     algodesk.journal
     algodesk.logs
     algodesk.ops
+
+[importlinter:contract:core-modules-independence]
+name = Core foundation modules are independent
+type = independence
+modules =
+    algodesk.config
+    algodesk.params
+    algodesk.registry
+    algodesk.journal
+    algodesk.logs
