@@ -1,0 +1,19 @@
+# AlgoDesk Platform Configuration
+# Packaged default configuration for AlgoDesk platform, paths, logging, and plugins.
+
+project = "algodesk"
+plugin_dirs = ["plugins"]
+
+[paths]
+# Relative paths for data, logs, results, and local workspace directories
+data_dir = "data"
+logs_dir = "logs"
+results_dir = "results"
+local_dir = ".local"
+
+[logging]
+# Log level: DEBUG | INFO | WARNING | ERROR
+level = "INFO"
+
+# Log format: json | text
+format = "json"

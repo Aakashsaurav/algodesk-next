@@ -12,7 +12,7 @@ Tests first, smallest change, only the allowed paths, real evidence at the end.
 2. Search the repository for existing code that already does this; reuse it.
 3. Write the failing test first (include one failure-case test).
 4. Implement the smallest change that passes. Prefer pure functions; no global state.
-5. Run the focused tests, then `bash scripts/check.sh`.
+5. Run the focused tests, then `bash scripts/check.sh`. At each checkpoint (CPn) also append `CPn done | next step | files` to `_workbench/handoff.md`.
 6. Stop. Do not polish, rename or refactor outside `Touch`.
 7. Write the report (skill `algodesk-evidence`).
 
@@ -26,4 +26,4 @@ Tests first, smallest change, only the allowed paths, real evidence at the end.
 - Keep code short, but never at the cost of quality, documentation or speed. Size numbers are guidance, not limits.
 
 ## Stop and ask if
-A requirement conflicts, an API is uncertain, a dependency is needed, or the change would exceed about 300 lines.
+A requirement conflicts, an API is uncertain, a dependency is needed, or the work no longer fits the card's steps.

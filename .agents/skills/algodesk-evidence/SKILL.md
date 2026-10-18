@@ -8,7 +8,10 @@ description: Use at the start of any task (to read the task card format) and at 
 Cards are short and mechanical. Reports are short and prove things with real command output. Never claim success without evidence.
 
 ## Task card fields
-`ID`, `Goal` (one line), `Reqs` (PRD IDs), `Read` (paths), `Touch` (only these paths), `Do` (at most 8 steps), `Accept` (commands with expected result), `Report`. At most 400 words, one deliverable, at most 300 changed lines.
+`ID`, `Goal` (one line), `Reqs` (PRD IDs), `Read` (paths), `Touch` (only these paths), `Do` (as many steps as the module needs, grouped in checkpoints CP1, CP2, …), `Accept` (commands with expected result), `Report`. At most 800 words; one module per card; no fixed line cap.
+
+## Checkpoints
+After each checkpoint (CPn) in the card: run `bash scripts/check.sh`, then append one line `CPn done | next step | files` to `_workbench/handoff.md`. If your budget runs low, stop at the last finished checkpoint.
 
 ## Report schema (at most 300 words, summary first)
 ```
