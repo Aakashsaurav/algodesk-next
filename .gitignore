@@ -4,6 +4,7 @@ results/
 _workbench/
 .algodesk/
 .venv/
+.local/
 __pycache__/
 *.db
 .env

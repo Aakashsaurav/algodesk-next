@@ -5,6 +5,10 @@ AlgoDesk Next is a pluggable trading workbench for Indian markets. It provides a
 ### Quick start
 
 ```bash
+source scripts/env.sh
 uv sync
 bash scripts/check.sh
 ```
+
+Run `source scripts/env.sh` in every new terminal.
+Nothing is installed outside this folder.
