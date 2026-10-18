@@ -3,6 +3,7 @@
 Public API surface — re-exports everything downstream code needs.
 """
 
+from algodesk.api.checks import CheckResult, DoctorCheck, Severity
 from algodesk.api.errors import (
     AlgoDeskError,
     ConfigError,
@@ -15,8 +16,20 @@ from algodesk.api.errors import (
 )
 from algodesk.api.kinds import API_VERSION, Mode, PluginKind
 from algodesk.api.manifest import PluginManifest, parse_manifest
+from algodesk.api.plugin import Plugin, PluginBase
+from algodesk.api.services import (
+    JournalWriter,
+    ParamReader,
+    ParamValue,
+    PluginContext,
+    SecretReader,
+)
 
 __all__ = [
+    # checks
+    "CheckResult",
+    "DoctorCheck",
+    "Severity",
     # errors
     "AlgoDeskError",
     "ConfigError",
@@ -33,4 +46,13 @@ __all__ = [
     # manifest
     "PluginManifest",
     "parse_manifest",
+    # plugin
+    "Plugin",
+    "PluginBase",
+    # services
+    "JournalWriter",
+    "ParamReader",
+    "ParamValue",
+    "PluginContext",
+    "SecretReader",
 ]

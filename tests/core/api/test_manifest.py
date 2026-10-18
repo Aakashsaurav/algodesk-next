@@ -238,6 +238,7 @@ def test_wrong_api_version() -> None:
 
 def test_empty_capabilities() -> None:
     data = _toml(_VALID_TEMPLATES[PluginKind.BROKER])
+    # pyrefly: ignore[implicit-any-empty-container]
     data["capabilities"] = {}
     with pytest.raises(ManifestError, match="capabilities"):
         parse_manifest(data, "test:empty_caps")
@@ -316,9 +317,12 @@ def test_api_imports_only_api() -> None:
 
     api_modules = [
         "algodesk.api",
+        "algodesk.api.checks",
         "algodesk.api.errors",
         "algodesk.api.kinds",
         "algodesk.api.manifest",
+        "algodesk.api.plugin",
+        "algodesk.api.services",
     ]
     for name in api_modules:
         importlib.import_module(name)
