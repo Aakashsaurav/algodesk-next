@@ -17,6 +17,7 @@ from algodesk.api.errors import (
 from algodesk.api.kinds import API_VERSION, Mode, PluginKind
 from algodesk.api.manifest import PluginManifest, parse_manifest
 from algodesk.api.plugin import Plugin, PluginBase
+from algodesk.api.scrub import Scrubber
 from algodesk.api.services import (
     JournalWriter,
     ParamReader,
@@ -26,6 +27,8 @@ from algodesk.api.services import (
 )
 
 __all__ = [
+    # scrub
+    "Scrubber",
     # checks
     "CheckResult",
     "DoctorCheck",

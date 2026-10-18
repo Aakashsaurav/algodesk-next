@@ -37,6 +37,31 @@ description = "Interval in milliseconds between buffered append-only journal flu
 owner = "core"
 
 [[param]]
+name = "journal.max_buffer_events"
+type = "int"
+default = 10000
+min = 100
+max = 1000000
+unit = "events"
+scope = "global"
+tighten = "none"
+description = "Maximum queued in-memory events before backpressure engages"
+owner = "core"
+
+[[param]]
+name = "journal.backpressure_timeout_ms"
+type = "int"
+default = 2000
+min = 50
+max = 60000
+unit = "ms"
+scope = "global"
+tighten = "none"
+description = "Maximum wait time in milliseconds for writer buffer backpressure before failing"
+owner = "core"
+
+
+[[param]]
 name = "budget.core_lines_guidance"
 type = "int"
 default = 6000

@@ -24,6 +24,7 @@ def test_api_new_public_contracts_exported() -> None:
         "PluginContext",
         "Plugin",
         "PluginBase",
+        "Scrubber",
     }
     missing = required - set(algodesk.api.__all__)
     assert not missing, f"Missing exports in algodesk.api.__all__: {missing}"

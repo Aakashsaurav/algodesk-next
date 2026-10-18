@@ -13,7 +13,7 @@ def test_load_shipped_defaults() -> None:
     from algodesk.params.specs import ParamType, Tighten
 
     specs = load_defaults(Path("config/params"))
-    assert len(specs) == 25
+    assert len(specs) == 27
 
     by_name = {s.name: s for s in specs}
 

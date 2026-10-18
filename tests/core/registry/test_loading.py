@@ -539,3 +539,47 @@ def test_loaded_returns_all_created_plugins(
     assert len(loaded) == 2
     assert (loaded[0][0].value, loaded[0][1], loaded[0][2]) == ("notifier", "load1", Mode.RESEARCH)
     assert (loaded[1][0].value, loaded[1][1], loaded[1][2]) == ("notifier", "load2", Mode.RESEARCH)
+
+
+def test_create_preserves_sys_path_and_module_naming_on_success_and_failure(
+    tmp_path: Path,
+    fake_plugin_factory: Any,
+    context_factory: Any,
+) -> None:
+    import sys
+
+    from algodesk.api.errors import PluginError
+    from algodesk.api.kinds import Mode
+    from algodesk.registry.registry import PluginRegistry
+
+    plugins_dir = tmp_path / "plugins"
+    fake_plugin_factory(plugins_dir, "notifier", "good_plugin")
+    fake_plugin_factory(
+        plugins_dir,
+        "notifier",
+        "bad_plugin",
+        entry="plugin:BrokenClass",
+        plugin_py_content="raise RuntimeError('Explosion on import')\n",
+    )
+
+    reg = PluginRegistry(tmp_path, [plugins_dir], state_dir=tmp_path / ".algodesk")
+    ctx = context_factory(Mode.RESEARCH)
+
+    original_sys_path = list(sys.path)
+
+    # 1. Successful load
+    plugin = reg.create("notifier", "good_plugin", ctx=ctx)
+    assert plugin.manifest.name == "good_plugin"
+    assert sys.path == original_sys_path
+
+    expected_mod_name = "_algodesk_plugins_notifier_good_plugin.plugin"
+    assert expected_mod_name in sys.modules
+    assert sys.modules[expected_mod_name].__name__ == expected_mod_name
+
+    # 2. Failed load
+    with pytest.raises(PluginError, match="Explosion on import"):
+        reg.create("notifier", "bad_plugin", ctx=ctx)
+
+    assert sys.path == original_sys_path
+    bad_mod_name = "_algodesk_plugins_notifier_bad_plugin.plugin"
+    assert bad_mod_name not in sys.modules

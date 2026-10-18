@@ -312,22 +312,18 @@ def test_manifest_error_has_source_in_where() -> None:
 
 def test_api_imports_only_api() -> None:
     """api submodules must not import from algodesk.config, .params, etc."""
-    import importlib
+    import subprocess
     import sys
 
-    api_modules = [
-        "algodesk.api",
-        "algodesk.api.checks",
-        "algodesk.api.errors",
-        "algodesk.api.kinds",
-        "algodesk.api.manifest",
-        "algodesk.api.plugin",
-        "algodesk.api.services",
-    ]
-    for name in api_modules:
-        importlib.import_module(name)
-
-    algodesk_modules = [
-        k for k in sys.modules if k.startswith("algodesk.") and not k.startswith("algodesk.api")
-    ]
-    assert algodesk_modules == [], f"api imported non-api algodesk modules: {algodesk_modules}"
+    code = (
+        "import importlib, sys; "
+        "mods = ['algodesk.api', 'algodesk.api.checks', 'algodesk.api.errors', "
+        "'algodesk.api.kinds', 'algodesk.api.manifest', 'algodesk.api.plugin', "
+        "'algodesk.api.scrub', 'algodesk.api.services']; "
+        "[importlib.import_module(m) for m in mods]; "
+        "non_api = [k for k in sys.modules "
+        "if k.startswith('algodesk.') and not k.startswith('algodesk.api')]; "
+        "assert non_api == [], f'api imported non-api algodesk modules: {non_api}'"
+    )
+    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert res.returncode == 0, f"Import isolation failed: {res.stderr}"

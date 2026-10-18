@@ -157,3 +157,33 @@ def test_conformance_store_not_dict_raises_plugin_error(tmp_path: Path) -> None:
     with pytest.raises(PluginError) as exc_info:
         store.is_current("notifier", "p1", "hash1")
     assert "corrupt or unreadable" in exc_info.value.what
+
+
+def test_conformance_store_atomic_write_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from algodesk.registry.conformance import ConformanceStore
+
+    state_dir = tmp_path / ".algodesk"
+    store = ConformanceStore(state_dir)
+    store.record_pass("notifier", "p1", "suite1", "hash1")
+    assert store.is_current("notifier", "p1", "hash1") is True
+
+    original_content = (state_dir / "conformance.json").read_text(encoding="utf-8")
+
+    # Simulate failure during atomic rename
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError("Simulated disk error during rename")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="Simulated disk error"):
+        store.record_pass("notifier", "p2", "suite2", "hash2")
+
+    # Verify old file is intact
+    assert (state_dir / "conformance.json").read_text(encoding="utf-8") == original_content
+    # Verify no partial or temp files remain in state_dir
+    files_in_state = list(state_dir.iterdir())
+    assert files_in_state == [state_dir / "conformance.json"]

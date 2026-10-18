@@ -197,14 +197,12 @@ class PluginRegistry:
                 fix=f"Ensure configuration options match schema in {schema_file.name}",
             ) from exc
 
-    def _load_and_instantiate(
+    def _import_entry_module(
         self,
         info: PluginInfo,
-        config: Mapping[str, object],
-        ctx: PluginContext,
         k: str,
         name: str,
-    ) -> Plugin:
+    ) -> tuple[types.ModuleType, str]:
         mod_part, cls_name = info.manifest.entry.split(":", 1)
         pkg_name = f"_algodesk_plugins_{k}_{name}"
         if pkg_name not in sys.modules:
@@ -234,18 +232,29 @@ class PluginRegistry:
         try:
             spec.loader.exec_module(plugin_mod)
         except Exception as exc:
+            sys.modules.pop(mod_full_name, None)
             raise PluginError(
                 what=f"Failed to import plugin entry module: {exc}",
                 where=f"{k}/{name}",
                 fix="Resolve import errors in plugin module",
             ) from exc
+        return plugin_mod, cls_name
 
+    def _load_and_instantiate(
+        self,
+        info: PluginInfo,
+        config: Mapping[str, object],
+        ctx: PluginContext,
+        k: str,
+        name: str,
+    ) -> Plugin:
+        plugin_mod, cls_name = self._import_entry_module(info, k, name)
         cls = getattr(plugin_mod, cls_name, None)
         if cls is None:
             raise PluginError(
-                what=f"Entry class '{cls_name}' not found in module '{mod_part}'",
+                what=f"Entry class '{cls_name}' not found in entry module",
                 where=f"{k}/{name}",
-                fix=f"Define class '{cls_name}' in {plugin_file.name}",
+                fix=f"Define class '{cls_name}' in plugin code",
             )
 
         try:
