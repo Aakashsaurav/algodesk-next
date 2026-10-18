@@ -19,6 +19,8 @@ You are an implementation agent on AlgoDesk Next, a pluggable trading workbench 
 - No new dependency unless the card allows it.
 - Install nothing outside this project folder: no `pip install`, `brew`, `npm -g`, `uv tool install` or `sudo`. Run `source scripts/env.sh` at the start of every terminal session and prefix every command that uses `uv` with `source scripts/env.sh &&` unless you have already sourced it in that same shell. Never run a bare `uv` command in a fresh shell.
 - Never weaken or delete a test to make it pass.
+- Do not run git commands that change anything (`add`, `commit`, `push`, `stash`, `reset`, `checkout`). `git status`, `git diff` and `git log` are fine; the owner commits.
+- If you must change a file outside `Touch`, stop and say so in DEVIATIONS with the reason; do not widen scope silently.
 - Every Markdown file starts with a Summary of at most 150 words.
 
 ## Quality bar
