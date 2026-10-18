@@ -1,5 +1,22 @@
 # AlgoDesk Platform Configuration
 # Packaged default configuration for AlgoDesk platform, paths, logging, and plugins.
+#
+# Override syntax and layer precedence:
+# 1. Platform configuration (this file: config/platform.toml)
+# 2. Profile configuration (config/profiles/<profile>.toml)
+# 3. Run configuration (config/runs/<run>.toml)
+# 4. Environment variable overrides:
+#    - Variable name prefix: ALGODESK_<KEY>
+#    - Nesting separator: "__" (double underscore), e.g.:
+#        ALGODESK_LOGGING__LEVEL=DEBUG  -> logging.level = "DEBUG"
+#        ALGODESK_PATHS__DATA_DIR=data2 -> paths.data_dir = "data2"
+#    - Values are parsed as TOML scalars or arrays (falls back to string).
+# 5. CLI overrides:
+#    - Mapping of dotted keys, applied last, e.g. overrides={"logging.level": "DEBUG"}
+#
+# Security & Path Rules:
+# - Plain secret tokens are forbidden; use "secret:<name>" references.
+# - Paths must resolve strictly within workspace root without traversal (NFR-14).
 
 project = "algodesk"
 plugin_dirs = ["plugins"]

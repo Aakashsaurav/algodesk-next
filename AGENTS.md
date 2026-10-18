@@ -17,7 +17,7 @@ You are an implementation agent on AlgoDesk Next, a pluggable trading workbench 
 - No secrets in code, config, logs, tests or chat. Use `secret:<name>` references.
 - Broker and API facts come only from the official docs the card cites. Never guess an endpoint or field.
 - No new dependency unless the card allows it.
-- Install nothing outside this project folder: no `pip install`, `brew`, `npm -g`, `uv tool install` or `sudo`. Run `source scripts/env.sh` at the start of every terminal session and use `uv run` for every command.
+- Install nothing outside this project folder: no `pip install`, `brew`, `npm -g`, `uv tool install` or `sudo`. Run `source scripts/env.sh` at the start of every terminal session and prefix every command that uses `uv` with `source scripts/env.sh &&` unless you have already sourced it in that same shell. Never run a bare `uv` command in a fresh shell.
 - Never weaken or delete a test to make it pass.
 - Every Markdown file starts with a Summary of at most 150 words.
 

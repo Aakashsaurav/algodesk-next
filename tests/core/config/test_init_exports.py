@@ -27,10 +27,19 @@ def test_config_required_contracts_exported() -> None:
         "UniverseConfig",
         "StrategyConfig",
         "load_platform",
+        "load_platform_with_provenance",
         "load_run",
+        "load_run_with_provenance",
         "load_toml",
         "deep_merge",
         "merge_layers",
+        "resolve_paths",
+        "ensure_dirs",
+        "validate_secrets",
+        "ResolvedPaths",
+        "EffectiveConfig",
+        "build_effective",
+        "render_effective",
     }
     missing = required - set(algodesk.config.__all__)
     assert not missing, f"Missing exports in algodesk.config.__all__: {missing}"

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
 import tomllib
 import typing
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,35 @@ from algodesk.config.models import PlatformConfig, RunConfig
 
 _LINE_NUM_RE = re.compile(r"\(at line (\d+)")
 
+_SCRIPTS_ENV_EXPORTS: frozenset[str] = frozenset(
+    {
+        "ROOT",
+        "UV_CACHE_DIR",
+        "UV_PYTHON_INSTALL_DIR",
+        "UV_PYTHON_BIN_DIR",
+        "UV_TOOL_DIR",
+        "UV_TOOL_BIN_DIR",
+        "UV_PROJECT_ENVIRONMENT",
+        "UV_NO_CONFIG",
+        "PRE_COMMIT_HOME",
+        "PYTHONNOUSERSITE",
+        "PIP_REQUIRE_VIRTUALENV",
+    }
+)
+
+_SECRET_KEYWORDS: tuple[str, ...] = (
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "api_key",
+    "apikey",
+    "private_key",
+    "credential",
+)
+_SECRET_REF_RE: re.Pattern[str] = re.compile(r"^secret:([A-Za-z0-9_.-]{1,64})$")
+_BASE64_LIKE_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9+/=_-]{40,}$")
+
 
 def _extract_toml_line(msg: str) -> str | None:
     match = _LINE_NUM_RE.search(msg)
@@ -24,13 +55,7 @@ def _extract_toml_line(msg: str) -> str | None:
 
 
 def load_toml(path: Path | str) -> dict[str, Any]:
-    """Load a TOML file from *path*.
-
-    Raises
-    ------
-    ConfigError
-        If the file is missing or contains TOML syntax errors.
-    """
+    """Load a TOML file from *path*."""
     p = Path(path)
     if not p.is_file():
         msg = f"Configuration file not found: {p}"
@@ -54,11 +79,7 @@ def load_toml(path: Path | str) -> dict[str, Any]:
 
 
 def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
-    """Recursively merge *override* into *base*.
-
-    Dicts merge recursively; lists and scalars are replaced.
-    Neither input mapping is mutated.
-    """
+    """Recursively merge *override* into *base*."""
     result: dict[str, Any] = {}
     for key, val in base.items():
         if key in override:
@@ -78,7 +99,6 @@ def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str
 def _collect_leaves(data: Mapping[str, Any], prefix: str = "") -> list[str]:
     leaves: list[str] = []
     for key, val in data.items():
-        # pyrefly: ignore[unnecessary-type-conversion]
         full_key = f"{prefix}.{key}" if prefix else str(key)
         if isinstance(val, Mapping) and val:
             leaves.extend(_collect_leaves(val, full_key))
@@ -90,27 +110,17 @@ def _collect_leaves(data: Mapping[str, Any], prefix: str = "") -> list[str]:
 def merge_layers(
     layers: Sequence[tuple[str, Mapping[str, Any]]],
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    """Merge a sequence of (source_path, data_dict) layers in order.
-
-    Returns
-    -------
-    merged : dict
-        Deeply-merged configuration dictionary.
-    provenance : dict
-        Mapping from dotted leaf key to the source path that set or overrode it.
-    """
+    """Merge a sequence of (source_path, data_dict) layers in order."""
     merged: dict[str, Any] = {}
     provenance: dict[str, str] = {}
 
     for source, layer_dict in layers:
         for leaf in _collect_leaves(layer_dict):
             provenance[leaf] = source
-            # Remove any previous children if a dict became a scalar/list
             prefix = f"{leaf}."
             to_remove = [k for k in provenance if k.startswith(prefix)]
             for k in to_remove:
                 del provenance[k]
-            # Remove any ancestor if a scalar became a dict
             parts = leaf.split(".")
             for i in range(1, len(parts)):
                 ancestor = ".".join(parts[:i])
@@ -171,6 +181,39 @@ def _get_target_model(
     return curr if hasattr(curr, "model_fields") else None
 
 
+def _format_type_error(
+    err: Mapping[str, Any],
+    dotted_key: str,
+    root_model: type[BaseModel],
+    loc: tuple[int | str, ...],
+    msg: str,
+) -> tuple[str, str]:
+    ctx: Mapping[str, Any] = err.get("ctx", {}) or {}
+    expected = ctx.get("expected")
+    if not expected:
+        target_model = _get_target_model(root_model, loc)
+        if target_model and loc and str(loc[-1]) in target_model.model_fields:
+            ann = target_model.model_fields[str(loc[-1])].annotation
+            expected = getattr(ann, "__name__", str(ann))
+    got = type(err.get("input")).__name__
+    fix = f"Expected {expected or 'valid type'}, got {got}"
+    return f"Invalid type for '{dotted_key}': {msg}", fix
+
+
+def _format_value_error(dotted_key: str, msg: str) -> tuple[str, str]:
+    if "Universe requires exactly one" in msg:
+        fix = "Specify exactly one of 'screen' or 'symbols' under [universe]"
+    elif "At least one strategy" in msg:
+        fix = "Define at least one strategy entry under [[strategies]]"
+    elif "allocated_capital must be greater than 0" in msg:
+        fix = "Set allocated_capital to a positive amount (> 0)"
+    elif "relative path without traversal" in msg:
+        fix = "Use a relative path without traversal ('..')"
+    else:
+        fix = f"Adjust '{dotted_key}' to satisfy validation requirements"
+    return f"Invalid value for '{dotted_key}': {msg}", fix
+
+
 def _format_error_details(
     err: Mapping[str, Any],
     dotted_key: str,
@@ -204,15 +247,7 @@ def _format_error_details(
         "mapping_type",
         "decimal_parsing",
     ):
-        expected = ctx.get("expected")
-        if not expected:
-            target_model = _get_target_model(root_model, loc)
-            if target_model and loc and str(loc[-1]) in target_model.model_fields:
-                ann = target_model.model_fields[str(loc[-1])].annotation
-                expected = getattr(ann, "__name__", str(ann))
-        got = type(err.get("input")).__name__
-        fix = f"Expected {expected or 'valid type'}, got {got}"
-        return f"Invalid type for '{dotted_key}': {msg}", fix
+        return _format_type_error(err, dotted_key, root_model, loc, msg)
 
     if err_type == "enum":
         expected = ctx.get("expected")
@@ -225,17 +260,7 @@ def _format_error_details(
         return f"Invalid value for '{dotted_key}': {msg}", fix
 
     if err_type == "value_error":
-        if "Universe requires exactly one" in msg:
-            fix = "Specify exactly one of 'screen' or 'symbols' under [universe]"
-        elif "At least one strategy" in msg:
-            fix = "Define at least one strategy entry under [[strategies]]"
-        elif "allocated_capital must be greater than 0" in msg:
-            fix = "Set allocated_capital to a positive amount (> 0)"
-        elif "relative path without traversal" in msg:
-            fix = "Use a relative path without traversal ('..')"
-        else:
-            fix = f"Adjust '{dotted_key}' to satisfy validation requirements"
-        return f"Invalid value for '{dotted_key}': {msg}", fix
+        return _format_value_error(dotted_key, msg)
 
     if err_type == "missing":
         return f"Missing required configuration key '{dotted_key}'", f"Provide '{dotted_key}'"
@@ -259,8 +284,207 @@ def _validation_error_to_config_error(
     return ConfigError(what=what, where=where, fix=fix)
 
 
-def load_platform(root: Path | str, profile: str | None = None) -> PlatformConfig:
-    """Load platform configuration from config/platform.toml and optional profile."""
+def _get_reserved_env_vars(root: Path | None = None) -> set[str]:
+    reserved = set(_SCRIPTS_ENV_EXPORTS)
+    if root is not None:
+        env_sh = root / "scripts" / "env.sh"
+        if env_sh.is_file():
+            try:
+                for line in env_sh.read_text(encoding="utf-8").splitlines():
+                    trimmed = line.strip()
+                    if trimmed.startswith("export "):
+                        var = trimmed.removeprefix("export ").split("=")[0].strip()
+                        if var:
+                            reserved.add(var)
+            except OSError:
+                pass
+    return reserved
+
+
+def _parse_env_scalar_or_array(raw: str) -> Any:
+    try:
+        data = tomllib.loads(f"v = {raw}")
+        return data["v"]
+    except Exception:
+        return raw
+
+
+def _build_nested_layer(segments: Sequence[str], value: Any) -> dict[str, Any]:
+    nested: dict[str, Any] = {}
+    curr = nested
+    for seg in segments[:-1]:
+        curr[seg] = {}
+        curr = curr[seg]
+    curr[segments[-1]] = value
+    return nested
+
+
+def _extract_env_layers(
+    env: Mapping[str, str],
+    root: Path | None = None,
+) -> list[tuple[str, dict[str, Any]]]:
+    reserved = _get_reserved_env_vars(root)
+    layers: list[tuple[str, dict[str, Any]]] = []
+    for var_name, raw_val in sorted(env.items()):
+        if var_name in reserved or var_name.removeprefix("ALGODESK_") in reserved:
+            continue
+        if not var_name.startswith("ALGODESK_"):
+            continue
+        suffix = var_name.removeprefix("ALGODESK_")
+        if not suffix:
+            continue
+        segments = [s.lower() for s in suffix.split("__") if s]
+        if not segments:
+            continue
+        val = _parse_env_scalar_or_array(raw_val)
+        layer_dict = _build_nested_layer(segments, val)
+        layers.append((f"env:{var_name}", layer_dict))
+    return layers
+
+
+def _extract_cli_layers(
+    overrides: Mapping[str, object] | None,
+) -> list[tuple[str, dict[str, Any]]]:
+    if not overrides:
+        return []
+    layers: list[tuple[str, dict[str, Any]]] = []
+    for dotted_key, val in sorted(overrides.items()):
+        segments = [s.strip().lower() for s in dotted_key.split(".") if s.strip()]
+        if not segments:
+            continue
+        layer_dict = _build_nested_layer(segments, val)
+        layers.append((f"cli:{dotted_key}", layer_dict))
+    return layers
+
+
+def _check_secret_string(
+    val: str,
+    is_secret_key: bool,
+    dotted_key: str,
+    source: str,
+) -> None:
+    if is_secret_key:
+        if not _SECRET_REF_RE.match(val):
+            raise ConfigError(
+                what="plain secret in config",
+                where=f"{source} -> {dotted_key}",
+                fix="store it with your secrets provider and write secret:<name>",
+            )
+    else:
+        if _SECRET_REF_RE.match(val):
+            return
+        if _BASE64_LIKE_RE.match(val):
+            raise ConfigError(
+                what="plain secret in config",
+                where=f"{source} -> {dotted_key}",
+                fix="store it with your secrets provider and write secret:<name>",
+            )
+
+
+def _validate_secrets_recursive(
+    data: Any,
+    provenance: Mapping[str, str],
+    prefix: str,
+    fallback_source: str,
+) -> None:
+    if isinstance(data, Mapping):
+        for key, val in data.items():
+            child_key = f"{prefix}.{key}" if prefix else str(key)
+            last_segment = str(key).lower()
+            is_secret = any(kw in last_segment for kw in _SECRET_KEYWORDS)
+            source = _resolve_provenance(child_key, provenance, fallback_source)
+            if isinstance(val, str):
+                _check_secret_string(val, is_secret, child_key, source)
+            elif isinstance(val, (list, tuple)):
+                for idx, item in enumerate(val):
+                    item_key = f"{child_key}[{idx}]"
+                    if isinstance(item, str):
+                        _check_secret_string(item, is_secret, child_key, source)
+                    elif isinstance(item, (Mapping, list, tuple)):
+                        _validate_secrets_recursive(item, provenance, item_key, fallback_source)
+            elif isinstance(val, Mapping):
+                _validate_secrets_recursive(val, provenance, child_key, fallback_source)
+
+
+def validate_secrets(
+    data: Mapping[str, Any],
+    provenance: Mapping[str, str],
+    fallback_source: str = "config",
+) -> None:
+    """Validate that secret values use references and no plain secrets exist."""
+    _validate_secrets_recursive(data, provenance, "", fallback_source)
+
+
+@dataclass(frozen=True)
+class ResolvedPaths:
+    """Absolute workspace paths for platform runtime artifacts and plugins."""
+
+    data: Path
+    logs: Path
+    results: Path
+    local: Path
+    plugin_dirs: list[Path]
+
+
+def _check_and_resolve_path(
+    root_resolved: Path,
+    path_str: str,
+    field_name: str,
+) -> Path:
+    raw_path = Path(path_str)
+    if ".." in raw_path.parts:
+        msg = f"Path '{path_str}' contains traversal '..' escaping workspace root (NFR-14)"
+        raise ConfigError(
+            what=msg,
+            where=f"paths -> {field_name}",
+            fix=f"Use a relative path inside '{root_resolved}' without '..' traversal",
+        )
+    target = raw_path if raw_path.is_absolute() else (root_resolved / raw_path)
+    resolved = target.resolve()
+    if not resolved.is_relative_to(root_resolved) or resolved == root_resolved:
+        msg = f"Path '{path_str}' resolves outside workspace root (NFR-14)"
+        raise ConfigError(
+            what=msg,
+            where=f"paths -> {field_name}",
+            fix=f"Ensure path resolves inside workspace root '{root_resolved}'",
+        )
+    return resolved
+
+
+def resolve_paths(root: Path | str, cfg: PlatformConfig) -> ResolvedPaths:
+    """Resolve and validate platform paths inside the workspace root (NFR-14)."""
+    root_resolved = Path(root).resolve()
+    data = _check_and_resolve_path(root_resolved, cfg.paths.data_dir, "data_dir")
+    logs = _check_and_resolve_path(root_resolved, cfg.paths.logs_dir, "logs_dir")
+    results = _check_and_resolve_path(root_resolved, cfg.paths.results_dir, "results_dir")
+    local = _check_and_resolve_path(root_resolved, cfg.paths.local_dir, "local_dir")
+    plugin_dirs: list[Path] = [
+        _check_and_resolve_path(root_resolved, p, f"plugin_dirs[{i}]")
+        for i, p in enumerate(cfg.plugin_dirs)
+    ]
+    return ResolvedPaths(
+        data=data,
+        logs=logs,
+        results=results,
+        local=local,
+        plugin_dirs=plugin_dirs,
+    )
+
+
+def ensure_dirs(paths: ResolvedPaths) -> None:
+    """Ensure data, logs, results, and local directories exist with mode 0o700."""
+    for d in (paths.data, paths.logs, paths.results, paths.local):
+        d.mkdir(mode=0o700, parents=True, exist_ok=True)
+        d.chmod(0o700)
+
+
+def load_platform_with_provenance(
+    root: Path | str,
+    profile: str | None = None,
+    env: Mapping[str, str] | None = None,
+    overrides: Mapping[str, object] | None = None,
+) -> tuple[PlatformConfig, dict[str, str]]:
+    """Load platform configuration and return model and provenance mapping."""
     root_path = Path(root)
     layers: list[tuple[str, Mapping[str, Any]]] = []
 
@@ -281,21 +505,52 @@ def load_platform(root: Path | str, profile: str | None = None) -> PlatformConfi
             )
         layers.append((str(profile_file), load_toml(profile_file)))
 
+    effective_env = os.environ if env is None else env
+    layers.extend(_extract_env_layers(effective_env, root_path))
+    layers.extend(_extract_cli_layers(overrides))
+
     merged, provenance = merge_layers(layers)
+    fallback = layers[-1][0] if layers else "config"
+    validate_secrets(merged, provenance, fallback_source=fallback)
     try:
-        return PlatformConfig.model_validate(merged)
+        return PlatformConfig.model_validate(merged), provenance
     except ValidationError as exc:
         raise _validation_error_to_config_error(exc, provenance, layers, PlatformConfig) from exc
 
 
-def load_run(root: Path | str, run_name: str, profile: str | None = None) -> RunConfig:
-    """Load run configuration from platform, profile, and run layers."""
+def load_platform(
+    root: Path | str,
+    profile: str | None = None,
+    env: Mapping[str, str] | None = None,
+    overrides: Mapping[str, object] | None = None,
+) -> PlatformConfig:
+    """Load platform configuration from config/platform.toml, profile, env, and CLI overrides."""
+    cfg, _ = load_platform_with_provenance(root, profile=profile, env=env, overrides=overrides)
+    return cfg
+
+
+def load_run_with_provenance(
+    root: Path | str,
+    run_name: str,
+    profile: str | None = None,
+    env: Mapping[str, str] | None = None,
+    overrides: Mapping[str, object] | None = None,
+) -> tuple[RunConfig, dict[str, str]]:
+    """Load run configuration and return model and provenance mapping."""
     root_path = Path(root)
     layers: list[tuple[str, Mapping[str, Any]]] = []
 
     platform_file = root_path / "config" / "platform.toml"
     if platform_file.is_file():
-        layers.append((str(platform_file), load_toml(platform_file)))
+        plat_data = load_toml(platform_file)
+        plat_filtered = {
+            k: v
+            for k, v in plat_data.items()
+            if k
+            not in (set(PlatformConfig.model_fields.keys()) - set(RunConfig.model_fields.keys()))
+        }
+        if plat_filtered:
+            layers.append((str(platform_file), plat_filtered))
 
     if profile is not None:
         profiles_dir = root_path / "config" / "profiles"
@@ -322,8 +577,28 @@ def load_run(root: Path | str, run_name: str, profile: str | None = None) -> Run
         )
     layers.append((str(run_file), load_toml(run_file)))
 
+    effective_env = os.environ if env is None else env
+    layers.extend(_extract_env_layers(effective_env, root_path))
+    layers.extend(_extract_cli_layers(overrides))
+
     merged, provenance = merge_layers(layers)
+    fallback = layers[-1][0] if layers else "config"
+    validate_secrets(merged, provenance, fallback_source=fallback)
     try:
-        return RunConfig.model_validate(merged)
+        return RunConfig.model_validate(merged), provenance
     except ValidationError as exc:
         raise _validation_error_to_config_error(exc, provenance, layers, RunConfig) from exc
+
+
+def load_run(
+    root: Path | str,
+    run_name: str,
+    profile: str | None = None,
+    env: Mapping[str, str] | None = None,
+    overrides: Mapping[str, object] | None = None,
+) -> RunConfig:
+    """Load run configuration from platform, profile, run, env, and CLI overrides."""
+    cfg, _ = load_run_with_provenance(
+        root, run_name=run_name, profile=profile, env=env, overrides=overrides
+    )
+    return cfg

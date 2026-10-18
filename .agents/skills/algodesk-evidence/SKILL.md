@@ -20,6 +20,7 @@ CHANGED: <files added / edited / deleted>
 EVIDENCE: <each Accept command and its real output, trimmed>
 CHECK RESULT: <exact last line printed by scripts/check.sh, verbatim>
 NOT DONE: <anything skipped and why>
+COVERAGE: <every numbered step of the card -> the test(s) that prove it (file::name), or NOT DONE>
 DEVIATIONS: <differences from the card, or "none">
 CONFIRM: no live orders; no secrets written; only Touch paths changed
 HANDOFF (<=100 words): <state now> | <next step> | <open issues>
@@ -28,5 +29,5 @@ HANDOFF (<=100 words): <state now> | <next step> | <open issues>
 ## Evidence rules
 - Paste real output; never paraphrase a result. Always include the raw `git status --short`.
 - A test that was not run is listed under NOT DONE.
-- Do not mark complete if any Accept command fails.
+- Do not mark complete if any Accept command fails or any numbered step has no test or is not listed under NOT DONE. Nothing in the card may be silently dropped.
 - Partial work must still leave the repository committable.
