@@ -289,8 +289,15 @@ def test_create_entry_class_missing(
     reg = PluginRegistry(tmp_path, [plugins_dir], state_dir=tmp_path / ".algodesk")
 
     ctx = context_factory(Mode.RESEARCH)
-    with pytest.raises(PluginError, match="Entry class 'NonExistentClass' not found"):
+    with pytest.raises(PluginError, match="Entry class 'NonExistentClass' not found") as exc_info:
         reg.create("notifier", "missing_cls", ctx=ctx)
+    err = exc_info.value
+    assert "NonExistentClass" in err.what
+    assert "plugin" in err.what
+    assert "plugin.py" in err.what
+    assert "NonExistentClass" in err.fix
+    assert "plugin" in err.fix
+    assert "plugin.py" in err.fix
 
 
 def test_create_wrong_constructor(

@@ -132,6 +132,7 @@ def test_doctor_all_passing_exits_code_zero(
         ]
 
     monkeypatch.setattr(app_mod, "build_core_checks", mock_checks)
+    monkeypatch.setattr("algodesk.devtools.build_tool_checks", lambda rt: [])
 
     result = runner.invoke(app, ["--root", str(proj), "doctor"])
     assert result.exit_code == 0

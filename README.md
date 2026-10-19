@@ -31,6 +31,11 @@ AlgoDesk provides a unified command-line workbench:
 - `algodesk journal verify`: Verify cryptographic hash chain integrity of the append-only journal.
 - `algodesk journal tail [-n N]`: Display recent events from the append-only journal.
 - `algodesk journal runs`: List execution runs recorded in the journal.
+- `algodesk budget [--json]`: Evaluate codebase size and dependency complexity against budget.
+- `algodesk docs check`: Validate documentation consistency, summary sections, and relative links.
+- `algodesk docs index`: Regenerate deterministic living documentation index docs/INDEX.md.
+- `algodesk lint [--json]`: Run AST architecture rules over core code and plugins.
+- `algodesk secrets scan`: Scan codebase for exposed secrets, tokens, and cloud keys.
 
 #### Exit Codes
 

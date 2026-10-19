@@ -1,0 +1,32 @@
+# config/archlint_allow.toml — allow-list for genuine protocol, offline, and display constants
+# Entries: {file, rule, symbol, reason}
+
+[[allow]]
+file = "src/algodesk/journal/store.py"
+rule = "archlint.hard_coded_limit"
+symbol = "busy_timeout_ms"
+reason = "SQLite journal store busy handler timeout default for offline verification and tail tools"
+
+[[allow]]
+file = "src/algodesk/ops/checks.py"
+rule = "archlint.hard_coded_limit"
+symbol = "min_gb"
+reason = "Fallback minimum free disk space threshold when parameter registry is not initialized"
+
+[[allow]]
+file = "src/algodesk/params/registry.py"
+rule = "archlint.hard_coded_limit"
+symbol = "limit"
+reason = "Display and query history default limit for CLI presentation"
+
+[[allow]]
+file = "src/algodesk/params/store.py"
+rule = "archlint.hard_coded_limit"
+symbol = "timeout"
+reason = "SQLite connect timeout for offline parameter storage engine"
+
+[[allow]]
+file = "src/algodesk/params/store.py"
+rule = "archlint.hard_coded_limit"
+symbol = "limit"
+reason = "Query history default row limit for parameter store"

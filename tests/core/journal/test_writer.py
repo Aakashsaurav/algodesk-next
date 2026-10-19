@@ -163,7 +163,7 @@ def test_second_writer_refused(tmp_path: Path) -> None:
         j1.close()
 
 
-def test_backpressure_error_with_stalled_writer(
+def test_backpressure_error_raises_and_warns_without_dropping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "backpressure.db"
@@ -191,6 +191,71 @@ def test_backpressure_error_with_stalled_writer(
                 j.append("test.event", {"idx": 4})
 
         stall_event.set()
+
+
+# Backward-compatible alias for test discovery/historical references
+test_backpressure_error_with_stalled_writer = (
+    test_backpressure_error_raises_and_warns_without_dropping
+)
+
+
+def test_backpressure_accepted_events_persist_after_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "persist_after_bp.db"
+    settings = _settings(flush_ms=500, max_buf=2, timeout_ms=50)
+    with Journal(db_path, settings=settings) as j:
+        j.start_run("paper", "v1", "c1", "r1")
+
+        stall_event = threading.Event()
+        original_write = j._write_batch
+
+        def stalled_write(batch: list[Any]) -> None:
+            stall_event.wait(timeout=2.0)
+            original_write(batch)
+
+        monkeypatch.setattr(j, "_write_batch", stalled_write)
+
+        # Enqueue accepted events
+        seq1 = j.append("test.event", {"idx": 1})
+        time.sleep(0.05)
+        seq2 = j.append("test.event", {"idx": 2})
+        seq3 = j.append("test.event", {"idx": 3})
+        assert seq1 == 1
+        assert seq2 == 2
+        assert seq3 == 3
+
+        # This should fail due to backpressure timeout without corrupting or dropping queue
+        with pytest.warns(UserWarning, match="Journal buffer full"):
+            with pytest.raises(JournalError, match="backpressure timeout"):
+                j.append("test.event", {"idx": 4})
+
+        # Unblock worker and flush
+        stall_event.set()
+        j.flush()
+        j.end_run("ok")
+
+    # Verify that all 3 accepted events were written to SQLite and none were dropped
+    conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+    cur = conn.cursor()
+    cur.execute("SELECT seq, payload_json FROM events ORDER BY seq ASC;")
+    rows = cur.fetchall()
+    conn.close()
+
+    assert len(rows) == 3
+    assert rows[0][0] == 1
+    assert '"idx":1' in rows[0][1]
+    assert rows[1][0] == 2
+    assert '"idx":2' in rows[1][1]
+    assert rows[2][0] == 3
+    assert '"idx":3' in rows[2][1]
+
+    # Verify chain integrity
+    res = verify_journal(db_path)
+    assert res.ok is True
+    assert res.checked == 3
+    assert res.first_bad_seq is None
+    assert res.reason is None
 
 
 def test_writer_thread_failure_reraised(tmp_path: Path) -> None:

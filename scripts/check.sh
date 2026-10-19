@@ -5,6 +5,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/env.sh"
+export CHECK_SH_RUNNING=1
 
 failures=0
 
@@ -44,6 +45,22 @@ uv run pytest -q || ((failures++))
 echo ""
 echo "=== lint-imports ==="
 uv run lint-imports || ((failures++))
+
+echo ""
+echo "=== budget ==="
+uv run algodesk budget || ((failures++))
+
+echo ""
+echo "=== docs check ==="
+uv run algodesk docs check || ((failures++))
+
+echo ""
+echo "=== lint ==="
+uv run algodesk lint || ((failures++))
+
+echo ""
+echo "=== secrets scan ==="
+uv run algodesk secrets scan || ((failures++))
 
 echo ""
 if [ "$failures" -eq 0 ]; then

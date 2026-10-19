@@ -1,0 +1,17 @@
+# config/archlint.toml — AST linting rules and patterns for AlgoDesk Next
+
+[banned_calls]
+banned_functions = ["eval", "exec", "os.system"]
+ban_shell_true = true
+
+[stub_detector]
+allowed_docstring_exceptions = true
+pass_or_ellipsis = true
+return_true_prefixes = ["check", "is_", "is", "verify", "ping"]
+
+[hard_coded_limits]
+patterns = ["limit", "max_", "min_", "threshold", "timeout", "buffer", "retries", "ttl", "interval", "cap"]
+ignore_values = [0, 1, -1, 0.0, 1.0, -1.0]
+
+[plugin_imports]
+allowed_framework_roots = ["algodesk.api"]

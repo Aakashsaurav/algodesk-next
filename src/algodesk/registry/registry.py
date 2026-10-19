@@ -202,7 +202,7 @@ class PluginRegistry:
         info: PluginInfo,
         k: str,
         name: str,
-    ) -> tuple[types.ModuleType, str]:
+    ) -> tuple[types.ModuleType, str, str, Path]:
         mod_part, cls_name = info.manifest.entry.split(":", 1)
         pkg_name = f"_algodesk_plugins_{k}_{name}"
         if pkg_name not in sys.modules:
@@ -238,7 +238,7 @@ class PluginRegistry:
                 where=f"{k}/{name}",
                 fix="Resolve import errors in plugin module",
             ) from exc
-        return plugin_mod, cls_name
+        return plugin_mod, cls_name, mod_part, plugin_file
 
     def _load_and_instantiate(
         self,
@@ -248,13 +248,16 @@ class PluginRegistry:
         k: str,
         name: str,
     ) -> Plugin:
-        plugin_mod, cls_name = self._import_entry_module(info, k, name)
+        plugin_mod, cls_name, mod_part, plugin_file = self._import_entry_module(info, k, name)
         cls = getattr(plugin_mod, cls_name, None)
         if cls is None:
             raise PluginError(
-                what=f"Entry class '{cls_name}' not found in entry module",
+                what=(
+                    f"Entry class '{cls_name}' not found in module '{mod_part}' "
+                    f"({plugin_file.name})"
+                ),
                 where=f"{k}/{name}",
-                fix=f"Define class '{cls_name}' in plugin code",
+                fix=f"Define class '{cls_name}' in {plugin_file.name} (module '{mod_part}')",
             )
 
         try:

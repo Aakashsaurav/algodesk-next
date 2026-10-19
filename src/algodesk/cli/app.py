@@ -10,7 +10,7 @@ import subprocess
 import sys
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -52,12 +52,16 @@ plugins_app = typer.Typer(help="Discover, check, and test plugins.")
 journal_app = typer.Typer(help="Inspect, tail, and verify append-only journal.")
 config_app = typer.Typer(help="Inspect effective platform and run configuration.")
 new_app = typer.Typer(help="Scaffold new components.")
+docs_app = typer.Typer(help="Inspect, check, and generate living documentation.")
+secrets_app = typer.Typer(help="Scan codebase for exposed secrets and tokens.")
 
 app.add_typer(param_app, name="param")
 app.add_typer(plugins_app, name="plugins")
 app.add_typer(journal_app, name="journal")
 app.add_typer(config_app, name="config")
 app.add_typer(new_app, name="new")
+app.add_typer(docs_app, name="docs")
+app.add_typer(secrets_app, name="secrets")
 
 
 def _get_cli_state(ctx: Any = None) -> CliState:
@@ -183,6 +187,9 @@ def doctor_cmd(
     is_json = json_opt or state.json
     with _open_rt(ctx, ensure=False) as rt:
         checks = build_core_checks(rt)
+        from algodesk.devtools import build_tool_checks
+
+        checks.extend(build_tool_checks(rt))
         registry = DoctorRegistry()
         registry.register_many(checks)
         report = registry.run(only=only)
@@ -546,6 +553,130 @@ def journal_runs(ctx: typer.Context) -> None:
         for r in raw_rows
     ]
     typer.echo(format_table(headers, rows))
+
+
+@app.command("budget")
+@handle_cli_errors
+def budget_cmd(
+    ctx: typer.Context,
+    json_opt: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+) -> None:
+    """Evaluate codebase size and dependency complexity against budget."""
+    from algodesk.devtools.budget import (
+        format_budget_json,
+        format_budget_text,
+        run_budget,
+    )
+
+    state = _get_cli_state(ctx)
+    is_json = json_opt or state.json
+    with _open_rt(ctx, ensure=False) as rt:
+        rep = run_budget(rt.root)
+
+    if is_json:
+        typer.echo(format_budget_json(rep))
+    else:
+        typer.echo(format_budget_text(rep))
+
+    if rep.exit_code != 0:
+        raise typer.Exit(code=rep.exit_code)
+
+
+@docs_app.command("check")
+@handle_cli_errors
+def docs_check_cmd(
+    ctx: typer.Context,
+    json_opt: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+) -> None:
+    """Validate documentation consistency, summary sections, and relative links."""
+    from algodesk.devtools.docs import format_docs_text, run_docs_check
+
+    state = _get_cli_state(ctx)
+    is_json = json_opt or state.json
+    with _open_rt(ctx, ensure=False) as rt:
+        rep = run_docs_check(rt.root)
+
+    if is_json:
+        data = {
+            "summary": {
+                "checked": rep.checked,
+                "errors": len(rep.errors),
+                "warnings": len(rep.warnings),
+                "exit_code": rep.exit_code,
+            },
+            "findings": [asdict(f) for f in rep.findings],
+        }
+        typer.echo(json.dumps(data, indent=2))
+    else:
+        typer.echo(format_docs_text(rep))
+
+    if rep.exit_code != 0:
+        raise typer.Exit(code=rep.exit_code)
+
+
+@docs_app.command("index")
+@handle_cli_errors
+def docs_index_cmd(ctx: typer.Context) -> None:
+    """Regenerate deterministic docs/INDEX.md living documentation index."""
+    from algodesk.devtools.docs import write_index
+
+    with _open_rt(ctx, ensure=False) as rt:
+        p = write_index(rt.root)
+    typer.echo(f"OK: regenerated {p.relative_to(rt.root).as_posix()}")
+
+
+@app.command("lint")
+@handle_cli_errors
+def lint_cmd(
+    ctx: typer.Context,
+    json_opt: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+) -> None:
+    """Run AST architecture rules over core code and plugins."""
+    from algodesk.devtools.archlint import (
+        format_archlint_json,
+        format_archlint_text,
+        run_archlint,
+    )
+
+    state = _get_cli_state(ctx)
+    is_json = json_opt or state.json
+    with _open_rt(ctx, ensure=False) as rt:
+        rep = run_archlint(rt.root)
+
+    if is_json:
+        typer.echo(format_archlint_json(rep))
+    else:
+        typer.echo(format_archlint_text(rep))
+
+    if rep.exit_code != 0:
+        raise typer.Exit(code=rep.exit_code)
+
+
+@secrets_app.command("scan")
+@handle_cli_errors
+def secrets_scan_cmd(
+    ctx: typer.Context,
+    json_opt: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+) -> None:
+    """Scan codebase for exposed secrets, tokens, and cloud keys."""
+    from algodesk.devtools.secretscan import (
+        format_secretscan_json,
+        format_secretscan_text,
+        run_secretscan,
+    )
+
+    state = _get_cli_state(ctx)
+    is_json = json_opt or state.json
+    with _open_rt(ctx, ensure=False) as rt:
+        rep = run_secretscan(rt.root)
+
+    if is_json:
+        typer.echo(format_secretscan_json(rep))
+    else:
+        typer.echo(format_secretscan_text(rep))
+
+    if rep.exit_code != 0:
+        raise typer.Exit(code=rep.exit_code)
 
 
 def main() -> None:

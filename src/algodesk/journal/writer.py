@@ -470,7 +470,7 @@ class Journal:
             self._cond.notify_all()
 
         if self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=2.0)
+            self._worker_thread.join(timeout=self.settings.backpressure_timeout_ms / 1000.0)
 
         with self._db_lock:
             try:
