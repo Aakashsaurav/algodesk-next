@@ -12,3 +12,29 @@ bash scripts/check.sh
 
 Run `source scripts/env.sh` in every new terminal.
 Nothing is installed outside this folder.
+
+### CLI Commands and Exit Codes
+
+AlgoDesk provides a unified command-line workbench:
+
+- `algodesk version`: Print version information.
+- `algodesk doctor [--verbose] [--only ID]`: Run diagnostic health checks across the platform and plugins.
+- `algodesk config show`: Display effective platform and run configuration.
+- `algodesk param show [PREFIX]`: Display registered parameters and active values (`--json` supported).
+- `algodesk param set NAME VALUE --reason R [--scope S] [--confirm PHRASE]`: Override parameter value with audit trail.
+- `algodesk param history [NAME] [--limit]`: Inspect parameter change audit log.
+- `algodesk param reset NAME --reason R`: Reset parameter override back to shipped default.
+- `algodesk plugins list`: List discovered plugins with conformance status (`--json` supported).
+- `algodesk plugins check`: Validate plugin manifests and structures.
+- `algodesk plugins test KIND NAME`: Run plugin test suite and base contract checks, recording conformance.
+- `algodesk new plugin KIND NAME`: Scaffold a new plugin skeleton.
+- `algodesk journal verify`: Verify cryptographic hash chain integrity of the append-only journal.
+- `algodesk journal tail [-n N]`: Display recent events from the append-only journal.
+- `algodesk journal runs`: List execution runs recorded in the journal.
+
+#### Exit Codes
+
+- `0`: Success (all checks passed, command completed).
+- `1`: Handled domain error (`AlgoDeskError`), verification failure, or warning exit in `doctor`.
+- `2`: Usage error (invalid syntax, missing required options) or critical failure in `doctor`.
+- `70`: Internal error / unhandled bug (`--debug` prints traceback).

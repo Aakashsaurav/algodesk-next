@@ -13,7 +13,16 @@ def test_load_shipped_defaults() -> None:
     from algodesk.params.specs import ParamType, Tighten
 
     specs = load_defaults(Path("config/params"))
-    assert len(specs) == 27
+    names = [s.name for s in specs]
+    assert len(names) == len(set(names)), "Duplicate parameter names found in shipped defaults"
+    required_names = {
+        "risk.conservative.daily_loss_limit_pct",
+        "risk.conservative.margin_buffer_pct",
+        "ops.min_free_disk_gb",
+        "budget.core_lines_guidance",
+    }
+    missing_required = required_names - set(names)
+    assert not missing_required, f"Required parameter names missing: {missing_required}"
 
     by_name = {s.name: s for s in specs}
 

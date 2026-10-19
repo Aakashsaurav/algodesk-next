@@ -12,6 +12,9 @@ dependencies = [
     "typer>=0.9",
 ]
 
+[project.scripts]
+algodesk = "algodesk.cli:main"
+
 [dependency-groups]
 dev = [
     "ruff",

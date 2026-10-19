@@ -186,8 +186,9 @@ def test_backpressure_error_with_stalled_writer(
         j.append("test.event", {"idx": 2})
         j.append("test.event", {"idx": 3})
 
-        with pytest.raises(JournalError, match="exceeded 2 events and backpressure timeout"):
-            j.append("test.event", {"idx": 4})
+        with pytest.warns(UserWarning, match="Journal buffer full"):
+            with pytest.raises(JournalError, match="exceeded 2 events and backpressure timeout"):
+                j.append("test.event", {"idx": 4})
 
         stall_event.set()
 
