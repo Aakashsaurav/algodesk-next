@@ -64,7 +64,7 @@ owner = "core"
 [[param]]
 name = "budget.core_lines_guidance"
 type = "int"
-default = 6000
+default = 20000
 min = 1000
 max = 50000
 unit = "lines"
@@ -76,7 +76,7 @@ owner = "core"
 [[param]]
 name = "budget.core_modules_guidance"
 type = "int"
-default = 40
+default = 100
 min = 5
 max = 200
 unit = "modules"
@@ -88,7 +88,7 @@ owner = "core"
 [[param]]
 name = "budget.plugin_lines_guidance"
 type = "int"
-default = 1500
+default = 2500
 min = 100
 max = 10000
 unit = "lines"

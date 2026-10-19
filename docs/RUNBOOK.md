@@ -1,0 +1,46 @@
+# Runbook
+
+Owner: Aakash · Version: 1.0 · Date: 19 October 2026
+
+## Summary
+
+Checklists for working on AlgoDesk Next from the terminal. Always start a terminal with `source scripts/env.sh` so everything stays inside the project folder. Before committing, run `bash scripts/check.sh` and expect `CHECK: PASS`. Run `algodesk doctor` to see the health of the environment (exit 0 all good, 1 warnings, 2 critical). Change adjustable numbers only with `algodesk param set` and a reason. If a check fails, use the table at the end. Live-trading routines are added when the remote runner exists (milestone M7).
+
+## Every terminal session
+
+1. `cd` into the project folder.
+2. `source scripts/env.sh` (prints `ENV: isolated at <folder>`).
+3. Prefix every `uv` command with `source scripts/env.sh &&` if unsure.
+
+## Before every commit
+
+1. `bash scripts/check.sh` ends with `CHECK: PASS`.
+2. `git status --short` shows only files you expect (never `data/`, `logs/`, `.local/`, `_workbench/`).
+3. Commit and push; AI agents never run `git add`, `commit` or `push`.
+
+## Health check
+
+`algodesk doctor` (add `--verbose` for passes, `--only <id>` for one check, `--json` for machines). Fix every critical item before starting any real run.
+
+## Change a parameter
+
+1. `algodesk param show <prefix>` to see the current value.
+2. `algodesk param set <name> <value> --reason "<why>"`. Tightening applies at once.
+3. Loosening while a live strategy is armed needs `--confirm "LOOSEN <name>"` and takes effect at the next session start.
+4. `algodesk param history <name>` shows the audit trail; `algodesk param reset <name> --reason "<why>"` returns to the default.
+
+## Check the journal
+
+`algodesk journal verify` (hash chain), `algodesk journal tail -n 20`, `algodesk journal runs` (runs that did not close cleanly appear as crashed).
+
+## If something fails
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `ISOLATION` or `env.isolated` fails | New terminal without `env.sh` | `source scripts/env.sh`; rebuild `.venv` with `uv sync` if the interpreter path is wrong |
+| `DOCTOR` critical on `config.valid` | Bad key or value in a TOML file | Read the three error lines (file, key, fix) |
+| `lint` error `hard_coded_limit` | Number assigned to a limit-like name | Move it to `config/params/*.toml` |
+| `docs check` error | Missing Summary or stale `docs/INDEX.md` | Add the Summary; run `algodesk docs index` |
+| `secrets scan` finding | Secret-like text in a file | Replace with `secret:<name>`; never commit secrets |
+| `budget` FAIL | Too many dependencies | Remove one or approve the change |
+| Agent ran out of tokens | Work stopped mid-card | Read the last lines of `_workbench/handoff.md` and resume in a new conversation |

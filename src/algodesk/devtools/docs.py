@@ -210,6 +210,8 @@ def generate_index_content(root: Path) -> str:
         "<!-- Owner: core | Version: 0.0.0 -->",
         "<!-- generated, do not edit -->",
         "",
+        "## Documents",
+        "",
         "| Document | Summary |",
         "|---|---|",
     ]

@@ -147,3 +147,28 @@ def test_doctor_creates_no_files_read_only(runner: CliRunner, make_project: Any)
     assert res.exit_code in (0, 1, 2)
     after = set(proj.rglob("*"))
     assert before == after
+
+
+def test_doctor_disk_free_reads_core_toml_when_no_db(
+    runner: CliRunner, make_project: Any, monkeypatch: Any
+) -> None:
+    """When params.db does not exist, disk free check reads ops.min_free_disk_gb from core.toml."""
+    import collections
+
+    proj = make_project("doc_disk_fallback")
+    params_db = proj / "data" / "state" / "params.db"
+    if params_db.exists():
+        params_db.unlink()
+
+    core_toml = proj / "config" / "params" / "core.toml"
+    core_toml.parent.mkdir(parents=True, exist_ok=True)
+    core_toml.write_text('[[param]]\nname = "ops.min_free_disk_gb"\ntype = "int"\ndefault = 10\n')
+
+    DiskUsage = collections.namedtuple("DiskUsage", ["total", "used", "free"])
+    # 8 GB free -> should warn (< 10 GB)
+    monkeypatch.setattr(
+        "shutil.disk_usage",
+        lambda p: DiskUsage(200 * 1024**3, 192 * 1024**3, 8 * 1024**3),
+    )
+    res = runner.invoke(app, ["--root", str(proj), "doctor", "--only", "disk.free", "--verbose"])
+    assert "below minimum 10.0 GB" in res.output

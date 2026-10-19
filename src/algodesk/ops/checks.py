@@ -225,25 +225,51 @@ def _check_params_db(runtime: Runtime) -> CheckResult:
         )
 
 
-def _check_disk_free(runtime: Runtime) -> CheckResult:
-    min_gb = 5.0
+def _resolve_min_free_disk_gb(runtime: Runtime) -> float:
     if runtime.params is not None:
         try:
-            min_gb = float(runtime.params.get("ops.min_free_disk_gb"))
+            return float(runtime.params.get("ops.min_free_disk_gb"))
         except Exception:
-            min_gb = 5.0
+            pass
+
+    core_toml = runtime.root / "config" / "params" / "core.toml"
+    if not core_toml.is_file():
+        try:
+            from algodesk.ops.paths import find_project_root
+
+            repo_root = find_project_root()
+            core_toml = repo_root / "config" / "params" / "core.toml"
+        except Exception:
+            pass
+
+    if core_toml.is_file():
+        try:
+            with open(core_toml, "rb") as f:
+                data = tomllib.load(f)
+            for item in data.get("param", []):
+                if item.get("name") == "ops.min_free_disk_gb":
+                    return float(item.get("default", 0.0))
+        except Exception:
+            pass
+    return 0.0
+
+
+def _check_disk_free(runtime: Runtime) -> CheckResult:
+    required_gb = _resolve_min_free_disk_gb(runtime)
 
     try:
         usage = shutil.disk_usage(runtime.root)
         free_gb = usage.free / (1024**3)
-        if free_gb >= min_gb:
+        if free_gb >= required_gb:
             return CheckResult(
                 ok=True,
-                message=f"Free disk space {free_gb:.1f} GB meets guidance (>= {min_gb:.1f} GB)",
+                message=(
+                    f"Free disk space {free_gb:.1f} GB meets guidance (>= {required_gb:.1f} GB)"
+                ),
             )
         return CheckResult(
             ok=False,
-            message=f"Free disk space {free_gb:.1f} GB is below minimum {min_gb:.1f} GB",
+            message=f"Free disk space {free_gb:.1f} GB is below minimum {required_gb:.1f} GB",
             fix="Free up disk space on the volume hosting the workspace",
         )
     except Exception as exc:

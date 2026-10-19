@@ -8,12 +8,6 @@ symbol = "busy_timeout_ms"
 reason = "SQLite journal store busy handler timeout default for offline verification and tail tools"
 
 [[allow]]
-file = "src/algodesk/ops/checks.py"
-rule = "archlint.hard_coded_limit"
-symbol = "min_gb"
-reason = "Fallback minimum free disk space threshold when parameter registry is not initialized"
-
-[[allow]]
 file = "src/algodesk/params/registry.py"
 rule = "archlint.hard_coded_limit"
 symbol = "limit"

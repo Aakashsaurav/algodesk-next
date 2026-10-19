@@ -243,3 +243,154 @@ def test_param_reset_missing_reason_usage_error(runner: CliRunner, make_project:
         ["--root", str(proj), "param", "reset", "risk.conservative.daily_loss_limit_pct"],
     )
     assert result.exit_code == 2
+
+
+def test_param_set_loosen_non_live_applies_at_once(runner: CliRunner, make_project: Any) -> None:
+    """Loosening in non-live mode applies immediately without requiring confirm."""
+    proj = make_project("p_loosen_non_live")
+    result = runner.invoke(
+        app,
+        [
+            "--root",
+            str(proj),
+            "param",
+            "set",
+            "risk.conservative.daily_loss_limit_pct",
+            "2.0",
+            "--reason",
+            "loosen in non-live mode",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "OK: risk.conservative.daily_loss_limit_pct -> 2.0 (loosen, applied)" in result.output
+
+    # Effective value updated immediately
+    show_res = runner.invoke(
+        app,
+        ["--root", str(proj), "param", "show", "risk.conservative.daily_loss_limit_pct"],
+    )
+    assert "2.0" in show_res.output
+
+
+def test_param_set_confirm_option_accepted_in_non_live(
+    runner: CliRunner, make_project: Any
+) -> None:
+    """The --confirm option is accepted in non-live mode, and non-live never rejects."""
+    proj = make_project("p_confirm_accepted")
+    # Even with an arbitrary or matching confirm phrase, non-live applies at once
+    result = runner.invoke(
+        app,
+        [
+            "--root",
+            str(proj),
+            "param",
+            "set",
+            "risk.conservative.daily_loss_limit_pct",
+            "2.2",
+            "--reason",
+            "loosen with confirm",
+            "--confirm",
+            "LOOSEN risk.conservative.daily_loss_limit_pct",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "OK: risk.conservative.daily_loss_limit_pct -> 2.2 (loosen, applied)" in result.output
+
+    # Wrong confirm phrase is NOT rejected in non-live mode
+    result_arbitrary = runner.invoke(
+        app,
+        [
+            "--root",
+            str(proj),
+            "param",
+            "set",
+            "risk.conservative.daily_loss_limit_pct",
+            "2.4",
+            "--reason",
+            "loosen with arbitrary confirm",
+            "--confirm",
+            "ARBITRARY_PHRASE",
+        ],
+    )
+    assert result_arbitrary.exit_code == 0
+    assert (
+        "OK: risk.conservative.daily_loss_limit_pct -> 2.4 (loosen, applied)"
+        in result_arbitrary.output
+    )
+
+
+def test_param_set_live_armed_requires_and_validates_confirm(
+    runner: CliRunner, make_project: Any, monkeypatch: Any
+) -> None:
+    """When registry reports live and armed, wrong phrase rejected; correct phrase stages."""
+    import sys
+
+    from algodesk.api.kinds import Mode
+
+    proj = make_project("p_live_armed")
+    cli_mod = sys.modules["algodesk.cli.app"]
+    orig_open_rt = cli_mod._open_rt
+
+    def armed_live_open_rt(ctx: Any, *, ensure: bool = False) -> Any:
+        rt = orig_open_rt(ctx, ensure=ensure)
+        if rt.params is not None:
+            rt.params._mode = Mode.LIVE
+            rt.params._armed = lambda: True
+        return rt
+
+    monkeypatch.setattr(cli_mod, "_open_rt", armed_live_open_rt)
+
+    # 1. Missing confirm is rejected
+    res_no_confirm = runner.invoke(
+        app,
+        [
+            "--root",
+            str(proj),
+            "param",
+            "set",
+            "risk.conservative.daily_loss_limit_pct",
+            "2.0",
+            "--reason",
+            "loosen in armed live",
+        ],
+    )
+    assert res_no_confirm.exit_code == 1
+    assert "requires typed confirmation" in res_no_confirm.output
+
+    # 2. Wrong phrase is rejected
+    res_wrong_confirm = runner.invoke(
+        app,
+        [
+            "--root",
+            str(proj),
+            "param",
+            "set",
+            "risk.conservative.daily_loss_limit_pct",
+            "2.0",
+            "--reason",
+            "loosen in armed live",
+            "--confirm",
+            "WRONG PHRASE",
+        ],
+    )
+    assert res_wrong_confirm.exit_code == 1
+    assert "requires typed confirmation" in res_wrong_confirm.output
+
+    # 3. Correct phrase is accepted and stages as pending
+    res_ok = runner.invoke(
+        app,
+        [
+            "--root",
+            str(proj),
+            "param",
+            "set",
+            "risk.conservative.daily_loss_limit_pct",
+            "2.0",
+            "--reason",
+            "loosen in armed live",
+            "--confirm",
+            "LOOSEN risk.conservative.daily_loss_limit_pct",
+        ],
+    )
+    assert res_ok.exit_code == 0
+    assert "OK: risk.conservative.daily_loss_limit_pct -> 2.0 (loosen, pending)" in res_ok.output
