@@ -26,7 +26,7 @@ AlgoDesk Next is a small, pluggable trading workbench for Indian markets. A tiny
 
 1. **Platform, not a strategy.** No strategy, broker or fee detail lives in the core. Strategy ideas (arbitrage, ORB, SEPA) become plugins with their own one-page specs.
 2. **One engine, four modes.** Research, backtest, paper and live run the *same* strategy, risk and order code. Only the clock, the data feed and the execution venue change. This removes the old AlgoDesk's two-parallel-paths problem.
-3. **Complexity guidance (approved; advisory).** The old AlgoDesk grew to about 187 modules, 40,000 lines and 45 planning documents. We aim for a small core (roughly 6,000 lines) and small plugins (roughly 1,500 lines), but these are **guidance, not hard limits**: code stays as short as possible without costing quality, documentation or speed, and may grow when justified. Structural rules (one order path, no stubs, import rules) remain hard (§2.2).
+3. **Complexity guidance (approved; advisory).** The old AlgoDesk grew to about 187 modules, 40,000 lines and 45 planning documents. We aim for a small core (roughly 20,000 lines) and small plugins (roughly 2,500 lines), but these are **guidance, not hard limits**: code stays as short as possible without costing quality, documentation or speed, and may grow when justified. Structural rules (one order path, no stubs, import rules) remain hard (§2.2).
 4. **Central parameter registry (new).** Risk profiles, budgets, thresholds and schedules are registered in one place, changeable at any time by CLI or Telegram, every change journaled, nothing hard-coded (§4.15).
 5. **Safety is built in.** Invariants live in code. Strategies move through promotion gates with stored evidence. Autonomy has levels. The kill-switch persists.
 6. **Data.** yfinance, with its full capability, is the default source for research and backtests; you can name any source per run. Daily, 1-minute and live ticks are in v1, with tick-level backtests on ticks we record. Live data comes from Upstox until another broker is configured; paper and live modes require an explicit `live_suitable` source, and yfinance is accepted there only through a recorded override (§4.3).
@@ -148,8 +148,8 @@ SaaS or multi-user features; REST API; browser UI (deferred to a later version, 
 
 | ID | Rule | Limit |
 |---|---|---|
-| CB-1 | Core size (excluding tests) | Guidance: about 6,000 lines, about 40 modules (advisory) |
-| CB-2 | Plugin size | Guidance: about 1,500 lines each (advisory) |
+| CB-1 | Core size (excluding tests) | Guidance: about 20,000 lines, about 100 modules (advisory) |
+| CB-2 | Plugin size | Guidance: about 2,500 lines each (advisory) |
 | CB-3 | One implementation per concern | One client per broker, one order path, one calendar service, one fee engine. Enforced by import rules. |
 | CB-4 | Feature admission | Needs a use case, an approved requirement ID, a test and a documentation summary line |
 | CB-5 | No success-returning stubs | Unimplemented capability raises `NotSupported`; its capability flag is false |
@@ -622,7 +622,7 @@ Measure, do not guess: the probe tool reports each stage, and the platform's own
 
 | ID | Invariant |
 |---|---|
-| INV-1 | Research, backtest and paper processes cannot load an order-capable venue plugin. |
+| INV-1 | Research, backtest and paper processes cannot load an order-capable venue plugin through the registry; its unit tests import it only with fakes and no credentials, and order-capable credentials exist only on the live runner. |
 | INV-2 | Live orders need arming (FR-LIV-5) per strategy. |
 | INV-3 | Orders reach a venue only through the order manager after risk approval. |
 | INV-4 | The kill-switch persists across restarts. |
@@ -908,7 +908,7 @@ Rule (D-14): nothing paid without your explicit approval after verified results.
 | D-25 | Before any module is built, Claude provides a design of at least 5 pages: architecture, features, scope for improvement, connections, and modern, HFT and enterprise practices. |
 | D-26 | Development is mostly in Antigravity, with the agent switching between Claude and Gemini by free tokens: prompts and tasks must be token-lean and give consistent output across agents. |
 | D-27 | Claude provides skills for coding, project management and other practices. |
-| D-28 | Code-size numbers (about 6,000 core lines, about 1,500 per plugin, M0 about 1,700) are guidance, not hard limits: keep code minimal but never at the cost of quality, documentation or speed; it may grow slightly if needed. |
+| D-28 | Code-size numbers (about 20,000 core lines, about 2,500 per plugin) are guidance, not hard limits: keep code minimal but never at the cost of quality, documentation or speed; it may grow slightly if needed. |
 | D-29 | Python 3.13, installed and pinned with `uv`, chosen on your request for speed, library compatibility and cloud portability (§3.8). |
 | D-30 | M0 design approved: `uv`, a free private GitHub repository for code backup, the parameter change rules (tighten now, loosen gated) and the ten-task breakdown. Old AlgoDesk code uploaded; reuse inventory delivered. |
 | D-31 | Config, manifests, parameter defaults and fee schedules use TOML. |

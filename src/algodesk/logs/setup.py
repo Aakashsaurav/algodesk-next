@@ -101,7 +101,7 @@ class JsonLogFormatter(logging.Formatter):
                 data[k] = v
         if record.exc_text:
             data["exception"] = record.exc_text
-        return json.dumps(data, ensure_ascii=False)
+        return json.dumps(data, ensure_ascii=False, default=str)
 
 
 class TextLogFormatter(logging.Formatter):
@@ -187,6 +187,27 @@ class LoggingHandle:
         self.close()
 
 
+def _parse_log_level(level: str | int) -> int:
+    if isinstance(level, str):
+        level_name = level.upper()
+        if hasattr(logging, level_name):
+            val = getattr(logging, level_name)
+            if isinstance(val, int):
+                return val
+        raise ConfigError(
+            what=f"Invalid log level '{level}'",
+            where="logs.setup",
+            fix="Use a valid log level such as DEBUG, INFO, WARNING, ERROR, or CRITICAL",
+        )
+    if isinstance(level, int):
+        return level
+    raise ConfigError(
+        what=f"Invalid log level type '{type(level).__name__}'",
+        where="logs.setup",
+        fix="Pass log level as a string (e.g. 'INFO') or integer (e.g. logging.INFO)",
+    )
+
+
 def setup_logging(
     *,
     level: str | int,
@@ -215,7 +236,7 @@ def setup_logging(
 
     logger = logging.getLogger("algodesk")
     logger.propagate = False
-    log_level = getattr(logging, str(level).upper()) if isinstance(level, str) else level
+    log_level = _parse_log_level(level)
     logger.setLevel(log_level)
 
     # Idempotent: close and remove existing handlers

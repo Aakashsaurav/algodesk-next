@@ -21,6 +21,7 @@ class CheckResult:
     ok: bool
     message: str
     fix: str | None = None
+    severity: Severity | None = None
 
 
 @dataclass(frozen=True)

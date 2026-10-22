@@ -261,11 +261,13 @@ def test_backpressure_accepted_events_persist_after_error(
 def test_writer_thread_failure_reraised(tmp_path: Path) -> None:
     db_path = tmp_path / "fail.db"
     settings = _settings()
-    with Journal(db_path, settings=settings) as j:
-        j.start_run("paper", "v1", "c1", "r1")
-        j._writer_exception = sqlite3.OperationalError("Simulated disk I/O failure")
-        with pytest.raises(JournalError, match="Simulated disk I/O failure"):
-            j.append("test.event", {"x": 1})
+    j = Journal(db_path, settings=settings)
+    j.start_run("paper", "v1", "c1", "r1")
+    j._writer_exception = sqlite3.OperationalError("Simulated disk I/O failure")
+    with pytest.raises(JournalError, match="Simulated disk I/O failure"):
+        j.append("test.event", {"x": 1})
+    with pytest.raises(JournalError, match="Simulated disk I/O failure"):
+        j.close()
 
 
 def test_idempotent_close(tmp_path: Path) -> None:

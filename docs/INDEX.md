@@ -2,7 +2,7 @@
 
 Auto-generated living documentation index for AlgoDesk Next.
 
-<!-- Owner: core | Version: 0.0.0 -->
+<!-- Owner: Aakash | Version: 1.0 -->
 <!-- generated, do not edit -->
 
 ## Documents
@@ -14,4 +14,4 @@ Auto-generated living documentation index for AlgoDesk Next.
 | [PLUGINS.md](PLUGINS.md) | A plugin is a folder `plugins/<kind>/<name>/` with a `plugin.toml` manifest, `plugin.py`, a README that starts with a Summary, and a `tests/` folder. It imports only `algodesk.api` (plus packages named in its manifest), declares every capability it supports, and fails loudly for anything else. `algodesk new plugin <kind> <name>` generates a valid skeleton; `algodesk plugins test <kind> <name>` runs its tests and base-contract checks and records a conformance pass tied to its code hash. Paper and live modes load only plugins with a current pass. |
 | [PRD.md](PRD.md) | AlgoDesk Next is a small, pluggable trading workbench for Indian markets. A tiny core runs the workflow; everything that varies (brokers, data sources, execution venues, fees, indicators, screens, strategies, risk rules, notifiers, calendars, secrets, transports) is a separate plugin. One engine serves research, backtest, paper and live. Safety invariants live in code, strategies earn live status through promotion gates, every adjustable number sits in a central registry, and documents stay short and summary-first. This PRD is the requirements source for milestones M0 to M9; the Overview lists the decisions that shape everything, and later sections hold numbered requirements with acceptance tests. |
 | [RUNBOOK.md](RUNBOOK.md) | Checklists for working on AlgoDesk Next from the terminal. Always start a terminal with `source scripts/env.sh` so everything stays inside the project folder. Before committing, run `bash scripts/check.sh` and expect `CHECK: PASS`. Run `algodesk doctor` to see the health of the environment (exit 0 all good, 1 warnings, 2 critical). Change adjustable numbers only with `algodesk param set` and a reason. If a check fails, use the table at the end. Live-trading routines are added when the remote runner exists (milestone M7). |
-| [STATUS.md](STATUS.md) | Milestone M0 (foundations) is complete except its last task: the core is built, tested and fenced by automatic checks. The next work is the M1 design document, then the walking skeleton: a first paper session on live Upstox data with a demo strategy. No live trading exists and none is planned before the gates in the PRD are met. Updated at every milestone. |
+| [STATUS.md](STATUS.md) | Milestone M0 (foundations) is complete and hardened after an independent code review. The core is built, tested and fenced by automatic checks. The next work is the M1 module design (at least five pages) for approval, then the walking skeleton: a first paper session on live Upstox data with a demo strategy. No live trading exists and none is planned before the gates in the PRD are met. |

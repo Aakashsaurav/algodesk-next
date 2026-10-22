@@ -34,6 +34,9 @@ _BASE64_HEX_32_PATTERN = re.compile(
 )
 
 
+_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+
+
 def _replace_kv(m: re.Match[str]) -> str:
     prefix = m.group(1)
     if m.group(2) is not None:
@@ -41,6 +44,13 @@ def _replace_kv(m: re.Match[str]) -> str:
     if m.group(3) is not None:
         return f"{prefix}'{MASK}'"
     return f"{prefix}{MASK}"
+
+
+def _replace_base64_or_hex(m: re.Match[str]) -> str:
+    s = m.group(0)
+    if len(s) in (40, 64) and all(c in _HEX_CHARS for c in s):
+        return s
+    return MASK
 
 
 class Scrubber:
@@ -86,7 +96,7 @@ class Scrubber:
 
         text = _BEARER_PATTERN.sub(rf"\g<1>{MASK}", text)
         text = _KEY_VALUE_PATTERN.sub(_replace_kv, text)
-        text = _BASE64_HEX_32_PATTERN.sub(MASK, text)
+        text = _BASE64_HEX_32_PATTERN.sub(_replace_base64_or_hex, text)
 
         for pat in self._extra_patterns:
             text = pat.sub(MASK, text)

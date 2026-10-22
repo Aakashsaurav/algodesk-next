@@ -31,7 +31,14 @@ class VerifyResult:
 
 def canonical_json(payload: Mapping[str, Any]) -> str:
     """Serialize dictionary to canonical JSON with sorted keys and no whitespace."""
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    try:
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (ValueError, TypeError) as exc:
+        raise JournalError(
+            what=f"Cannot serialize payload to canonical JSON: {exc}",
+            where="journal.canonical_json",
+            fix="Ensure payload contains finite, JSON-serializable values",
+        ) from exc
 
 
 def compute_event_hash(
@@ -88,6 +95,7 @@ def init_journal_db(conn: sqlite3.Connection, busy_timeout_ms: int) -> None:
     conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms};")
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA synchronous = NORMAL;")
 
     with conn:
         conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);")
@@ -225,11 +233,12 @@ def verify_journal(path: Path | str, *, busy_timeout_ms: int = 5000) -> VerifyRe
             "SELECT seq, run_id, ts_utc, kind, payload_json, prev_hash, hash "
             "FROM events ORDER BY seq ASC;"
         )
-        rows = cur.fetchall()
+        count = 0
         expected_seq = 1
         expected_prev_hash = GENESIS_HASH
 
-        for row in rows:
+        for row in cur:
+            count += 1
             ok, reason, next_hash = _verify_row(row, expected_seq, expected_prev_hash)
             if not ok or next_hash is None:
                 return VerifyResult(
@@ -241,7 +250,7 @@ def verify_journal(path: Path | str, *, busy_timeout_ms: int = 5000) -> VerifyRe
             expected_seq += 1
             expected_prev_hash = next_hash
 
-        return VerifyResult(ok=True, checked=len(rows))
+        return VerifyResult(ok=True, checked=count)
     finally:
         conn.close()
 
@@ -312,6 +321,12 @@ class JournalReader:
             "unclosed_runs_count": unclosed,
         }
 
+    def runs(self) -> list[dict[str, Any]]:
+        """Return all runs ordered by started_utc."""
+        cur = self._conn.cursor()
+        cur.execute("SELECT * FROM runs ORDER BY started_utc ASC;")
+        return [dict(r) for r in cur.fetchall()]
+
     def unclosed_runs(self) -> list[dict[str, Any]]:
         """Return all runs currently marked as running."""
         cur = self._conn.cursor()
@@ -353,6 +368,12 @@ def stats(path: Path | str, *, busy_timeout_ms: int = 5000) -> dict[str, Any]:
     """Return journal statistics from path."""
     with JournalReader(path, busy_timeout_ms=busy_timeout_ms) as reader:
         return reader.stats()
+
+
+def runs(path: Path | str, *, busy_timeout_ms: int = 5000) -> list[dict[str, Any]]:
+    """Return all runs from journal at path."""
+    with JournalReader(path, busy_timeout_ms=busy_timeout_ms) as reader:
+        return reader.runs()
 
 
 def unclosed_runs(path: Path | str, *, busy_timeout_ms: int = 5000) -> list[dict[str, Any]]:

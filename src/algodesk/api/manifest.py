@@ -12,6 +12,7 @@ from algodesk.api.errors import ManifestError, NotSupported
 from algodesk.api.kinds import API_VERSION, Mode, PluginKind
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
+NAME_PATTERN = _NAME_RE
 _SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?"
@@ -121,7 +122,7 @@ class PluginManifest(BaseModel):
             raise NotSupported(
                 what=f"Capability '{capability}' is not supported",
                 where=f"plugin '{self.name}' (kind={self.kind})",
-                fix=f"Add '{capability}: true' to the plugin's capabilities in plugin.yaml",
+                fix=f"Set {capability} = true under [capabilities] in plugin.toml",
             )
 
 

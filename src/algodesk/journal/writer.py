@@ -6,6 +6,7 @@ INV-8: Single writer, write-ahead durability, tamper-evident audit trail.
 from __future__ import annotations
 
 import collections
+import math
 import re
 import secrets
 import sqlite3
@@ -49,8 +50,17 @@ class JournalSettings:
 
 def encode_payload(val: Any) -> Any:
     """Encode payload value into JSON-compatible primitives."""
-    if isinstance(val, (str, int, float, bool)) or val is None:
+    if isinstance(val, (str, int, bool)) or val is None:
         return val
+    if isinstance(val, float):
+        if math.isnan(val) or math.isinf(val):
+            raise JournalError(
+                what=f"Float value '{val}' is not valid: NaN and infinity are rejected",
+                where="journal.encoder",
+                fix="Ensure all numerical values are finite",
+            )
+        return val
+
     if isinstance(val, datetime):
         if val.tzinfo is None:
             return val.replace(tzinfo=UTC).isoformat()
@@ -160,35 +170,46 @@ class Journal:
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock_file = WriterLock(self.db_path.with_name(f"{self.db_path.name}.lock"))
-        self._lock_file.acquire()
-
-        self._db_lock = threading.Lock()
-        self._conn = sqlite3.connect(
-            str(self.db_path),
-            timeout=self.settings.backpressure_timeout_ms / 1000.0,
-            check_same_thread=False,
-        )
-        with self._db_lock:
-            init_journal_db(self._conn, self.settings.backpressure_timeout_ms)
-
-        self._cond = threading.Condition()
-
-        self._queue: collections.deque[_PendingEvent] = collections.deque()
-        self._writer_exception: Exception | None = None
-        self._stopped = False
         self._closed = False
-        self._last_seq: int = 0
-        self._last_hash: str = GENESIS_HASH
-        self._committed_seq: int = 0
-        self._current_run_id: str | None = None
+        conn: sqlite3.Connection | None = None
+        try:
+            self._lock_file.acquire()
 
-        self._init_state_and_recover()
-        self._worker_thread = threading.Thread(
-            target=self._writer_loop,
-            name="JournalWriterThread",
-            daemon=True,
-        )
-        self._worker_thread.start()
+            self._db_lock = threading.Lock()
+            conn = sqlite3.connect(
+                str(self.db_path),
+                timeout=self.settings.backpressure_timeout_ms / 1000.0,
+                check_same_thread=False,
+            )
+            with self._db_lock:
+                init_journal_db(conn, self.settings.backpressure_timeout_ms)
+
+            self._conn = conn
+            self._cond = threading.Condition()
+
+            self._queue: collections.deque[_PendingEvent] = collections.deque()
+            self._writer_exception: Exception | None = None
+            self._stopped = False
+            self._last_seq: int = 0
+            self._last_hash: str = GENESIS_HASH
+            self._committed_seq: int = 0
+            self._current_run_id: str | None = None
+
+            self._init_state_and_recover()
+            self._worker_thread = threading.Thread(
+                target=self._writer_loop,
+                name="JournalWriterThread",
+                daemon=True,
+            )
+            self._worker_thread.start()
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._lock_file.release()
+            raise
 
     def _init_state_and_recover(self) -> None:
         cur = self._conn.cursor()
@@ -264,6 +285,7 @@ class Journal:
 
     def end_run(self, status: str) -> None:
         """End current run with status ('ok', 'error', 'aborted')."""
+        self._check_writer_error()
         if status not in ("ok", "error", "aborted"):
             raise JournalError(
                 what=f"Invalid run status '{status}': must be 'ok', 'error', or 'aborted'",
@@ -280,17 +302,17 @@ class Journal:
                 )
             now_ts = self._clock().astimezone(UTC).isoformat()
             with self._db_lock:
-                self._conn.execute(
-                    "UPDATE runs SET status = ?, ended_utc = ? WHERE run_id = ?;",
-                    (status, now_ts, self._current_run_id),
-                )
-                self._conn.commit()
+                if self._conn is not None:
+                    self._conn.execute(
+                        "UPDATE runs SET status = ?, ended_utc = ? WHERE run_id = ?;",
+                        (status, now_ts, self._current_run_id),
+                    )
+                    self._conn.commit()
             self._current_run_id = None
 
     def _check_writer_error(self) -> None:
         if self._writer_exception is not None:
             exc = self._writer_exception
-            self._writer_exception = None
             if isinstance(exc, JournalError):
                 raise exc
             raise JournalError(
@@ -440,6 +462,8 @@ class Journal:
                 self._cond.notify_all()
         except Exception as exc:
             self._writer_exception = exc
+            with self._cond:
+                self._cond.notify_all()
         finally:
             for item in batch:
                 if item.durable_event is not None:
@@ -448,22 +472,32 @@ class Journal:
     def flush(self) -> None:
         """Block until all queued events are committed to disk."""
         self._check_writer_error()
+        timeout = self.settings.backpressure_timeout_ms / 1000.0
+        deadline = time.monotonic() + timeout
         with self._cond:
             target = self._last_seq
             self._cond.notify_all()
             while self._committed_seq < target and not self._stopped:
                 self._check_writer_error()
-                self._cond.wait(self.settings.flush_interval_ms / 1000.0)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise JournalError(
+                        what=f"Flush timed out after {self.settings.backpressure_timeout_ms}ms",
+                        where="journal.flush",
+                        fix="Check disk write performance or increase backpressure_timeout_ms",
+                    )
+                self._cond.wait(min(remaining, self.settings.flush_interval_ms / 1000.0))
         self._check_writer_error()
 
     def close(self) -> None:
         """Flush pending events, stop background thread, and release lock."""
         if self._closed:
             return
+        flush_exc: Exception | None = None
         try:
             self.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            flush_exc = exc
 
         with self._cond:
             self._stopped = True
@@ -478,10 +512,34 @@ class Journal:
             except Exception:
                 pass
         self._lock_file.release()
+
         self._closed = True
+
+        if self._writer_exception is not None:
+            writer_err = self._writer_exception
+            if isinstance(writer_err, JournalError):
+                raise writer_err
+            raise JournalError(
+                what=f"Journal background writer encountered error: {writer_err}",
+                where="journal.close",
+                fix="Inspect disk space, SQLite database integrity or logs",
+            ) from writer_err
+
+        if flush_exc is not None:
+            if isinstance(flush_exc, JournalError):
+                raise flush_exc
+            raise JournalError(
+                what=f"Journal events could not be flushed: {flush_exc}",
+                where="journal.close",
+                fix="Inspect database state or increase backpressure_timeout_ms",
+            ) from flush_exc
 
     def __enter__(self) -> Journal:
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            if exc_type is None:
+                raise

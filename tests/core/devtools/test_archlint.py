@@ -176,7 +176,7 @@ def test_allow_list_suppresses_finding(tmp_path: Path) -> None:
     cfg_allow = tmp_path / "config" / "archlint_allow.toml"
     cfg_allow.write_text(
         "[[allow]]\n"
-        "file = 'limits.py'\n"
+        "file = 'src/algodesk/limits.py'\n"
         "rule = 'archlint.hard_coded_limit'\n"
         "symbol = 'max_retry_limit'\n"
         "reason = 'Display pagination limit'\n"

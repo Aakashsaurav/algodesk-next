@@ -39,3 +39,9 @@ Short decision records (context, decision, reason) in the order they were taken.
 **ADR-015 yfinance is the default research data source, never a live source.** Live and paper need an explicit `live_suitable` source (Upstox); yfinance only by a recorded override.
 
 **ADR-016 Static IP host decided at M7.** Oracle Always Free is the lead candidate; AWS credits are the fallback; no account is created before then.
+
+**ADR-017 Size guidance raised to 20,000 core lines, 100 modules, 2,500 per plugin.** M0 alone was 5,445 lines (about three times the early estimate) because validation, messages and tests were written carefully; size stays advisory.
+
+**ADR-018 Shipped parameter defaults are authoritative.** The database stores overrides and history only; a changed default never breaks startup.
+
+**ADR-019 Parameter and journal writes are transactional and fail closed.** A journal write failure stops all further appends until reopened.

@@ -136,11 +136,22 @@ def load_allow_list(root: Path) -> tuple[list[dict[str, Any]], list[LintFinding]
                         message=msg,
                     )
                 )
+            symbol = str(item.get("symbol", "")).strip()
+            if not symbol:
+                msg = f"Allow-list entry for '{item.get('file', '')}' has an empty symbol"
+                findings.append(
+                    LintFinding(
+                        path="config/archlint_allow.toml",
+                        line=idx + 1,
+                        rule="archlint.empty_symbol",
+                        message=msg,
+                    )
+                )
             entries.append(
                 {
-                    "file": str(item.get("file", "")),
-                    "rule": str(item.get("rule", "")),
-                    "symbol": str(item.get("symbol", "")),
+                    "file": str(item.get("file", "")).strip(),
+                    "rule": str(item.get("rule", "")).strip(),
+                    "symbol": symbol,
                     "reason": reason,
                     "used": False,
                 }
@@ -335,36 +346,51 @@ class _AstChecker(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> None:
         if self._check_limits:
             for target in node.targets:
+                target_name = ""
                 if isinstance(target, ast.Name):
-                    if _matches_limit_pattern(target.id, self.cfg.limit_patterns):
-                        if _is_numeric_literal(node.value, self.cfg.ignore_numeric_values):
-                            self.findings.append(
-                                LintFinding(
-                                    path=self.rel_path,
-                                    line=node.lineno,
-                                    rule="archlint.hard_coded_limit",
-                                    symbol=target.id,
-                                    message=f"Hard-coded limit assigned to variable '{target.id}'",
-                                )
+                    target_name = target.id
+                elif isinstance(target, ast.Attribute):
+                    target_name = target.attr
+                if target_name and _matches_limit_pattern(target_name, self.cfg.limit_patterns):
+                    if _is_numeric_literal(node.value, self.cfg.ignore_numeric_values):
+                        self.findings.append(
+                            LintFinding(
+                                path=self.rel_path,
+                                line=node.lineno,
+                                rule="archlint.hard_coded_limit",
+                                symbol=target_name,
+                                message=f"Hard-coded limit in '{target_name}'",
                             )
+                        )
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if self._check_limits and isinstance(node.target, ast.Name) and node.value:
-            if _matches_limit_pattern(node.target.id, self.cfg.limit_patterns):
+        if self._check_limits and node.value:
+            target_name = ""
+            if isinstance(node.target, ast.Name):
+                target_name = node.target.id
+            elif isinstance(node.target, ast.Attribute):
+                target_name = node.target.attr
+            if target_name and _matches_limit_pattern(target_name, self.cfg.limit_patterns):
                 if _is_numeric_literal(node.value, self.cfg.ignore_numeric_values):
                     self.findings.append(
                         LintFinding(
                             path=self.rel_path,
                             line=node.lineno,
                             rule="archlint.hard_coded_limit",
-                            symbol=node.target.id,
-                            message=f"Hard-coded limit in annotation assignment '{node.target.id}'",
+                            symbol=target_name,
+                            message=f"Hard-coded limit in annotation assignment '{target_name}'",
                         )
                     )
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
+        self._check_banned_calls(node)
+        if self._check_limits:
+            self._check_call_limits(node)
+        self.generic_visit(node)
+
+    def _check_banned_calls(self, node: ast.Call) -> None:
         func_name = ""
         if isinstance(node.func, ast.Name):
             func_name = node.func.id
@@ -396,20 +422,75 @@ class _AstChecker(ast.NodeVisitor):
                             )
                         )
 
-        if self._check_limits:
-            for kw in node.keywords:
-                if kw.arg and _matches_limit_pattern(kw.arg, self.cfg.limit_patterns):
-                    if _is_numeric_literal(kw.value, self.cfg.ignore_numeric_values):
-                        self.findings.append(
-                            LintFinding(
-                                path=self.rel_path,
-                                line=node.lineno,
-                                rule="archlint.hard_coded_limit",
-                                symbol=kw.arg,
-                                message=f"Hard-coded limit in keyword argument '{kw.arg}'",
-                            )
+    def _check_call_limits(self, node: ast.Call) -> None:
+        for kw in node.keywords:
+            if kw.arg and _matches_limit_pattern(kw.arg, self.cfg.limit_patterns):
+                if _is_numeric_literal(kw.value, self.cfg.ignore_numeric_values):
+                    self.findings.append(
+                        LintFinding(
+                            path=self.rel_path,
+                            line=node.lineno,
+                            rule="archlint.hard_coded_limit",
+                            symbol=kw.arg,
+                            message=f"Hard-coded limit in keyword argument '{kw.arg}'",
                         )
-        self.generic_visit(node)
+                    )
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "get":
+            self._check_get_call_limit(node)
+        elif isinstance(node.func, ast.Name) and node.func.id == "getattr":
+            self._check_getattr_call_limit(node)
+
+    def _check_get_call_limit(self, node: ast.Call) -> None:
+        if not node.args:
+            return
+        key_node = node.args[0]
+        if not (isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)):
+            return
+        key_str = key_node.value
+        if not _matches_limit_pattern(key_str, self.cfg.limit_patterns):
+            return
+        default_node = node.args[1] if len(node.args) >= 2 else None
+        if default_node is None:
+            for kw in node.keywords:
+                if kw.arg == "default":
+                    default_node = kw.value
+                    break
+        if default_node and _is_numeric_literal(default_node, self.cfg.ignore_numeric_values):
+            self.findings.append(
+                LintFinding(
+                    path=self.rel_path,
+                    line=node.lineno,
+                    rule="archlint.hard_coded_limit",
+                    symbol=key_str,
+                    message=f"Hard-coded limit in .get default for '{key_str}'",
+                )
+            )
+
+    def _check_getattr_call_limit(self, node: ast.Call) -> None:
+        if len(node.args) < 2:
+            return
+        attr_node = node.args[1]
+        if not (isinstance(attr_node, ast.Constant) and isinstance(attr_node.value, str)):
+            return
+        attr_str = attr_node.value
+        if not _matches_limit_pattern(attr_str, self.cfg.limit_patterns):
+            return
+        default_node = node.args[2] if len(node.args) >= 3 else None
+        if default_node is None:
+            for kw in node.keywords:
+                if kw.arg == "default":
+                    default_node = kw.value
+                    break
+        if default_node and _is_numeric_literal(default_node, self.cfg.ignore_numeric_values):
+            self.findings.append(
+                LintFinding(
+                    path=self.rel_path,
+                    line=node.lineno,
+                    rule="archlint.hard_coded_limit",
+                    symbol=attr_str,
+                    message=f"Hard-coded limit in getattr default for '{attr_str}'",
+                )
+            )
 
     def visit_Import(self, node: ast.Import) -> None:
         if self.is_plugin:
@@ -496,9 +577,9 @@ def _apply_allow_list(
     for f in findings:
         matched = False
         for entry in allow_entries:
-            file_match = f.path.endswith(entry["file"]) or entry["file"] in f.path
-            rule_match = entry["rule"] in f.rule or f.rule in entry["rule"]
-            symbol_match = not entry["symbol"] or entry["symbol"] == f.symbol
+            file_match = f.path == entry["file"]
+            rule_match = f.rule == entry["rule"]
+            symbol_match = bool(entry["symbol"]) and entry["symbol"] == f.symbol
             if file_match and rule_match and symbol_match:
                 entry["used"] = True
                 matched = True

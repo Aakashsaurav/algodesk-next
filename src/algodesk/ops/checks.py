@@ -7,24 +7,17 @@ import shutil
 import sqlite3
 import sys
 import tomllib
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from algodesk.api.checks import CheckResult, DoctorCheck, Severity
+from algodesk.api.errors import ConfigError
 from algodesk.journal.store import unclosed_runs, verify_journal
 from algodesk.params.store import SCHEMA_VERSION
 from algodesk.registry.base_checks import registry_doctor_checks
 
 if TYPE_CHECKING:
     from algodesk.ops.runtime import Runtime
-
-
-@dataclass(frozen=True)
-class CheckResultWithSeverity(CheckResult):
-    """CheckResult with custom severity overriding the DoctorCheck default."""
-
-    severity: Severity | None = None
 
 
 def _satisfies_requires_python(ver: tuple[int, int, int], spec: str) -> bool:
@@ -152,7 +145,7 @@ def _check_paths_ready(runtime: Runtime) -> CheckResult:
     for d in dirs:
         d_res = d.resolve()
         if not (d_res.is_relative_to(root_resolved) or d_res == root_resolved):
-            return CheckResultWithSeverity(
+            return CheckResult(
                 ok=False,
                 message=f"Path '{d}' escapes project root '{root_resolved}'",
                 fix="Configure paths to reside inside project workspace",
@@ -165,7 +158,7 @@ def _check_paths_ready(runtime: Runtime) -> CheckResult:
 
     if unwritable:
         names = ", ".join(str(p) for p in unwritable)
-        return CheckResultWithSeverity(
+        return CheckResult(
             ok=False,
             message=f"Directories are not writable: {names}",
             fix="Grant write permissions to workspace directories",
@@ -174,7 +167,7 @@ def _check_paths_ready(runtime: Runtime) -> CheckResult:
 
     if missing:
         names = ", ".join(str(p) for p in missing)
-        return CheckResultWithSeverity(
+        return CheckResult(
             ok=False,
             message=f"Directories not created yet: {names}",
             fix="Run runtime with ensure=True or create directories",
@@ -214,6 +207,30 @@ def _check_params_db(runtime: Runtime) -> CheckResult:
                         message=f"params.db schema version {ver} is newer than supported",
                         fix="Upgrade algodesk",
                     )
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='param_history';"
+            )
+            if cur.fetchone():
+                cur = conn.execute(
+                    """
+                    SELECT h.name, h.scope, h.reason
+                    FROM param_history h
+                    INNER JOIN (
+                        SELECT name, scope, MAX(id) as max_id
+                        FROM param_history
+                        GROUP BY name, scope
+                    ) latest ON h.id = latest.max_id
+                    WHERE h.status = 'invalidated';
+                    """
+                )
+                inv_row = cur.fetchone()
+                if inv_row:
+                    return CheckResult(
+                        ok=False,
+                        severity=Severity.WARNING,
+                        message=f"Parameter override invalidated: {inv_row[0]}@{inv_row[1]}",
+                        fix="Review parameter overrides and update configuration",
+                    )
         finally:
             conn.close()
         return CheckResult(ok=True, message="params.db opened cleanly with current schema")
@@ -225,33 +242,43 @@ def _check_params_db(runtime: Runtime) -> CheckResult:
         )
 
 
+def _find_shipped_core_toml() -> Path | None:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "config" / "params" / "core.toml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _resolve_min_free_disk_gb(runtime: Runtime) -> float:
     if runtime.params is not None:
         try:
-            return float(runtime.params.get("ops.min_free_disk_gb"))
+            val = runtime.params.get("ops.min_free_disk_gb")
+            if val is not None:
+                return float(val)
         except Exception:
             pass
 
     core_toml = runtime.root / "config" / "params" / "core.toml"
     if not core_toml.is_file():
-        try:
-            from algodesk.ops.paths import find_project_root
-
-            repo_root = find_project_root()
-            core_toml = repo_root / "config" / "params" / "core.toml"
-        except Exception:
-            pass
-
+        candidate = _find_shipped_core_toml()
+        if candidate and candidate.is_file():
+            core_toml = candidate
     if core_toml.is_file():
         try:
             with open(core_toml, "rb") as f:
                 data = tomllib.load(f)
             for item in data.get("param", []):
                 if item.get("name") == "ops.min_free_disk_gb":
-                    return float(item.get("default", 0.0))
+                    return float(item["default"])
         except Exception:
             pass
-    return 0.0
+
+    raise ConfigError(
+        what="Missing required parameter 'ops.min_free_disk_gb'",
+        where="ops.disk",
+        fix="Define ops.min_free_disk_gb in config/params/core.toml or via algodesk param set",
+    )
 
 
 def _check_disk_free(runtime: Runtime) -> CheckResult:

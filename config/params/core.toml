@@ -156,3 +156,15 @@ scope = "global"
 tighten = "down"
 description = "Maximum word count permitted in the summary section of markdown files"
 owner = "core"
+
+[[param]]
+name = "docs.max_status_words"
+type = "int"
+default = 400
+min = 50
+max = 2000
+unit = "words"
+scope = "global"
+tighten = "down"
+description = "Maximum word count permitted in docs/STATUS.md"
+owner = "core"

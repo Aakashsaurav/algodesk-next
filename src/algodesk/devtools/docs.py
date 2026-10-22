@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from algodesk.api.checks import CheckResult, DoctorCheck, Severity
+from algodesk.api.errors import ConfigError
+from algodesk.api.services import ParamReader
 
 _SUMMARY_HEADING_REGEX = re.compile(r"^(?:#|##)\s+Summary\b", re.IGNORECASE)
 _HEADING_REGEX = re.compile(r"^#+\s+")
@@ -43,14 +45,31 @@ class DocsReport:
     exit_code: int
 
 
-def load_docs_params(root: Path, params: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _find_shipped_core_toml() -> Path | None:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "config" / "params" / "core.toml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def load_docs_params(
+    root: Path, params: ParamReader | Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """Load documentation limits and guidance from registry or core.toml."""
     res: dict[str, Any] = {}
-    keys = ["docs.max_summary_words", "docs.max_living_docs"]
+    keys = ["docs.max_summary_words", "docs.max_living_docs", "docs.max_status_words"]
     if params is not None:
         for k in keys:
-            if k in params:
-                res[k] = params[k]
+            try:
+                if hasattr(params, "get"):
+                    v = params.get(k)
+                    if v is not None:
+                        res[k] = v
+                elif isinstance(params, Mapping) and k in params:
+                    res[k] = params[k]
+            except Exception:
+                pass
     core_toml = root / "config" / "params" / "core.toml"
     if core_toml.is_file():
         try:
@@ -61,6 +80,26 @@ def load_docs_params(root: Path, params: Mapping[str, Any] | None = None) -> dic
                     res[name] = p.get("default")
         except Exception:
             pass
+
+    if any(k not in res for k in keys):
+        shipped = _find_shipped_core_toml()
+        if shipped and shipped != core_toml:
+            try:
+                data = tomllib.loads(shipped.read_text(encoding="utf-8"))
+                for p in data.get("param", []):
+                    name = p.get("name")
+                    if name in keys and name not in res:
+                        res[name] = p.get("default")
+            except Exception:
+                pass
+
+    for k in keys:
+        if k not in res:
+            raise ConfigError(
+                what=f"Missing required parameter '{k}'",
+                where="docs",
+                fix="Define it in config/params/core.toml or register in ParamRegistry",
+            )
     return res
 
 
@@ -106,7 +145,7 @@ def _check_summary(rel_path: str, content: str, max_words: int, findings: list[D
                 path=rel_path,
                 line=line_num,
                 rule="docs.summary_empty",
-                message="Summary section is empty; must contain 1 to {max_words} words",
+                message=f"Summary section is empty; must contain 1 to {max_words} words",
             )
         )
     elif len(words) > max_words:
@@ -185,6 +224,33 @@ def gather_doc_files(root: Path) -> list[Path]:
     return sorted(doc_files)
 
 
+def _resolve_index_metadata(root: Path) -> tuple[str, str]:
+    owner = "core"
+    version = "0.0.0"
+    status_file = root / "docs" / "STATUS.md"
+    if status_file.is_file():
+        try:
+            for line in status_file.read_text(encoding="utf-8").splitlines()[:5]:
+                if "Owner:" in line and "Version:" in line:
+                    m_o = re.search(r"Owner:\s*([^·|\n]+)", line)
+                    m_v = re.search(r"Version:\s*([^·|\n]+)", line)
+                    if m_o:
+                        owner = m_o.group(1).strip()
+                    if m_v:
+                        version = m_v.group(1).strip()
+                    return owner, version
+        except Exception:
+            pass
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+            version = data.get("project", {}).get("version", version)
+        except Exception:
+            pass
+    return owner, version
+
+
 def generate_index_content(root: Path) -> str:
     """Generate deterministic markdown content for docs/INDEX.md."""
     docs_dir = root / "docs"
@@ -202,12 +268,13 @@ def generate_index_content(root: Path) -> str:
                 clean_smm = ""
             items.append((rel, clean_smm))
 
+    owner, version = _resolve_index_metadata(root)
     lines = [
         "## Summary",
         "",
         "Auto-generated living documentation index for AlgoDesk Next.",
         "",
-        "<!-- Owner: core | Version: 0.0.0 -->",
+        f"<!-- Owner: {owner} | Version: {version} -->",
         "<!-- generated, do not edit -->",
         "",
         "## Documents",
@@ -231,11 +298,12 @@ def write_index(root: Path) -> Path:
     return idx_path
 
 
-def run_docs_check(root: Path, params: Mapping[str, Any] | None = None) -> DocsReport:
+def run_docs_check(root: Path, params: ParamReader | Mapping[str, Any] | None = None) -> DocsReport:
     """Execute docs check suite across markdown documentation."""
     dp = load_docs_params(root, params)
-    max_summary_words = int(dp.get("docs.max_summary_words", 150))
-    max_living_docs = int(dp.get("docs.max_living_docs", 12))
+    max_summary_words = int(dp["docs.max_summary_words"])
+    max_living_docs = int(dp["docs.max_living_docs"])
+    max_status_words = int(dp["docs.max_status_words"])
 
     findings: list[DocFinding] = []
     files = gather_doc_files(root)
@@ -304,13 +372,16 @@ def run_docs_check(root: Path, params: Mapping[str, Any] | None = None) -> DocsR
         else:
             st_text = status_file.read_text(encoding="utf-8")
             st_words = len(st_text.split())
-            if st_words > 400:
+            if st_words > max_status_words:
                 findings.append(
                     DocFinding(
                         path="docs/STATUS.md",
                         line=1,
                         rule="docs.status_length",
-                        message=f"docs/STATUS.md has {st_words} words, exceeds maximum of 400",
+                        message=(
+                            f"docs/STATUS.md has {st_words} words, "
+                            f"exceeds maximum of {max_status_words}"
+                        ),
                     )
                 )
 
@@ -341,9 +412,10 @@ def format_docs_text(report: DocsReport) -> str:
 def make_docs_check(runtime: Any) -> DoctorCheck:
     """Create doctor check for documentation rules (Severity.WARNING)."""
     root = Path(runtime.root)
+    params = getattr(runtime, "params", None)
 
     def check() -> CheckResult:
-        rep = run_docs_check(root)
+        rep = run_docs_check(root, params=params)
         if rep.errors:
             return CheckResult(
                 ok=False,
@@ -353,11 +425,11 @@ def make_docs_check(runtime: Any) -> DoctorCheck:
         if rep.warnings:
             msg = f"Docs valid with {len(rep.warnings)} warning(s) ({rep.checked} docs checked)"
             return CheckResult(ok=True, message=msg)
-        return CheckResult(
-            ok=True,
-            message=f"Documentation valid ({report_count} documents checked)"
-            if (report_count := rep.checked)
-            else "Documentation valid",
+        msg = (
+            f"Documentation valid ({rep.checked} documents checked)"
+            if rep.checked
+            else "Documentation valid"
         )
+        return CheckResult(ok=True, message=msg)
 
     return DoctorCheck(id="docs.rules", severity=Severity.WARNING, run=check)

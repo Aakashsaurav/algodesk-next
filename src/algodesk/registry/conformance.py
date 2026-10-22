@@ -120,6 +120,20 @@ class ConformanceStore:
             return False
         return bool(rec.get("hash") == hash)
 
+    def status(
+        self,
+        kind: PluginKind | str,
+        name: str,
+        code_hash: str,
+    ) -> str:
+        """Return 'current', 'stale', or 'none' based on stored conformance record."""
+        k = kind.value if isinstance(kind, PluginKind) else str(kind)
+        records = self._read_records()
+        rec = records.get(f"{k}/{name}")
+        if rec is None:
+            return "none"
+        return "current" if rec.get("hash") == code_hash else "stale"
+
     def forget(
         self,
         kind: PluginKind | str | None = None,

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from algodesk.api.checks import CheckResult, DoctorCheck, Severity
+from algodesk.api.errors import ConfigError
+from algodesk.api.services import ParamReader
 
 _DEP_NAME_REGEX = re.compile(r"^[a-zA-Z0-9_\-\.]+")
 
@@ -68,7 +70,17 @@ def _parse_canonical_dep_name(dep_spec: str) -> str:
     return m.group(0).lower().replace("_", "-") if m else dep_spec.strip().lower()
 
 
-def load_budget_params(root: Path, params: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _find_shipped_core_toml() -> Path | None:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "config" / "params" / "core.toml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def load_budget_params(
+    root: Path, params: ParamReader | Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """Load budget guidance and limit parameters from registry or core.toml."""
     res: dict[str, Any] = {}
     keys = [
@@ -81,8 +93,15 @@ def load_budget_params(root: Path, params: Mapping[str, Any] | None = None) -> d
     ]
     if params is not None:
         for k in keys:
-            if k in params:
-                res[k] = params[k]
+            try:
+                if hasattr(params, "get"):
+                    v = params.get(k)
+                    if v is not None:
+                        res[k] = v
+                elif isinstance(params, Mapping) and k in params:
+                    res[k] = params[k]
+            except Exception:
+                pass
     core_toml = root / "config" / "params" / "core.toml"
     if core_toml.is_file():
         try:
@@ -93,6 +112,26 @@ def load_budget_params(root: Path, params: Mapping[str, Any] | None = None) -> d
                     res[name] = p.get("default")
         except Exception:
             pass
+
+    if any(k not in res for k in keys):
+        shipped = _find_shipped_core_toml()
+        if shipped and shipped != core_toml:
+            try:
+                data = tomllib.loads(shipped.read_text(encoding="utf-8"))
+                for p in data.get("param", []):
+                    name = p.get("name")
+                    if name in keys and name not in res:
+                        res[name] = p.get("default")
+            except Exception:
+                pass
+
+    for k in keys:
+        if k not in res:
+            raise ConfigError(
+                what=f"Missing required parameter '{k}'",
+                where="budget",
+                fix="Define it in config/params/core.toml or register in ParamRegistry",
+            )
     return res
 
 
@@ -214,15 +253,15 @@ def extract_pyproject_dependencies(pyproject_path: Path) -> list[str]:
         return []
 
 
-def run_budget(root: Path, params: Mapping[str, Any] | None = None) -> BudgetReport:
+def run_budget(root: Path, params: ParamReader | Mapping[str, Any] | None = None) -> BudgetReport:
     """Calculate and evaluate codebase budget metrics against guidance and limits."""
     bp = load_budget_params(root, params)
-    core_lines_guidance = int(bp.get("budget.core_lines_guidance", 6000))
-    core_mods_guidance = int(bp.get("budget.core_modules_guidance", 40))
-    plugin_guidance = int(bp.get("budget.plugin_lines_guidance", 1500))
-    overshoot_pct = float(bp.get("budget.warn_overshoot_pct", 25.0))
-    max_core_deps = int(bp.get("budget.max_core_dependencies", 8))
-    max_runtime_deps = int(bp.get("budget.max_runtime_dependencies", 15))
+    core_lines_guidance = int(bp["budget.core_lines_guidance"])
+    core_mods_guidance = int(bp["budget.core_modules_guidance"])
+    plugin_guidance = int(bp["budget.plugin_lines_guidance"])
+    overshoot_pct = float(bp["budget.warn_overshoot_pct"])
+    max_core_deps = int(bp["budget.max_core_dependencies"])
+    max_runtime_deps = int(bp["budget.max_runtime_dependencies"])
 
     src_dir = root / "src" / "algodesk"
     packages, total_lines, total_mods = scan_core_packages(src_dir, overshoot_pct)
@@ -320,9 +359,10 @@ def format_budget_json(report: BudgetReport) -> str:
 def make_budget_checks(runtime: Any) -> list[DoctorCheck]:
     """Create doctor diagnostic checks for dependencies (CRITICAL) and size (WARNING)."""
     root = Path(runtime.root)
+    params = getattr(runtime, "params", None)
 
     def check_deps() -> CheckResult:
-        rep = run_budget(root)
+        rep = run_budget(root, params=params)
         s = rep.summary
         if s.core_deps > s.max_core_deps:
             return CheckResult(
@@ -343,7 +383,7 @@ def make_budget_checks(runtime: Any) -> list[DoctorCheck]:
         return CheckResult(ok=True, message=msg)
 
     def check_size() -> CheckResult:
-        rep = run_budget(root)
+        rep = run_budget(root, params=params)
         s = rep.summary
         advisories: list[str] = []
         if s.core_lines > s.core_lines_guidance:

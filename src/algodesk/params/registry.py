@@ -112,6 +112,7 @@ class ParamRegistry(ParamReader):
             spec = ParamSpec.model_validate_json(s_json)
             self._specs[spec.name] = spec
 
+        self._process_specs: dict[str, ParamSpec] = {}
         self._overrides = self._store.load_all_values()
         self._local_change_seq = self._store.get_change_seq()
         self._cached_effective: dict[str, Any] = {name: self.get(name) for name in self._specs}
@@ -126,9 +127,20 @@ class ParamRegistry(ParamReader):
     def __exit__(self, *args: object) -> None:
         self.close()
 
+    def spec(self, name: str) -> ParamSpec:
+        """Return registered parameter specification or raise ParamError."""
+        s = self._specs.get(name)
+        if s is None:
+            raise ParamError(
+                what=f"Unknown parameter '{name}'",
+                where=name,
+                fix="Register parameter spec before accessing specification",
+            )
+        return s
+
     def register(self, spec: ParamSpec) -> None:
         """Register a parameter specification. Idempotent if identical."""
-        existing = self._specs.get(spec.name)
+        existing = self._process_specs.get(spec.name)
         if existing is not None:
             if existing == spec:
                 return
@@ -137,16 +149,46 @@ class ParamRegistry(ParamReader):
                 where=spec.name,
                 fix="Ensure all registrations for this parameter share the same definition",
             )
+        self._process_specs[spec.name] = spec
         self._specs[spec.name] = spec
         self._store.save_spec_json(spec.name, spec.model_dump_json())
         self._cached_effective[spec.name] = self.get(spec.name)
 
     def load_defaults(self, dir_path: Path | str) -> list[ParamSpec]:
-        """Load default specifications from TOML files and register each."""
+        """Load default specifications from TOML files and upsert authoritative specs."""
         specs = load_defaults_file(dir_path)
-        for spec in specs:
-            self.register(spec)
+        for s in specs:
+            self._process_specs[s.name] = s
+            self._specs[s.name] = s
+            self._store.save_spec_json(s.name, s.model_dump_json())
+            self._reconcile_override_bounds(s)
+            self._cached_effective[s.name] = self.get(s.name)
         return specs
+
+    def _reconcile_override_bounds(self, spec: ParamSpec) -> None:
+        """Invalidate stored overrides that violate updated specification bounds."""
+        for (name, scope), (val, _) in list(self._overrides.items()):
+            if name != spec.name:
+                continue
+            try:
+                validate_value(spec, val)
+            except Exception as exc:
+                ts_utc = self._clock().isoformat()
+                with self._store.transaction():
+                    self._store.delete_value(spec.name, scope)
+                    self._store.add_history(
+                        ts_utc=ts_utc,
+                        name=spec.name,
+                        scope=scope,
+                        old_value=val,
+                        new_value=spec.default,
+                        by="registry",
+                        channel="validation",
+                        reason=f"Override invalidated: violates new bounds ({exc})",
+                        confirmed=None,
+                        status="invalidated",
+                    )
+                self._overrides.pop((spec.name, scope), None)
 
     def get(self, name: str, scope: str | None = None) -> ParamValue:
         """Resolve parameter value: scoped override -> global override -> default."""
@@ -207,19 +249,20 @@ class ParamRegistry(ParamReader):
                 where=name,
                 fix=f"Pass confirm={expected_confirm!r} to proceed",
             )
-        self._store.add_pending(name, scope, valid_value, ts_utc, "session_start")
-        self._store.add_history(
-            ts_utc=ts_utc,
-            name=name,
-            scope=scope,
-            old_value=current_effective,
-            new_value=valid_value,
-            by=by,
-            channel=channel,
-            reason=reason,
-            confirmed=confirm,
-            status="pending",
-        )
+        with self._store.transaction():
+            self._store.add_pending(name, scope, valid_value, ts_utc, "session_start")
+            self._store.add_history(
+                ts_utc=ts_utc,
+                name=name,
+                scope=scope,
+                old_value=current_effective,
+                new_value=valid_value,
+                by=by,
+                channel=channel,
+                reason=reason,
+                confirmed=confirm,
+                status="pending",
+            )
         return ChangeResult(
             name=name,
             old_value=current_effective,
@@ -246,20 +289,21 @@ class ParamRegistry(ParamReader):
         ts_utc: str,
     ) -> ChangeResult:
         """Apply a parameter change immediately to store and local overrides."""
-        self._store.set_value(name, scope, valid_value, ts_utc)
+        with self._store.transaction():
+            self._store.set_value(name, scope, valid_value, ts_utc)
+            self._store.add_history(
+                ts_utc=ts_utc,
+                name=name,
+                scope=scope,
+                old_value=current_effective,
+                new_value=valid_value,
+                by=by,
+                channel=channel,
+                reason=reason,
+                confirmed=confirm,
+                status="applied",
+            )
         self._overrides[(name, scope)] = (valid_value, ts_utc)
-        self._store.add_history(
-            ts_utc=ts_utc,
-            name=name,
-            scope=scope,
-            old_value=current_effective,
-            new_value=valid_value,
-            by=by,
-            channel=channel,
-            reason=reason,
-            confirmed=confirm,
-            status="applied",
-        )
         return ChangeResult(
             name=name,
             old_value=current_effective,
@@ -332,20 +376,21 @@ class ParamRegistry(ParamReader):
         direction = _calculate_direction(spec, current_effective, spec.default)
         ts_utc = self._clock().isoformat()
 
-        self._store.delete_value(name, scope)
+        with self._store.transaction():
+            self._store.delete_value(name, scope)
+            self._store.add_history(
+                ts_utc=ts_utc,
+                name=name,
+                scope=scope,
+                old_value=current_effective,
+                new_value=spec.default,
+                by=by,
+                channel=channel,
+                reason=reason,
+                confirmed=None,
+                status="applied",
+            )
         self._overrides.pop((name, scope), None)
-        self._store.add_history(
-            ts_utc=ts_utc,
-            name=name,
-            scope=scope,
-            old_value=current_effective,
-            new_value=spec.default,
-            by=by,
-            channel=channel,
-            reason=reason,
-            confirmed=None,
-            status="applied",
-        )
         return ChangeResult(
             name=name,
             old_value=current_effective,
@@ -403,25 +448,26 @@ class ParamRegistry(ParamReader):
 
         ts_utc = self._clock().isoformat()
         applied_count = 0
-        for row in pending_rows:
-            name = str(row["name"])
-            scope = str(row["scope"])
-            val = row["value"]
-            cur = self.get(name, scope=scope)
-            self._store.set_value(name, scope, val, ts_utc)
-            self._store.add_history(
-                ts_utc=ts_utc,
-                name=name,
-                scope=scope,
-                old_value=cur,
-                new_value=val,
-                by="session_start",
-                channel="lifecycle",
-                reason="Applied pending loosening at session start",
-                confirmed=None,
-                status="applied",
-            )
-            applied_count += 1
+        with self._store.transaction():
+            for row in pending_rows:
+                name = str(row["name"])
+                scope = str(row["scope"])
+                val = row["value"]
+                cur = self.get(name, scope=scope)
+                self._store.set_value(name, scope, val, ts_utc)
+                self._store.add_history(
+                    ts_utc=ts_utc,
+                    name=name,
+                    scope=scope,
+                    old_value=cur,
+                    new_value=val,
+                    by="session_start",
+                    channel="lifecycle",
+                    reason="Applied pending loosening at session start",
+                    confirmed=None,
+                    status="applied",
+                )
+                applied_count += 1
 
         self.safe_point()
         return applied_count
@@ -455,6 +501,8 @@ class ParamRegistry(ParamReader):
     def snapshot(self) -> tuple[str, dict[str, Any]]:
         """Return canonical SHA-256 hash and effective dictionary of all registered parameters."""
         values: dict[str, Any] = {name: self.get(name) for name in sorted(self._specs.keys())}
+        for (name, scope), (val, _) in sorted(self._overrides.items()):
+            values[f"{name}@{scope}"] = val
         canonical = json.dumps(values, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         return digest, values

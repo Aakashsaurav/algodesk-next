@@ -63,11 +63,9 @@ def test_state_paths_resolve() -> None:
 
 
 def test_state_paths_constructor_variants() -> None:
-    """StatePaths supports positional and keyword initialization."""
-    sp1 = StatePaths(Path("/r"), Path("/d"))
-    assert sp1.params_db == Path("/d/state/params.db")
-    assert sp1.journal_db == Path("/d/state/journal.db")
-    assert sp1.conformance_dir == Path("/r/.algodesk")
+    """StatePaths requires keyword-only arguments and rejects positional ones."""
+    with pytest.raises(TypeError):
+        StatePaths(Path("/r"), Path("/d"))  # type: ignore[misc]
 
     sp2 = StatePaths(
         params_db=Path("/a/p.db"),

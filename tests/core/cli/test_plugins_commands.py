@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from algodesk.cli.app import app
@@ -123,3 +124,50 @@ def test_plugins_test_order_capable_manifest_only_never_imported(
     res = runner.invoke(app, ["--root", str(proj), "plugins", "test", "venue", "zerodha_live"])
     assert res.exit_code == 0
     assert "passed conformance suite 'base+plugin-tests'" in res.output
+
+
+def test_order_capable_unit_tests_run_but_registry_never_creates_outside_live(
+    runner: CliRunner, make_project: Any
+) -> None:
+    """R-14 / INV-1: plugins test runs unit tests; registry refuses create outside live."""
+    from algodesk.api.errors import SafetyViolation
+    from algodesk.api.kinds import Mode
+    from algodesk.ops.context import build_context
+    from algodesk.ops.runtime import open_runtime
+
+    proj = make_project("p_order_safety")
+    p_dir = proj / "plugins" / "venue" / "live_trader"
+    p_dir.mkdir(parents=True)
+    (p_dir / "plugin.toml").write_text(
+        'name = "live_trader"\n'
+        'kind = "venue"\n'
+        'version = "1.0.0"\n'
+        "api_version = 1\n"
+        'entry = "plugin:LiveTraderVenue"\n'
+        "order_capable = true\n"
+        'modes_allowed = ["live"]\n'
+        "\n[capabilities]\n"
+        "orders = true\n"
+    )
+    (p_dir / "README.md").write_text("# Live Venue\n\n## Summary\nLive venue summary.\n")
+    (p_dir / "tests").mkdir()
+    (p_dir / "tests" / "test_units.py").write_text("def test_fake_order(): assert 1 + 1 == 2\n")
+    (p_dir / "plugin.py").write_text(
+        "from algodesk.api.plugin import PluginBase\n\n"
+        "class LiveTraderVenue(PluginBase):\n"
+        "    pass\n"
+    )
+
+    # 1. plugins test runs the plugin's own unit tests and records conformance
+    res = runner.invoke(app, ["--root", str(proj), "plugins", "test", "venue", "live_trader"])
+    assert res.exit_code == 0
+    assert "passed conformance suite 'base+plugin-tests'" in res.output
+
+    # 2. Registry never creates order-capable plugin outside live
+    with open_runtime(root=proj) as rt:
+        for mode in (Mode.RESEARCH, Mode.BACKTEST, Mode.PAPER):
+            ctx = build_context(mode, run_id=f"test_{mode.value}")
+            with pytest.raises(SafetyViolation) as exc_info:
+                rt.plugins.create("venue", "live_trader", ctx=ctx)
+            assert "cannot be loaded in mode" in exc_info.value.what
+            assert "only permitted in 'live' mode" in exc_info.value.what

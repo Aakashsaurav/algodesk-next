@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -104,11 +106,18 @@ def _init_tables(conn: sqlite3.Connection, db_path: Path) -> None:
     """Initialize SQLite tables, triggers, and schema version."""
     _check_db_integrity(conn, db_path)
     try:
-        with conn:
-            _check_schema_version(conn, db_path)
-            _create_tables(conn)
-            _create_triggers(conn)
-    except sqlite3.DatabaseError as exc:
+        conn.execute("BEGIN IMMEDIATE;")
+        _check_schema_version(conn, db_path)
+        _create_tables(conn)
+        _create_triggers(conn)
+        conn.execute("COMMIT;")
+    except Exception as exc:
+        try:
+            conn.execute("ROLLBACK;")
+        except Exception:
+            pass
+        if isinstance(exc, ParamError):
+            raise
         raise ParamError(
             what=f"Failed to initialize database: {exc}",
             where=str(db_path),
@@ -140,6 +149,25 @@ class ParamStore:
             ) from None
         _init_tables(self._conn, self._path)
 
+    @contextmanager
+    def transaction(self) -> Generator[None]:
+        """Context manager executing explicit transaction (BEGIN IMMEDIATE / COMMIT / ROLLBACK)."""
+
+        already_in_tx = self._conn.in_transaction
+        if not already_in_tx:
+            self._conn.execute("BEGIN IMMEDIATE;")
+        try:
+            yield
+            if not already_in_tx:
+                self._conn.execute("COMMIT;")
+        except Exception:
+            if not already_in_tx:
+                try:
+                    self._conn.execute("ROLLBACK;")
+                except Exception:
+                    pass
+            raise
+
     def close(self) -> None:
         """Close SQLite connection."""
         self._conn.close()
@@ -163,7 +191,7 @@ class ParamStore:
 
     def save_spec_json(self, name: str, spec_json: str) -> None:
         """Insert or update a parameter spec JSON string."""
-        with self._conn:
+        with self.transaction():
             self._conn.execute(
                 """
                 INSERT INTO param_spec (name, spec_json) VALUES (?, ?)
@@ -195,7 +223,7 @@ class ParamStore:
     ) -> int:
         """Set override value in param_value and increment change_seq."""
         val_json = json.dumps(value)
-        with self._conn:
+        with self.transaction():
             self._conn.execute(
                 """
                 INSERT INTO param_value (name, scope, value_json, updated_utc)
@@ -215,7 +243,7 @@ class ParamStore:
 
     def delete_value(self, name: str, scope: str) -> int:
         """Delete override from param_value and bump change_seq."""
-        with self._conn:
+        with self.transaction():
             self._conn.execute(
                 "DELETE FROM param_value WHERE name = ? AND scope = ?;",
                 (name, scope),
@@ -236,7 +264,7 @@ class ParamStore:
     ) -> None:
         """Record a pending parameter change."""
         val_json = json.dumps(value)
-        with self._conn:
+        with self.transaction():
             self._conn.execute(
                 """
                 INSERT INTO param_pending (name, scope, value_json, requested_utc, apply_at)
@@ -269,7 +297,7 @@ class ParamStore:
 
     def clear_pending(self, name: str, scope: str) -> None:
         """Delete pending record for a specific parameter and scope."""
-        with self._conn:
+        with self.transaction():
             self._conn.execute(
                 "DELETE FROM param_pending WHERE name = ? AND scope = ?;",
                 (name, scope),
@@ -292,7 +320,7 @@ class ParamStore:
         """Append an entry to param_history and return its id."""
         old_json = json.dumps(old_value) if old_value is not None else None
         new_json = json.dumps(new_value)
-        with self._conn:
+        with self.transaction():
             cursor = self._conn.execute(
                 """
                 INSERT INTO param_history

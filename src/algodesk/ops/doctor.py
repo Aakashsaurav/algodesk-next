@@ -58,7 +58,7 @@ class DoctorRegistry:
             try:
                 res = check.run()
                 ms = (time.perf_counter() - t0) * 1000.0
-                eff_sev = getattr(res, "severity", None) or check.severity
+                eff_sev = res.severity if res.severity is not None else check.severity
                 results.append(
                     DoctorResult(
                         id=check.id,

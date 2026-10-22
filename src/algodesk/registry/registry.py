@@ -90,6 +90,11 @@ class PluginRegistry:
         p_info = self.info(kind, name)
         return self._store.is_current(p_info.kind, p_info.name, p_info.code_hash)
 
+    def conformance_status(self, kind: PluginKind | str, name: str) -> str:
+        """Return conformance status: 'current', 'stale', or 'none'."""
+        p_info = self.info(kind, name)
+        return self._store.status(p_info.kind, p_info.name, p_info.code_hash)
+
     def loaded(self) -> builtins.list[tuple[PluginKind, str, Mode]]:
         """Return list of (kind, name, mode) for plugins loaded in this process."""
         return builtins.list(self._loaded)
@@ -101,6 +106,16 @@ class PluginRegistry:
         k: str,
         name: str,
     ) -> None:
+        if manifest.order_capable and ctx.mode != Mode.LIVE:
+            raise SafetyViolation(
+                what=(
+                    f"Order-capable plugin '{k}/{name}' cannot be loaded in mode "
+                    f"'{ctx.mode.value}'; order-capable plugins are only permitted in 'live' mode"
+                ),
+                where=f"{k}/{name}",
+                fix="Run in 'live' mode or disable order_capable on the plugin",
+            )
+
         if ctx.mode not in manifest.modes_allowed:
             allowed = ", ".join(str(m.value) for m in manifest.modes_allowed)
             raise PluginError(
@@ -110,16 +125,6 @@ class PluginRegistry:
                 ),
                 where=f"{k}/{name}",
                 fix=f"Run in an allowed mode or add '{ctx.mode.value}' to modes_allowed",
-            )
-
-        if manifest.order_capable and ctx.mode != Mode.LIVE:
-            raise SafetyViolation(
-                what=(
-                    f"Order-capable plugin '{k}/{name}' cannot be loaded in mode "
-                    f"'{ctx.mode.value}'; order-capable plugins are only permitted in 'live' mode"
-                ),
-                where=f"{k}/{name}",
-                fix="Run in 'live' mode or disable order_capable on the plugin",
             )
 
         if ctx.mode in (Mode.PAPER, Mode.LIVE):

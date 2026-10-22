@@ -5,7 +5,6 @@ from __future__ import annotations
 import functools
 import getpass
 import json
-import sqlite3
 import subprocess
 import sys
 import traceback
@@ -20,7 +19,7 @@ import typer
 from algodesk.api.errors import AlgoDeskError, ConfigError, ParamError
 from algodesk.api.kinds import Mode
 from algodesk.config.snapshot import render_effective
-from algodesk.journal.store import tail, verify_journal
+from algodesk.journal.store import runs, tail, verify_journal
 from algodesk.ops.checks import build_core_checks
 from algodesk.ops.context import build_context
 from algodesk.ops.doctor import DoctorRegistry, format_report, report_to_json
@@ -279,13 +278,14 @@ def param_set(
                 where=name,
                 fix="Check database permissions in data/state/params.db",
             )
-        spec = rt.params._specs.get(name)
-        if spec is None:
+        try:
+            spec = rt.params.spec(name)
+        except ParamError as exc:
             raise ParamError(
                 what=f"Cannot operate on unknown parameter '{name}'",
                 where=name,
                 fix="Register parameter spec before operating on it",
-            )
+            ) from exc
         parsed_val = parse_cli_value(spec, value)
         by = getpass.getuser()
         res = rt.params.set(
@@ -361,16 +361,9 @@ def plugins_list(
     is_json = json_opt or state.json
     with _open_rt(ctx, ensure=False) as rt:
         plugins = rt.plugins.list()
-        store_records = rt.plugins._store._read_records()
         items: list[dict[str, Any]] = []
         for p in plugins:
-            key = f"{p.kind.value}/{p.name}"
-            if rt.plugins.conformance_current(p.kind, p.name):
-                conf = "current"
-            elif key in store_records:
-                conf = "stale"
-            else:
-                conf = "none"
+            conf = rt.plugins.conformance_status(p.kind, p.name)
             items.append(
                 {
                     "kind": p.kind.value,
@@ -524,33 +517,26 @@ def journal_runs(ctx: typer.Context) -> None:
             typer.echo("Journal database does not exist.")
             return
 
-        raw_rows: list[tuple[Any, ...]] = []
+        raw_runs: list[dict[str, Any]] = []
         try:
-            conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT run_id, mode, status, started_utc, ended_utc "
-                "FROM runs ORDER BY started_utc;"
-            )
-            raw_rows = cur.fetchall()
-            conn.close()
+            raw_runs = runs(db_path)
         except Exception:
-            raw_rows = []
+            raw_runs = []
 
-    if not raw_rows:
+    if not raw_runs:
         typer.echo("No runs found in journal.")
         return
 
     headers = ["RUN_ID", "MODE", "STATUS", "STARTED_UTC", "ENDED_UTC"]
     rows = [
         [
-            str(r[0]),
-            str(r[1]),
-            str(r[2]),
-            str(r[3]),
-            str(r[4] or "-"),
+            str(r.get("run_id", "")),
+            str(r.get("mode", "")),
+            str(r.get("status", "")),
+            str(r.get("started_utc", "")),
+            str(r.get("ended_utc") or "-"),
         ]
-        for r in raw_rows
+        for r in raw_runs
     ]
     typer.echo(format_table(headers, rows))
 
@@ -571,7 +557,7 @@ def budget_cmd(
     state = _get_cli_state(ctx)
     is_json = json_opt or state.json
     with _open_rt(ctx, ensure=False) as rt:
-        rep = run_budget(rt.root)
+        rep = run_budget(rt.root, params=rt.params)
 
     if is_json:
         typer.echo(format_budget_json(rep))
@@ -594,7 +580,7 @@ def docs_check_cmd(
     state = _get_cli_state(ctx)
     is_json = json_opt or state.json
     with _open_rt(ctx, ensure=False) as rt:
-        rep = run_docs_check(rt.root)
+        rep = run_docs_check(rt.root, params=rt.params)
 
     if is_json:
         data = {
