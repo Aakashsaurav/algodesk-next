@@ -1,0 +1,240 @@
+[meta]
+name = "zerodha_nse"
+source = "support.zerodha.com / PRD Appendix D.2"
+verified_on = "2026-10-21"
+verified = true
+
+# ==============================================================================
+# Equity Delivery (segment: eq, product: CNC)
+# ==============================================================================
+
+[[component]]
+name = "brokerage"
+kind = "flat"
+amount = 0.00
+segment = "eq"
+product = "CNC"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "stt"
+kind = "pct"
+rate = 0.001
+segment = "eq"
+product = "CNC"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00015
+segment = "eq"
+product = "CNC"
+side = "buy"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000297
+segment = "eq"
+product = "CNC"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "sebi"
+kind = "per_crore"
+rate = 10.0
+segment = "eq"
+product = "CNC"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "dp"
+kind = "per_scrip_day"
+amount = 13.50
+segment = "eq"
+product = "CNC"
+side = "sell"
+effective_from = 2020-01-01
+verified = true
+
+# ==============================================================================
+# Equity Intraday (segment: eq, product: MIS)
+# ==============================================================================
+
+[[component]]
+name = "brokerage"
+kind = "pct_capped"
+rate = 0.0003
+cap = 20.00
+segment = "eq"
+product = "MIS"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "stt"
+kind = "pct"
+rate = 0.00025
+segment = "eq"
+product = "MIS"
+side = "sell"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00003
+segment = "eq"
+product = "MIS"
+side = "buy"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000297
+segment = "eq"
+product = "MIS"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "sebi"
+kind = "per_crore"
+rate = 10.0
+segment = "eq"
+product = "MIS"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+# ==============================================================================
+# Equity Futures (segment: fno, product: NRML & MIS)
+# ==============================================================================
+
+[[component]]
+name = "brokerage"
+kind = "pct_capped"
+rate = 0.0003
+cap = 20.00
+segment = "fno"
+product = "NRML"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "brokerage"
+kind = "pct_capped"
+rate = 0.0003
+cap = 20.00
+segment = "fno"
+product = "MIS"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "stt"
+kind = "pct"
+rate = 0.0002
+segment = "fno"
+product = "NRML"
+side = "sell"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "stt"
+kind = "pct"
+rate = 0.0002
+segment = "fno"
+product = "MIS"
+side = "sell"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00002
+segment = "fno"
+product = "NRML"
+side = "buy"
+effective_from = 2020-01-01
+verified = false
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00002
+segment = "fno"
+product = "MIS"
+side = "buy"
+effective_from = 2020-01-01
+verified = false
+
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000173
+segment = "fno"
+product = "NRML"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000173
+segment = "fno"
+product = "MIS"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "sebi"
+kind = "per_crore"
+rate = 10.0
+segment = "fno"
+product = "NRML"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "sebi"
+kind = "per_crore"
+rate = 10.0
+segment = "fno"
+product = "MIS"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+# ==============================================================================
+# Taxes (applies to specified fee components)
+# ==============================================================================
+
+[[tax]]
+name = "gst"
+rate = 0.18
+applies_to = ["brokerage", "exchange_txn", "sebi", "dp"]
+effective_from = 2020-01-01

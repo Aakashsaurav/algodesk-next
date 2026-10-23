@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from algodesk.registry.base_checks import (
     base_contract_problems,
+    plugin_contract_problems,
     registry_doctor_checks,
 )
 from algodesk.registry.conformance import (
@@ -26,6 +27,7 @@ __all__ = [
     "base_contract_problems",
     "code_hash",
     "discover",
+    "plugin_contract_problems",
     "registry_doctor_checks",
     "scaffold_plugin",
 ]

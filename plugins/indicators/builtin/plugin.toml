@@ -1,0 +1,17 @@
+name = "builtin"
+kind = "indicator"
+version = "0.1.0"
+api_version = 1
+entry = "plugin:BuiltinIndicatorsPlugin"
+modes_allowed = ["research", "backtest", "paper", "live"]
+order_capable = false
+verified_on = "2026-10-21"
+sources = ["J. Welles Wilder Jr., New Concepts in Technical Trading Systems (1978)"]
+
+[capabilities]
+sma = true
+ema = true
+rsi = true
+
+[requires]
+packages = ["pydantic", "pytest", "hypothesis"]

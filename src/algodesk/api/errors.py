@@ -56,3 +56,7 @@ class SafetyViolation(AlgoDeskError):
 
 class JournalError(AlgoDeskError):
     """The journal is corrupt, unwritable or failed verification."""
+
+
+class CalendarCoverageError(AlgoDeskError):
+    """Requested date or exchange is outside calendar coverage."""

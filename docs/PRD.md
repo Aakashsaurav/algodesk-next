@@ -992,7 +992,7 @@ latency_model = "measured"
 [fees]
 schedule = "zerodha_nse"
 
-[calendar]
+[[calendars]]
 plugin = "nse"
 
 [secrets]
@@ -1002,6 +1002,7 @@ plugin = "keychain"
 profile = "local"
 
 [universe]
+# Exactly one of screen, symbols or group
 screen = "nifty_liquid_100"
 
 [[strategies]]

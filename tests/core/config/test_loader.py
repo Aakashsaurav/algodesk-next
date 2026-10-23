@@ -452,3 +452,102 @@ def test_every_config_error_contains_file_name_and_key(tmp_path: Path) -> None:
         load_platform(tmp_path)
     assert "platform.toml" in str(exc3.value)
     assert "project" in str(exc3.value)
+
+
+def test_load_run_with_calendars_list(tmp_path: Path) -> None:
+    """Run config with [[calendars]] loads properly."""
+    from algodesk.config.loader import load_run
+
+    content = """
+allocated_capital = 100000
+[run]
+name = "multi_cal"
+mode = "paper"
+[data_source]
+plugin = "upstox"
+[execution_venue]
+plugin = "sim"
+[[calendars]]
+plugin = "nse"
+[[calendars]]
+plugin = "mcx"
+[secrets]
+plugin = "keychain"
+[fees]
+schedule = "zerodha_nse"
+[universe]
+screen = "nifty_50"
+[[strategies]]
+plugin = "sma_cross"
+risk_profile = "conservative"
+"""
+    _write_file(tmp_path / "config" / "runs" / "multi_cal.toml", content)
+    cfg = load_run(tmp_path, run_name="multi_cal")
+    assert len(cfg.calendars) == 2
+    assert cfg.calendars[0].plugin == "nse"
+    assert cfg.calendars[1].plugin == "mcx"
+
+
+def test_load_run_with_universe_group(tmp_path: Path) -> None:
+    """Run config with universe group loads properly."""
+    from algodesk.config.loader import load_run
+
+    content = """
+allocated_capital = 100000
+[run]
+name = "group_uni"
+mode = "paper"
+[data_source]
+plugin = "upstox"
+[execution_venue]
+plugin = "sim"
+[[calendars]]
+plugin = "nse"
+[secrets]
+plugin = "keychain"
+[fees]
+schedule = "zerodha_nse"
+[universe]
+group = "nifty_50"
+[[strategies]]
+plugin = "sma_cross"
+risk_profile = "conservative"
+"""
+    _write_file(tmp_path / "config" / "runs" / "group_uni.toml", content)
+    cfg = load_run(tmp_path, run_name="group_uni")
+    assert cfg.universe.group == "nifty_50"
+    assert cfg.universe.screen is None
+    assert cfg.universe.symbols is None
+
+
+def test_universe_error_fix_mentions_group(tmp_path: Path) -> None:
+    """Fix string for invalid universe mentions group."""
+    from algodesk.config.loader import load_run
+
+    content = """
+allocated_capital = 100000
+[run]
+name = "invalid_uni"
+mode = "paper"
+[data_source]
+plugin = "upstox"
+[execution_venue]
+plugin = "sim"
+[[calendars]]
+plugin = "nse"
+[secrets]
+plugin = "keychain"
+[fees]
+schedule = "zerodha_nse"
+[universe]
+screen = "nifty_50"
+group = "nifty_fno"
+[[strategies]]
+plugin = "sma_cross"
+risk_profile = "conservative"
+"""
+    _write_file(tmp_path / "config" / "runs" / "invalid_uni.toml", content)
+    with pytest.raises(ConfigError) as exc_info:
+        load_run(tmp_path, run_name="invalid_uni")
+    err = exc_info.value
+    assert "group" in err.fix

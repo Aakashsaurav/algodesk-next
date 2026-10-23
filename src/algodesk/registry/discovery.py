@@ -144,6 +144,25 @@ def _check_entry_and_schema(
     return issues
 
 
+def _normalize_kind(folder: str) -> str:
+    mapping = {
+        "brokers": "broker",
+        "venues": "venue",
+        "fees": "fees",
+        "indicators": "indicator",
+        "screens": "screen",
+        "strategies": "strategy",
+        "risk_rules": "risk_rule",
+        "notifiers": "notifier",
+        "calendars": "calendar",
+        "secrets": "secrets",
+        "transports": "transport",
+        "models": "model",
+        "reports": "report",
+    }
+    return mapping.get(folder, folder)
+
+
 def _check_plugin_dir(
     plugin_dir: Path,
     kind_folder: str,
@@ -206,7 +225,8 @@ def _check_plugin_dir(
             )
         )
 
-    if isinstance(kind_val, str) and kind_val != kind_folder:
+    norm_folder = _normalize_kind(kind_folder)
+    if isinstance(kind_val, str) and kind_val != norm_folder:
         issues.append(
             Issue(
                 path=plugin_toml,

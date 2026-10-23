@@ -106,21 +106,24 @@ class DeploymentConfig(BaseModel):
 
 
 class UniverseConfig(BaseModel):
-    """Universe definition, specifying exactly one of screen or symbols."""
+    """Universe definition, specifying exactly one of screen, symbols, or group."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     screen: str | None = None
     symbols: list[str] | None = None
+    group: str | None = None
 
     @model_validator(mode="after")
     def _validate_universe(self) -> UniverseConfig:
         has_screen = self.screen is not None and bool(self.screen.strip())
         has_symbols = self.symbols is not None and len(self.symbols) > 0
-        if has_screen == has_symbols:
+        has_group = self.group is not None and bool(self.group.strip())
+        count = sum([bool(has_screen), bool(has_symbols), bool(has_group)])
+        if count != 1:
             msg = (
-                "Universe requires exactly one of 'screen' or 'symbols' to be set; "
-                f"got screen={self.screen!r}, symbols={self.symbols!r}"
+                "Universe requires exactly one of 'screen', 'symbols', or 'group' to be set; "
+                f"got screen={self.screen!r}, symbols={self.symbols!r}, group={self.group!r}"
             )
             raise ValueError(msg)
         return self
@@ -144,7 +147,7 @@ class RunConfig(BaseModel):
     run: RunMeta
     data_source: PluginRef
     execution_venue: PluginRef
-    calendar: PluginRef
+    calendars: list[PluginRef]
     secrets: PluginRef
     fees: FeesConfig
     deployment: DeploymentConfig = Field(default_factory=DeploymentConfig)
@@ -152,11 +155,31 @@ class RunConfig(BaseModel):
     strategies: list[StrategyConfig]
     notifiers: list[PluginRef] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_calendars(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "calendars" not in data and "calendar" in data:
+                cal = data.pop("calendar")
+                if isinstance(cal, list):
+                    data["calendars"] = cal
+                elif isinstance(cal, dict):
+                    data["calendars"] = [cal]
+        return data
+
     @field_validator("allocated_capital")
     @classmethod
     def _validate_allocated_capital(cls, v: Decimal) -> Decimal:
         if v <= 0:
             msg = "allocated_capital must be greater than 0"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("calendars")
+    @classmethod
+    def _validate_calendars(cls, v: list[PluginRef]) -> list[PluginRef]:
+        if not v:
+            msg = "At least one calendar must be defined under [[calendars]]"
             raise ValueError(msg)
         return v
 

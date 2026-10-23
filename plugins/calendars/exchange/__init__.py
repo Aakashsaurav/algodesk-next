@@ -1,0 +1,1 @@
+"""Exchange calendar plugin package."""

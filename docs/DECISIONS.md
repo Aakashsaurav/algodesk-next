@@ -45,3 +45,9 @@ Short decision records (context, decision, reason) in the order they were taken.
 **ADR-018 Shipped parameter defaults are authoritative.** The database stores overrides and history only; a changed default never breaks startup.
 
 **ADR-019 Parameter and journal writes are transactional and fail closed.** A journal write failure stops all further appends until reopened.
+
+**ADR-020 Public API now holds market and order types; CB-6 raised to ~60 types.** As M1 introduces canonical market and trading data representations across plugins and core, `algodesk.api` defines frozen domain types (Instrument, Quote, Bar, Order, Fill, Position, Portfolio) and Protocols. CB-6 guidance is raised from ~25 to ~60 public exports to accommodate these types while keeping logic out of `api`.
+
+**ADR-021 Market hours are central registry parameters; sessions are data, MCX has two.** Session opening, closing, square-off times and weekdays are defined in `config/params/markets.toml` under the parameter registry, enabling runtime adjustment. Calendar plugins provide exchange-specific trading day status, holidays, and per-session closures (MCX supports morning and evening sessions).
+
+**ADR-022 Fees are dated data read by one engine.** Fee schedules are TOML data files specifying dated component rates (flat, percentage, capped, per-crore, DP per-scrip-day) and GST rules. A single core `FeeEngine` computes charges deterministically across backtest, paper, and live modes rather than writing custom fee code per broker.

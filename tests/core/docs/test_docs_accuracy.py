@@ -14,6 +14,7 @@ from algodesk.params.defaults import load_defaults
 
 ALLOWED_NON_PARAM_NAMES = {
     "algodesk.api": "Core plugin API import package",
+    "algodesk.api.protocols": "Core protocols module",
     "requires.packages": "Plugin manifest requirement specification attribute",
     "config.valid": "Doctor diagnostic check ID for configuration validity",
     "env.isolated": "Doctor diagnostic check ID for workspace isolation",

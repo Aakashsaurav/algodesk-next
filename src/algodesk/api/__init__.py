@@ -1,11 +1,24 @@
-"""Plugin contracts, manifest model and error types.
+"""Plugin contracts, manifest model, trading/market types and error types.
 
 Public API surface — re-exports everything downstream code needs.
 """
 
 from algodesk.api.checks import CheckResult, DoctorCheck, Severity
+from algodesk.api.conformance import (
+    calendar_problems,
+    data_source_problems,
+    fees_problems,
+    indicator_problems,
+    kind_problems,
+    notifier_problems,
+    risk_rule_problems,
+    secrets_problems,
+    strategy_problems,
+    venue_problems,
+)
 from algodesk.api.errors import (
     AlgoDeskError,
+    CalendarCoverageError,
     ConfigError,
     JournalError,
     ManifestError,
@@ -16,7 +29,41 @@ from algodesk.api.errors import (
 )
 from algodesk.api.kinds import API_VERSION, Mode, PluginKind
 from algodesk.api.manifest import PluginManifest, parse_manifest
+from algodesk.api.market import (
+    Bar,
+    FeedStatus,
+    IdParts,
+    Instrument,
+    InstrumentId,
+    Level,
+    MarketEvent,
+    Quote,
+    SeriesKey,
+    Tick,
+    format_id,
+    parse_id,
+    to_price,
+)
 from algodesk.api.plugin import Plugin, PluginBase
+from algodesk.api.protocols import (
+    AuthFlow,
+    AuthSession,
+    Calendar,
+    DataSource,
+    ExecutionVenue,
+    Indicator,
+    IndicatorSpec,
+    LoginRequest,
+    Message,
+    Notifier,
+    RiskRule,
+    RiskView,
+    SecretsProvider,
+    Session,
+    Strategy,
+    StrategyContext,
+    TradingSession,
+)
 from algodesk.api.scrub import Scrubber
 from algodesk.api.services import (
     JournalWriter,
@@ -24,6 +71,29 @@ from algodesk.api.services import (
     ParamValue,
     PluginContext,
     SecretReader,
+)
+from algodesk.api.trading import (
+    ORDER_TRANSITIONS,
+    CancelOrder,
+    Charges,
+    Fill,
+    Funds,
+    Intent,
+    Order,
+    OrderEvent,
+    OrderSpec,
+    OrderState,
+    OrderType,
+    PlaceOrder,
+    Portfolio,
+    Position,
+    Product,
+    RiskDecision,
+    Side,
+    Validity,
+    VenueAck,
+    VenueEvent,
+    check_transition,
 )
 
 __all__ = [
@@ -35,6 +105,7 @@ __all__ = [
     "Severity",
     # errors
     "AlgoDeskError",
+    "CalendarCoverageError",
     "ConfigError",
     "JournalError",
     "ManifestError",
@@ -58,4 +129,69 @@ __all__ = [
     "ParamValue",
     "PluginContext",
     "SecretReader",
+    # market
+    "Bar",
+    "FeedStatus",
+    "IdParts",
+    "Instrument",
+    "InstrumentId",
+    "Level",
+    "MarketEvent",
+    "Quote",
+    "SeriesKey",
+    "Tick",
+    "format_id",
+    "parse_id",
+    "to_price",
+    # trading
+    "CancelOrder",
+    "Charges",
+    "Fill",
+    "Funds",
+    "Intent",
+    "ORDER_TRANSITIONS",
+    "Order",
+    "OrderEvent",
+    "OrderSpec",
+    "OrderState",
+    "OrderType",
+    "PlaceOrder",
+    "Position",
+    "Portfolio",
+    "Product",
+    "RiskDecision",
+    "Side",
+    "Validity",
+    "VenueAck",
+    "VenueEvent",
+    "check_transition",
+    # protocols & supporting types
+    "AuthFlow",
+    "AuthSession",
+    "Calendar",
+    "DataSource",
+    "ExecutionVenue",
+    "Indicator",
+    "IndicatorSpec",
+    "LoginRequest",
+    "Message",
+    "Notifier",
+    "RiskRule",
+    "RiskView",
+    "SecretsProvider",
+    "Session",
+    "Strategy",
+    "StrategyContext",
+    "TradingSession",
+    # conformance
+    "calendar_problems",
+    "data_source_problems",
+    "fees_problems",
+    "indicator_problems",
+    "kind_problems",
+    "notifier_problems",
+    "risk_rule_problems",
+    "secrets_problems",
+    "strategy_problems",
+    "venue_problems",
 ]

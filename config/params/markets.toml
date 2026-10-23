@@ -1,0 +1,259 @@
+# config/params/markets.toml — Market sessions, operating hours, and exchange schedules
+
+# --- NSE Equity (nse.eq) ---
+
+[[param]]
+name = "market.nse.eq.preopen.open"
+type = "time"
+default = "09:00"
+tighten = "none"
+description = "NSE equity pre-open session start time. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.nse.eq.preopen.close"
+type = "time"
+default = "09:15"
+tighten = "none"
+description = "NSE equity pre-open session end time. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.nse.eq.regular.open"
+type = "time"
+default = "09:15"
+tighten = "none"
+description = "NSE equity regular trading session start time. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.nse.eq.regular.close"
+type = "time"
+default = "15:30"
+tighten = "none"
+description = "NSE equity regular trading session end time. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.nse.eq.weekdays"
+type = "str"
+default = "MON,TUE,WED,THU,FRI"
+tighten = "none"
+description = "NSE equity trading weekdays. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.nse.eq.timezone"
+type = "str"
+default = "Asia/Kolkata"
+tighten = "none"
+description = "NSE equity market timezone. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.nse.eq.squareoff"
+type = "time"
+default = "15:15"
+tighten = "none"
+description = "NSE equity intraday square-off time. Verified (PRD)."
+owner = "core"
+
+# --- BSE Equity (bse.eq) ---
+
+[[param]]
+name = "market.bse.eq.preopen.open"
+type = "time"
+default = "09:00"
+tighten = "none"
+description = "BSE equity pre-open session start time. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.bse.eq.preopen.close"
+type = "time"
+default = "09:15"
+tighten = "none"
+description = "BSE equity pre-open session end time. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.bse.eq.regular.open"
+type = "time"
+default = "09:15"
+tighten = "none"
+description = "BSE equity regular trading session start time. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.bse.eq.regular.close"
+type = "time"
+default = "15:30"
+tighten = "none"
+description = "BSE equity regular trading session end time. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.bse.eq.weekdays"
+type = "str"
+default = "MON,TUE,WED,THU,FRI"
+tighten = "none"
+description = "BSE equity trading weekdays. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.bse.eq.timezone"
+type = "str"
+default = "Asia/Kolkata"
+tighten = "none"
+description = "BSE equity market timezone. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.bse.eq.squareoff"
+type = "time"
+default = "15:15"
+tighten = "none"
+description = "BSE equity intraday square-off time. Verified (PRD)."
+owner = "core"
+
+# --- NSE F&O (nse.fno) ---
+
+[[param]]
+name = "market.nse.fno.regular.open"
+type = "time"
+default = "09:15"
+tighten = "none"
+description = "NSE F&O regular trading session start time. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.nse.fno.regular.close"
+type = "time"
+default = "15:30"
+tighten = "none"
+description = "NSE F&O regular trading session end time. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.nse.fno.weekdays"
+type = "str"
+default = "MON,TUE,WED,THU,FRI"
+tighten = "none"
+description = "NSE F&O trading weekdays. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.nse.fno.timezone"
+type = "str"
+default = "Asia/Kolkata"
+tighten = "none"
+description = "NSE F&O market timezone. Verified (PRD)."
+owner = "core"
+
+[[param]]
+name = "market.nse.fno.squareoff"
+type = "time"
+default = "15:15"
+tighten = "none"
+description = "NSE F&O intraday square-off time. Verified (PRD)."
+owner = "core"
+
+# --- NSE Currency Derivatives (nse.cds) ---
+
+[[param]]
+name = "market.nse.cds.regular.open"
+type = "time"
+default = "09:00"
+tighten = "none"
+description = "NSE currency derivatives regular session start time. Confirmed by you (21 Oct)."
+owner = "core"
+
+[[param]]
+name = "market.nse.cds.regular.close"
+type = "time"
+default = "17:00"
+tighten = "none"
+description = "NSE currency derivatives regular session end time. Confirmed by you (21 Oct)."
+owner = "core"
+
+[[param]]
+name = "market.nse.cds.weekdays"
+type = "str"
+default = "MON,TUE,WED,THU,FRI"
+tighten = "none"
+description = "NSE currency derivatives trading weekdays. Confirmed by you (21 Oct)."
+owner = "core"
+
+[[param]]
+name = "market.nse.cds.timezone"
+type = "str"
+default = "Asia/Kolkata"
+tighten = "none"
+description = "NSE currency derivatives timezone. Confirmed by you (21 Oct)."
+owner = "core"
+
+[[param]]
+name = "market.nse.cds.squareoff"
+type = "time"
+default = "16:45"
+tighten = "none"
+description = "NSE currency derivatives square-off time. Confirmed by you (21 Oct)."
+owner = "core"
+
+# --- MCX Commodities (mcx.com) ---
+
+[[param]]
+name = "market.mcx.com.morning.open"
+type = "time"
+default = "09:00"
+tighten = "none"
+description = "MCX commodity morning session start time. Confirmed by you (21 Oct)."
+owner = "core"
+
+[[param]]
+name = "market.mcx.com.morning.close"
+type = "time"
+default = "17:00"
+tighten = "none"
+description = "MCX commodity morning session end time. Confirmed by you (21 Oct)."
+owner = "core"
+
+[[param]]
+name = "market.mcx.com.evening.open"
+type = "time"
+default = "17:00"
+tighten = "none"
+description = "MCX commodity evening session start time. Confirmed by you (21 Oct)."
+owner = "core"
+
+[[param]]
+name = "market.mcx.com.evening.close"
+type = "time"
+default = "23:30"
+tighten = "none"
+description = "MCX commodity evening session end time. Confirmed by you (21 Oct)."
+owner = "core"
+
+[[param]]
+name = "market.mcx.com.weekdays"
+type = "str"
+default = "MON,TUE,WED,THU,FRI"
+tighten = "none"
+description = "MCX commodity trading weekdays. Confirmed by you (21 Oct)."
+owner = "core"
+
+[[param]]
+name = "market.mcx.com.timezone"
+type = "str"
+default = "Asia/Kolkata"
+tighten = "none"
+description = "MCX commodity market timezone. Confirmed by you (21 Oct)."
+owner = "core"
+
+[[param]]
+name = "market.mcx.com.squareoff"
+type = "time"
+default = "23:15"
+tighten = "none"
+description = "MCX commodity square-off time. Confirmed by you (21 Oct)."
+owner = "core"

@@ -4,15 +4,15 @@ Owner: Aakash · Version: 1.0 · Date: 19 October 2026
 
 ## Summary
 
-AlgoDesk Next is a small core plus plugins. The core is nine packages in strict layers: `api` (contracts, no internal imports) at the bottom; `config`, `params`, `registry`, `journal` and `logs` above it, independent of each other; `ops` (composition root, doctor) and `devtools` (budget, docs, lint, secret scan) above those; `cli` on top. Plugins import only `algodesk.api`; the core never imports a plugin. Every adjustable number lives in the parameter registry, every event in a hash-chained journal, and every plugin load passes mode, capability and conformance gates. Import rules are enforced by tests. Market data, strategies, orders and brokers arrive from milestone M1 onward as plugins.
+AlgoDesk Next is a small core plus plugins. The core is ten packages in strict layers: `api` (contracts, no internal imports) at the bottom; `fees`, `config`, `params`, `registry`, `journal` and `logs` above it, independent of each other; `ops` (composition root, doctor) and `devtools` (budget, docs, lint, secret scan) above those; `cli` on top. Plugins import only `algodesk.api`; the core never imports a plugin. Every adjustable number lives in the parameter registry, every event in a hash-chained journal, and every plugin load passes mode, capability and conformance gates. Import rules are enforced by tests. Market data, strategies, orders and brokers arrive from milestone M1 onward as plugins.
 
 ## 1. Layers
 
 ```
 cli
 ops | devtools
-config | params | registry | journal | logs      (independent of each other)
-api                                               (imports no other algodesk package)
+fees | config | params | registry | journal | logs   (independent of each other)
+api                                                    (imports no other algodesk package)
 plugins/  ->  algodesk.api only
 ```
 Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.sh`) and by `algodesk lint`.
@@ -21,7 +21,8 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 
 | Package | Purpose | Main public names |
 |---|---|---|
-| `api` | Contracts shared by everything | `PluginManifest`, `parse_manifest`, `Plugin`, `PluginBase`, `PluginContext`, `ParamReader`, `JournalWriter`, `SecretReader`, `DoctorCheck`, `CheckResult`, `Severity`, `Scrubber`, `PluginKind`, `Mode`, error classes |
+| `api` | Contracts, domain types and protocols | `Instrument`, `Quote`, `Bar`, `Order`, `Fill`, `Position`, `Portfolio`, `Indicator`, `Calendar`, `PluginBase`, error classes |
+| `fees` | Deterministic fee calculation and schedules | `FeeEngine`, `Schedule`, `charges_for_fills` |
 | `config` | Layered TOML configuration, validated | `PlatformConfig`, `RunConfig`, `load_platform`, `load_run`, `build_effective`, `render_effective`, `resolve_paths`, `ensure_dirs` |
 | `params` | Central parameter registry (SQLite) | `ParamRegistry`, `ParamSpec`, `load_defaults`, `ChangeResult` |
 | `registry` | Plugin discovery, validation, gating, loading | `PluginRegistry`, `discover`, `code_hash`, `ConformanceStore`, `scaffold_plugin`, `base_contract_problems` |
@@ -68,6 +69,10 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 
 isolation, ruff check, ruff format check, mypy (strict), pytest, import-linter contracts, budget (size advisory, dependencies hard), docs check, architecture lint, secret scan. The last line is `CHECK: PASS` or `CHECK: FAIL (n)`.
 
-## 8. Not built yet
+## 8. Market Sessions & Calendars
 
-Market data and the canonical market and order types, the clock, order manager, portfolio, risk engine, strategies, indicators, screens, backtesting, reports, Telegram, broker plugins and the remote runner. Per-kind plugin interfaces are fixed with each kind's first real plugin, starting in M1.
+Market sessions (open, close, square-off, weekdays) are centralized as parameters under `market.<exchange>.<segment>` in the parameter registry (`config/params/markets.toml`). Calendar plugins read registry parameters for timing while supplying exchange-specific trading days, holidays, per-session closures (closed = all, morning, evening; MCX has two sessions), and special session timings from data files.
+
+## 9. Not built yet
+
+The clock, order manager, portfolio engine, execution engine, demo strategy runner, Telegram notifier, Upstox broker plugin, and remote runner.

@@ -202,9 +202,11 @@ def _format_type_error(
 
 def _format_value_error(dotted_key: str, msg: str) -> tuple[str, str]:
     if "Universe requires exactly one" in msg:
-        fix = "Specify exactly one of 'screen' or 'symbols' under [universe]"
+        fix = "Specify exactly one of 'screen', 'symbols', or 'group' under [universe]"
     elif "At least one strategy" in msg:
         fix = "Define at least one strategy entry under [[strategies]]"
+    elif "At least one calendar" in msg:
+        fix = "Define at least one calendar entry under [[calendars]]"
     elif "allocated_capital must be greater than 0" in msg:
         fix = "Set allocated_capital to a positive amount (> 0)"
     elif "relative path without traversal" in msg:

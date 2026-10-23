@@ -8,7 +8,21 @@ A plugin is a folder `plugins/<kind>/<name>/` with a `plugin.toml` manifest, `pl
 
 ## Kinds
 
-broker, venue, fees, indicator, screen, strategy, risk_rule, notifier, calendar, secrets, transport, model, report. The interface for each kind is fixed with its first real plugin (from M1); until then plugins use the base contract (`Plugin`, `PluginBase`).
+Plugins implement domain protocols defined in `algodesk.api.protocols` (re-exported at `algodesk.api`):
+
+| Kind | Protocol / Interface | Purpose |
+|---|---|---|
+| `broker` | `AuthFlow`, `DataSource` | Broker authentication and market data ingestion |
+| `venue` | `ExecutionVenue` | Order routing, paper execution, or live exchange venue |
+| `fees` | `schedule() -> Schedule` | Exchange/broker fee rates and transaction tax schedules |
+| `indicator` | `Indicator` | Batch (`compute`) and streaming (`update`) indicators |
+| `screen` | Screening interface | Universe screening and filtering |
+| `strategy` | `Strategy` | Signal generation and lifecycle (`on_bar`, `on_quote`) |
+| `risk_rule` | `RiskRule` | Pre-trade risk assessment (`check`) |
+| `notifier` | `Notifier` | Operational messaging and alerts (`send`) |
+| `calendar` | `Calendar` | Trading days, sessions, holidays, and special sessions |
+| `secrets` | `SecretsProvider` | Secret resolution (`get`, `names`) |
+| `transport` | Transport interface | Low-level network connections |
 
 ## Manifest (`plugin.toml`)
 

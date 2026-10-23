@@ -1,0 +1,18 @@
+name = "exchange"
+kind = "calendar"
+version = "0.1.0"
+api_version = 1
+entry = "plugin:ExchangeCalendarPlugin"
+config_schema = "config_schema:ExchangeCalendarConfig"
+modes_allowed = ["research", "backtest", "paper", "live"]
+order_capable = false
+verified_on = "2026-10-21"
+sources = ["MCX trading holidays page 2026", "Zerodha market holiday calendar 2026"]
+
+[capabilities]
+holidays = true
+sessions = true
+special_sessions = true
+
+[requires]
+packages = ["pydantic", "pytest"]

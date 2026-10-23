@@ -5,10 +5,19 @@ from __future__ import annotations
 from typing import Any
 
 from algodesk.api.checks import CheckResult, DoctorCheck, Severity
+from algodesk.api.conformance import kind_problems
 from algodesk.api.errors import NotSupported
 from algodesk.api.kinds import Mode
 from algodesk.api.manifest import PluginManifest
 from algodesk.registry.registry import PluginRegistry
+
+
+def plugin_contract_problems(plugin: Any) -> list[str]:
+    """Verify base contract and kind-specific conformance problems."""
+    problems = base_contract_problems(plugin)
+    if not problems and hasattr(plugin, "manifest"):
+        problems.extend(kind_problems(plugin))
+    return problems
 
 
 def base_contract_problems(plugin: Any) -> list[str]:

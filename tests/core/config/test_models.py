@@ -189,12 +189,72 @@ def test_universe_both_screen_and_symbols_rejected() -> None:
         UniverseConfig(screen="nifty_50", symbols=["RELIANCE"])
 
 
+def test_universe_group_only_valid() -> None:
+    """Universe with only group is valid."""
+    from algodesk.config.models import UniverseConfig
+
+    u = UniverseConfig(group="nifty_50")
+    assert u.group == "nifty_50"
+    assert u.screen is None
+    assert u.symbols is None
+
+
+def test_universe_multiple_options_rejected() -> None:
+    """Universe with more than one of screen, symbols, group is rejected."""
+    from algodesk.config.models import UniverseConfig
+
+    with pytest.raises(ValidationError, match="Universe requires exactly one"):
+        UniverseConfig(screen="nifty_50", group="nifty_top")
+
+    with pytest.raises(ValidationError, match="Universe requires exactly one"):
+        UniverseConfig(symbols=["TCS"], group="nifty_top")
+
+    with pytest.raises(ValidationError, match="Universe requires exactly one"):
+        UniverseConfig(screen="nifty_50", symbols=["TCS"], group="nifty_top")
+
+
 def test_universe_neither_screen_nor_symbols_rejected() -> None:
-    """Universe with neither screen nor symbols is rejected."""
+    """Universe with neither screen nor symbols nor group is rejected."""
     from algodesk.config.models import UniverseConfig
 
     with pytest.raises(ValidationError, match="Universe requires exactly one"):
         UniverseConfig()
+
+
+def test_run_config_calendars_list_valid() -> None:
+    """RunConfig accepts calendars list with one or more entries."""
+    from algodesk.config.models import RunConfig
+
+    data = _make_valid_run_dict()
+    del data["calendar"]
+    data["calendars"] = [{"plugin": "nse"}, {"plugin": "mcx"}]
+    cfg = RunConfig.model_validate(data)
+    assert len(cfg.calendars) == 2
+    assert cfg.calendars[0].plugin == "nse"
+    assert cfg.calendars[1].plugin == "mcx"
+
+
+def test_run_config_empty_calendars_rejected() -> None:
+    """RunConfig rejects empty calendars list."""
+    from algodesk.config.models import RunConfig
+
+    data = _make_valid_run_dict()
+    del data["calendar"]
+    # pyrefly: ignore[implicit-any-empty-container]
+    data["calendars"] = []
+    with pytest.raises(ValidationError, match="At least one calendar"):
+        RunConfig.model_validate(data)
+
+
+def test_run_config_legacy_calendar_coerced() -> None:
+    """RunConfig coerces single calendar object into calendars list."""
+    from algodesk.config.models import RunConfig
+
+    data = _make_valid_run_dict()
+    assert "calendar" in data
+    cfg = RunConfig.model_validate(data)
+    assert len(cfg.calendars) == 1
+    assert cfg.calendars[0].plugin == "nse"
 
 
 def test_empty_strategies_rejected() -> None:

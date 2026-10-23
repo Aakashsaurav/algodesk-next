@@ -1,0 +1,17 @@
+name = "zerodha_nse"
+kind = "fees"
+version = "0.1.0"
+api_version = 1
+entry = "plugin:ZerodhaNseFeesPlugin"
+modes_allowed = ["research", "backtest", "paper", "live"]
+order_capable = false
+verified_on = "2026-10-21"
+sources = ["PRD Appendix D.2", "Zerodha brokerage calculator"]
+
+[capabilities]
+equity_delivery = true
+equity_intraday = true
+futures = true
+
+[requires]
+packages = ["pydantic", "pytest"]
