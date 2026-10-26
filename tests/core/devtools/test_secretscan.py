@@ -233,3 +233,17 @@ def test_secretscan_allowlist_loading_and_filtering(tmp_path: Path) -> None:
     )
     allows = load_secretscan_allow(tmp_path)
     assert allows.get("fixtures/data.txt") == "Test fixture"
+
+
+def test_secretscan_excludes_agents_and_workbench(tmp_path: Path) -> None:
+    _setup_scan_env(tmp_path)
+    agents_dir = tmp_path / ".agents" / "some_skill"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "secret.py").write_text("token = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890'\n")
+
+    wb_dir = tmp_path / "_workbench"
+    wb_dir.mkdir(parents=True)
+    (wb_dir / "draft.txt").write_text("AKIAIOSFODNN7EXAMPLE\n")
+
+    rep = run_secretscan(tmp_path)
+    assert len(rep.findings) == 0

@@ -10,6 +10,10 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
     "pydantic>=2",
     "typer>=0.9",
+    "httpx>=0.27",
+    "websockets>=13",
+    "protobuf>=5",
+    "yfinance>=0.2",
 ]
 
 [project.scripts]
@@ -32,12 +36,23 @@ packages = ["src/algodesk"]
 [tool.ruff]
 line-length = 100
 src = ["src"]
+exclude = [
+    ".agents",
+    "_workbench",
+    "plugins/brokers/upstox/proto",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
 [tool.mypy]
 strict = true
+exclude = [
+    "^plugins/brokers/upstox/proto/.*$",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -45,4 +60,5 @@ testpaths = ["tests"]
 [tool.uv]
 python-preference = "only-managed"
 python-downloads = "manual"
+
 

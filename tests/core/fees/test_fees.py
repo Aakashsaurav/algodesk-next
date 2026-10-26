@@ -78,8 +78,29 @@ def test_vector_2_delivery_sell_first_of_day(zerodha_schedule: Schedule) -> None
     assert chg.total == Decimal("67.75")
 
 
-def test_vector_3_delivery_sell_second_trade(zerodha_schedule: Schedule) -> None:
-    """Vector 3: Equity Delivery SELL second of day (50 @ 500 = 25,000 turnover)."""
+def test_vector_3_delivery_sell_standalone(zerodha_schedule: Schedule) -> None:
+    """Vector 3: Equity Delivery SELL standalone (50 @ 500 = 25,000 turnover)."""
+    chg = FeeEngine.calculate_trade_charges(
+        turnover=Decimal("25000.00"),
+        side=Side.SELL,
+        segment="eq",
+        product=Product.CNC,
+        trade_date=date(2026, 10, 26),
+        schedule=zerodha_schedule,
+        is_first_scrip_day=True,
+    )
+    assert chg.brokerage == Decimal("0.00")
+    assert chg.stt == Decimal("25.00")
+    assert chg.stamp == Decimal("0.00")
+    assert chg.exchange_txn == Decimal("0.74")  # 25000 * 0.0000297 = 0.7425 -> 0.74
+    assert chg.sebi == Decimal("0.03")  # 25000 * 10 / 1e7 = 0.025 -> 0.03
+    assert chg.dp == Decimal("13.50")
+    assert chg.gst == Decimal("2.57")  # 18% of (0.74 + 0.03 + 13.50) = 2.5686 -> 2.57
+    assert chg.total == Decimal("41.84")
+
+
+def test_delivery_sell_second_trade_suppresses_dp(zerodha_schedule: Schedule) -> None:
+    """Second sale of the same scrip on the same day pays DP once (DP suppressed)."""
     chg = FeeEngine.calculate_trade_charges(
         turnover=Decimal("25000.00"),
         side=Side.SELL,
@@ -92,10 +113,10 @@ def test_vector_3_delivery_sell_second_trade(zerodha_schedule: Schedule) -> None
     assert chg.brokerage == Decimal("0.00")
     assert chg.stt == Decimal("25.00")
     assert chg.stamp == Decimal("0.00")
-    assert chg.exchange_txn == Decimal("0.74")  # 25000 * 0.0000297 = 0.7425 -> 0.74
-    assert chg.sebi == Decimal("0.03")  # 25000 * 10 / 1e7 = 0.025 -> 0.03
-    assert chg.dp == Decimal("0.00")  # Suppressed!
-    assert chg.gst == Decimal("0.14")  # 18% of (0.74 + 0.03) = 0.1386 -> 0.14
+    assert chg.exchange_txn == Decimal("0.74")
+    assert chg.sebi == Decimal("0.03")
+    assert chg.dp == Decimal("0.00")  # Suppressed
+    assert chg.gst == Decimal("0.14")
     assert chg.total == Decimal("25.91")
 
 

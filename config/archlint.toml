@@ -15,3 +15,6 @@ ignore_values = [0, 1, -1, 0.0, 1.0, -1.0]
 
 [plugin_imports]
 allowed_framework_roots = ["algodesk.api"]
+
+[exclusions]
+directories = [".agents", "_workbench", "__pycache__", "proto"]

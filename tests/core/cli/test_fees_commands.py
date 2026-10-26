@@ -92,8 +92,12 @@ def test_fees_calc_invalid_segment(runner: CliRunner) -> None:
 def test_fees_vectors(runner: CliRunner) -> None:
     res = runner.invoke(app, ["fees", "vectors"])
     assert res.exit_code == 0
-    assert "Verified Fee Vectors (Zerodha NSE)" in res.output
+    assert (
+        "Computed fee vectors (pending your hand check against Zerodha's calculator):" in res.output
+    )
+    assert "computed" in res.output
     assert "59.32" in res.output
     assert "67.75" in res.output
+    assert "41.84" in res.output
     assert "16.01" in res.output
     assert "134.40" in res.output

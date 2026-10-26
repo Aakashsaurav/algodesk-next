@@ -73,6 +73,10 @@ isolation, ruff check, ruff format check, mypy (strict), pytest, import-linter c
 
 Market sessions (open, close, square-off, weekdays) are centralized as parameters under `market.<exchange>.<segment>` in the parameter registry (`config/params/markets.toml`). Calendar plugins read registry parameters for timing while supplying exchange-specific trading days, holidays, per-session closures (closed = all, morning, evening; MCX has two sessions), and special session timings from data files.
 
-## 9. Not built yet
+## 9. Secrets & Broker Ingestion
 
-The clock, order manager, portfolio engine, execution engine, demo strategy runner, Telegram notifier, Upstox broker plugin, and remote runner.
+Secrets providers (`keychain`, `env`) expose name-based lookup through `SecretReader`. In `build_context`, all retrieved secret values are registered with `Scrubber` to guarantee redaction in logs and journals. Broker plugins implement `DataSource` (historical bars, real-time tick/quote feeds) and `AuthFlow` (interactive browser login or analytics tokens).
+
+## 10. Not built yet
+
+The clock, order manager, portfolio engine, execution engine, demo strategy runner, Telegram notifier, and remote runner.

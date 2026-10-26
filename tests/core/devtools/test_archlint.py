@@ -319,3 +319,28 @@ def test_archlint_handles_syntax_error_file_gracefully(tmp_path: Path) -> None:
     rep = run_archlint(tmp_path)
     errs = [e for e in rep.errors if e.rule == "archlint.syntax_error"]
     assert len(errs) == 1
+
+
+def test_archlint_excludes_agents_and_workbench(tmp_path: Path) -> None:
+    _setup_minimal_project(tmp_path)
+    agents_dir = tmp_path / ".agents" / "some_skill"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "bad.py").write_text("eval('1+1')\n")
+
+    wb_dir = tmp_path / "_workbench"
+    wb_dir.mkdir(parents=True)
+    (wb_dir / "scratch.py").write_text("eval('1+1')\n")
+
+    rep = run_archlint(tmp_path)
+    assert len(rep.errors) == 0
+
+
+def test_ruff_config_excludes_agents_and_workbench() -> None:
+    root = Path(__file__).resolve().parents[3]
+    pyproject = root / "pyproject.toml"
+    import tomllib
+
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    exclude = data.get("tool", {}).get("ruff", {}).get("exclude", [])
+    assert ".agents" in exclude
+    assert "_workbench" in exclude

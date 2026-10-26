@@ -24,6 +24,15 @@ Plugins implement domain protocols defined in `algodesk.api.protocols` (re-expor
 | `secrets` | `SecretsProvider` | Secret resolution (`get`, `names`) |
 | `transport` | Transport interface | Low-level network connections |
 
+## Shipped Plugins
+
+| Plugin | Kind | Capabilities | Description |
+|---|---|---|---|
+| `secrets/keychain` | `secrets` | `get`, `set`, `delete`, `names` | macOS Keychain provider via system `security` CLI; maintains a names-only index under `.algodesk/`. |
+| `secrets/env` | `secrets` | `get`, `names` | Environment variable provider (`ALGODESK_SECRET_<NAME>`); read-only, `set`/`delete` raise `NotSupported`. |
+| `brokers/yfinance` | `broker` | `history`, `actions`, `fundamentals`, `info`, `options` | Historical equity data from Yahoo Finance with NSE/BSE mappings, raw/adjusted OHLCV, and rate limits. |
+| `brokers/upstox` | `broker` | `auth`, `instruments`, `history`, `stream` | Official Upstox v2/v3 thin client for OAuth/analytics auth, daily instrument master, history, and Protobuf feed. |
+
 ## Manifest (`plugin.toml`)
 
 | Field | Meaning |

@@ -19,6 +19,7 @@ _DEFAULT_EXCLUDED_DIRS = {
     "logs",
     "results",
     "_workbench",
+    ".agents",
     "__pycache__",
 }
 _DEFAULT_LOCK_PATTERNS = {"*.lock", "uv.lock", "poetry.lock", "package-lock.json", "Cargo.lock"}

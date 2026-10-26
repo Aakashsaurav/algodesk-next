@@ -40,6 +40,7 @@ class ArchlintConfig:
     limit_patterns: tuple[str, ...]
     ignore_numeric_values: tuple[int | float, ...]
     allowed_framework_roots: tuple[str, ...]
+    excluded_dirs: tuple[str, ...] = (".agents", "_workbench", "__pycache__")
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ def load_archlint_config(root: Path) -> ArchlintConfig:
     )
     ignore_vals: tuple[int | float, ...] = (0, 1, -1, 0.0, 1.0, -1.0)
     allowed_fw = ("algodesk.api",)
+    ex_dirs: tuple[str, ...] = (".agents", "_workbench", "__pycache__", "proto")
 
     if cfg_file.is_file():
         try:
@@ -99,6 +101,10 @@ def load_archlint_config(root: Path) -> ArchlintConfig:
             pi = data.get("plugin_imports", {})
             if "allowed_framework_roots" in pi:
                 allowed_fw = tuple(pi["allowed_framework_roots"])
+
+            ex = data.get("exclusions", {})
+            if "directories" in ex:
+                ex_dirs = tuple(ex["directories"])
         except Exception:
             pass
 
@@ -110,6 +116,7 @@ def load_archlint_config(root: Path) -> ArchlintConfig:
         limit_patterns=patterns,
         ignore_numeric_values=ignore_vals,
         allowed_framework_roots=allowed_fw,
+        excluded_dirs=ex_dirs,
     )
 
 
@@ -641,6 +648,11 @@ def run_archlint(root: Path) -> ArchlintReport:
     if plugins_dir.is_dir():
         all_paths.extend(p for p in plugins_dir.rglob("*.py") if "__pycache__" not in p.parts)
 
+    all_paths = [
+        p
+        for p in all_paths
+        if not any(part in cfg.excluded_dirs for part in p.relative_to(root).parts)
+    ]
     all_paths.sort()
 
     for p in all_paths:

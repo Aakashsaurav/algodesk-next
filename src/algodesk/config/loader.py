@@ -332,6 +332,8 @@ def _extract_env_layers(
             continue
         if not var_name.startswith("ALGODESK_"):
             continue
+        if var_name.startswith("ALGODESK_SECRET_"):
+            continue
         suffix = var_name.removeprefix("ALGODESK_")
         if not suffix:
             continue

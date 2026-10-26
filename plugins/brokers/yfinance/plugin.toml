@@ -1,0 +1,21 @@
+name = "yfinance"
+kind = "broker"
+version = "0.1.0"
+api_version = 1
+entry = "plugin:YFinanceBrokerPlugin"
+config_schema = "config_schema:YFinanceConfig"
+modes_allowed = ["research", "backtest"]
+order_capable = false
+verified_on = "2026-10-23"
+sources = ["Yahoo Finance unofficial public endpoints via yfinance Python library"]
+
+[capabilities]
+history = true
+stream = false
+realtime = false
+live_suitable = false
+official_api = false
+delay_seconds = 0
+
+[requires]
+packages = ["yfinance", "pydantic", "pytest"]

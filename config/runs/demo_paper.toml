@@ -1,0 +1,43 @@
+# config/runs/demo_paper.toml — Paper trading demo run configuration
+
+allocated_capital = 100000
+
+[run]
+name = "demo_paper"
+mode = "paper"
+
+[data_source]
+plugin = "upstox"
+auth_priority = ["analytics", "oauth"]
+
+[execution_venue]
+plugin = "sim"
+seed = 7
+
+[fees]
+schedule = "zerodha_nse"
+
+[[calendars]]
+plugin = "exchange"
+exchange = "nse"
+
+[secrets]
+plugin = "keychain"
+
+[universe]
+symbols = [
+    "NSE:EQ:RELIANCE",
+    "NSE:EQ:TCS",
+    "NSE:EQ:HDFCBANK",
+    "NSE:EQ:INFY",
+    "NSE:EQ:ICICIBANK",
+    "MCX:FNO:GOLD FUT 04 DEC 26",
+]
+
+[[strategies]]
+plugin = "sma_cross"
+risk_profile = "conservative"
+params = { timeframe = "5m", fast = 20, slow = 50, qty = 10, exit_time = "15:15" }
+
+[[notifiers]]
+plugin = "telegram"

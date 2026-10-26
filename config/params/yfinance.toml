@@ -1,0 +1,97 @@
+# config/params/yfinance.toml — Yahoo Finance provider limits and rate parameters
+
+[[param]]
+name = "yfinance.retention_1m_days"
+type = "int"
+default = 7
+min = 1
+max = 30
+unit = "days"
+scope = "global"
+tighten = "down"
+description = "Maximum retention window in days for 1-minute historical data on Yahoo Finance"
+owner = "yfinance"
+
+[[param]]
+name = "yfinance.retention_intraday_days"
+type = "int"
+default = 60
+min = 1
+max = 120
+unit = "days"
+scope = "global"
+tighten = "down"
+description = "Maximum retention window in days for intraday (2m to 30m) data on Yahoo Finance"
+owner = "yfinance"
+
+[[param]]
+name = "yfinance.retention_1h_days"
+type = "int"
+default = 730
+min = 1
+max = 1000
+unit = "days"
+scope = "global"
+tighten = "down"
+description = "Maximum retention window in days for 1-hour historical data on Yahoo Finance"
+owner = "yfinance"
+
+[[param]]
+name = "yfinance.rate_limit_per_second"
+type = "float"
+default = 2.0
+min = 0.1
+max = 20.0
+unit = "req/s"
+scope = "global"
+tighten = "down"
+description = "Token bucket refill rate per second for Yahoo Finance requests"
+owner = "yfinance"
+
+[[param]]
+name = "yfinance.rate_limit_burst"
+type = "int"
+default = 5
+min = 1
+max = 50
+unit = "requests"
+scope = "global"
+tighten = "down"
+description = "Token bucket capacity burst allowance for Yahoo Finance requests"
+owner = "yfinance"
+
+[[param]]
+name = "yfinance.max_retries"
+type = "int"
+default = 3
+min = 0
+max = 10
+unit = "retries"
+scope = "global"
+tighten = "down"
+description = "Maximum retries upon receiving HTTP 429 Too Many Requests"
+owner = "yfinance"
+
+[[param]]
+name = "yfinance.backoff_base_s"
+type = "float"
+default = 1.0
+min = 0.1
+max = 10.0
+unit = "s"
+scope = "global"
+tighten = "up"
+description = "Initial exponential backoff base delay in seconds for HTTP 429"
+owner = "yfinance"
+
+[[param]]
+name = "yfinance.backoff_jitter_s"
+type = "float"
+default = 0.5
+min = 0.0
+max = 5.0
+unit = "s"
+scope = "global"
+tighten = "none"
+description = "Random jitter in seconds applied to backoff retry delays"
+owner = "yfinance"

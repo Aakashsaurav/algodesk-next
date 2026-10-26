@@ -10,7 +10,7 @@ import sys
 import traceback
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo
@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import click
 import typer
 
+from algodesk.api import InstrumentId, SeriesKey, resolve_secret_ref
 from algodesk.api.conformance import kind_problems
 from algodesk.api.errors import AlgoDeskError, ConfigError, ParamError
 from algodesk.api.kinds import Mode
@@ -58,6 +59,9 @@ docs_app = typer.Typer(help="Inspect, check, and generate living documentation."
 secrets_app = typer.Typer(help="Scan codebase for exposed secrets and tokens.")
 calendar_app = typer.Typer(help="Inspect trading calendars, sessions, and market holidays.")
 fees_app = typer.Typer(help="Calculate trade charges and inspect fee schedule vectors.")
+data_app = typer.Typer(help="Fetch and inspect historical market data.")
+login_app = typer.Typer(help="Manage broker authentication and credentials.")
+feed_app = typer.Typer(help="Probe and inspect live market data feeds.")
 
 app.add_typer(param_app, name="param")
 app.add_typer(plugins_app, name="plugins")
@@ -68,6 +72,9 @@ app.add_typer(docs_app, name="docs")
 app.add_typer(secrets_app, name="secrets")
 app.add_typer(calendar_app, name="calendar")
 app.add_typer(fees_app, name="fees")
+app.add_typer(data_app, name="data")
+app.add_typer(login_app, name="login")
+app.add_typer(feed_app, name="feed")
 
 
 def _get_cli_state(ctx: Any = None) -> CliState:
@@ -186,16 +193,21 @@ def doctor_cmd(
     ctx: typer.Context,
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose diagnostic output"),
     only: str | None = typer.Option(None, "--only", help="Run only check with this id"),
+    run: str | None = typer.Option(None, "--run", help="Run configuration name"),
     json_opt: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
 ) -> None:
     """Run platform and component diagnostic health checks."""
     state = _get_cli_state(ctx)
     is_json = json_opt or state.json
+    run_name = run or state.run
     with _open_rt(ctx, ensure=False) as rt:
         checks = build_core_checks(rt)
         from algodesk.devtools import build_tool_checks
+        from algodesk.ops.checks import build_run_checks
 
         checks.extend(build_tool_checks(rt))
+        if run_name:
+            checks.extend(build_run_checks(rt, run_name))
         registry = DoctorRegistry()
         registry.register_many(checks)
         report = registry.run(only=only)
@@ -674,6 +686,93 @@ def secrets_scan_cmd(
         raise typer.Exit(code=rep.exit_code)
 
 
+def _resolve_secrets_provider(
+    rt: Any,
+    provider_name: str | None = None,
+    run: str | None = None,
+) -> Any:
+    p_name = provider_name
+    if not p_name and run:
+        from algodesk.config.loader import load_toml
+
+        run_path = rt.root / "config" / "runs" / f"{run}.toml"
+        if run_path.is_file():
+            try:
+                rc = load_toml(run_path)
+                sec_dict = rc.get("secrets", {})
+                if isinstance(sec_dict, dict) and "plugin" in sec_dict:
+                    p_name = str(sec_dict["plugin"])
+            except Exception:
+                pass
+
+    if not p_name:
+        if rt.effective.run is not None and getattr(rt.effective.run, "secrets", None) is not None:
+            p_name = rt.effective.run.secrets.plugin
+        elif sys.platform == "darwin":
+            p_name = "keychain"
+        else:
+            p_name = "env"
+
+    p_ctx = build_context(Mode.RESEARCH, run_id="secrets_cli")
+    return rt.plugins.create("secrets", p_name, config={}, ctx=p_ctx)
+
+
+@secrets_app.command("set")
+@handle_cli_errors
+def secrets_set_cmd(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Secret name"),
+    use_stdin: bool = typer.Option(False, "--stdin", help="Read secret value from stdin"),
+    run: str | None = typer.Option(None, "--run", help="Run configuration name"),
+    provider: str | None = typer.Option(None, "--provider", help="Secrets provider name"),
+) -> None:
+    """Store a secret securely in the configured secrets provider."""
+    import getpass
+
+    if use_stdin:
+        val = sys.stdin.read().strip()
+    else:
+        val = getpass.getpass(f"Enter secret value for '{name}': ").strip()
+
+    if not val:
+        raise typer.BadParameter("Secret value cannot be empty")
+
+    with _open_rt(ctx, ensure=False) as rt:
+        prov = _resolve_secrets_provider(rt, provider_name=provider, run=run)
+        prov.set(name, val)
+    typer.echo(f"Secret '{name}' stored successfully.")
+
+
+@secrets_app.command("list")
+@handle_cli_errors
+def secrets_list_cmd(
+    ctx: typer.Context,
+    run: str | None = typer.Option(None, "--run", help="Run configuration name"),
+    provider: str | None = typer.Option(None, "--provider", help="Secrets provider name"),
+) -> None:
+    """List stored secret names (names only, values never displayed)."""
+    with _open_rt(ctx, ensure=False) as rt:
+        prov = _resolve_secrets_provider(rt, provider_name=provider, run=run)
+        names = prov.names()
+    for n in sorted(names):
+        typer.echo(n)
+
+
+@secrets_app.command("delete")
+@handle_cli_errors
+def secrets_delete_cmd(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Secret name to delete"),
+    run: str | None = typer.Option(None, "--run", help="Run configuration name"),
+    provider: str | None = typer.Option(None, "--provider", help="Secrets provider name"),
+) -> None:
+    """Delete a secret from the configured secrets provider."""
+    with _open_rt(ctx, ensure=False) as rt:
+        prov = _resolve_secrets_provider(rt, provider_name=provider, run=run)
+        prov.delete(name)
+    typer.echo(f"Secret '{name}' deleted.")
+
+
 @calendar_app.command("show")
 @handle_cli_errors
 def calendar_show(
@@ -845,7 +944,7 @@ def fees_vectors_cmd(ctx: typer.Context) -> None:
     vectors: list[tuple[str, str, str, str, int, Decimal, bool]] = [
         ("1", "eq", "CNC", "buy", 100, Decimal("500.00"), True),
         ("2", "eq", "CNC", "sell", 100, Decimal("500.00"), True),
-        ("3", "eq", "CNC", "sell", 50, Decimal("500.00"), False),
+        ("3", "eq", "CNC", "sell", 50, Decimal("500.00"), True),
         ("4", "eq", "MIS", "buy", 10, Decimal("2500.00"), True),
         ("5", "eq", "MIS", "sell", 10, Decimal("2500.00"), True),
         ("6", "eq", "MIS", "buy", 1000, Decimal("500.00"), True),
@@ -883,12 +982,315 @@ def fees_vectors_cmd(ctx: typer.Context) -> None:
                     f"{p:.2f}",
                     f"{turnover:.2f}",
                     f"{charges.total:.2f}",
-                    "OK",
+                    "computed",
                 ]
             )
 
-    typer.echo("Verified Fee Vectors (Zerodha NSE):")
+    typer.echo("Computed fee vectors (pending your hand check against Zerodha's calculator):")
     typer.echo(format_table(headers, rows))
+
+
+def _parse_data_cli_dt(val: str, is_end: bool) -> datetime:
+    val = val.strip()
+    ist = ZoneInfo("Asia/Kolkata")
+    try:
+        dt = datetime.fromisoformat(val)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
+    except ValueError:
+        d = date.fromisoformat(val)
+        if is_end:
+            return datetime.combine(d, time(23, 59, 59), tzinfo=ist).astimezone(UTC)
+        return datetime.combine(d, time.min, tzinfo=ist).astimezone(UTC)
+
+
+@data_app.command("get")
+@handle_cli_errors
+def data_get(
+    ctx: typer.Context,
+    symbol: str = typer.Argument(..., help="Symbol (e.g. RELIANCE, INFY)"),
+    timeframe: str = typer.Argument(..., help="Timeframe (e.g. 1m, 5m, 15m, 30m, 1h, 1d)"),
+    start: str = typer.Argument(..., help="Start date/time (e.g. YYYY-MM-DD or ISO8601)"),
+    end: str = typer.Argument(..., help="End date/time (e.g. YYYY-MM-DD or ISO8601)"),
+    adjusted: bool = typer.Option(False, "--adjusted", help="Use adjusted prices"),
+    source: str = typer.Option("yfinance", "--source", help="Data source broker plugin"),
+) -> None:
+    """Fetch and display historical market data bars in a table."""
+    ist = ZoneInfo("Asia/Kolkata")
+    start_dt = _parse_data_cli_dt(start, is_end=False)
+    end_dt = _parse_data_cli_dt(end, is_end=True)
+
+    inst_id = InstrumentId(symbol if ":" in symbol else f"NSE:EQ:{symbol}")
+    key = SeriesKey(
+        instrument=inst_id,
+        kind="bars",
+        timeframe=timeframe,
+        adjustment="adjusted" if adjusted else "raw",
+        source=source,
+    )
+
+    with _open_rt(ctx, ensure=False) as rt:
+        p_ctx = build_context(Mode.RESEARCH, run_id=f"data_get_{source}")
+        broker: Any = rt.plugins.create("broker", source, config={}, ctx=p_ctx)
+        bars = list(broker.history(key, start_dt, end_dt))
+
+    if not bars:
+        typer.echo(f"No bars returned for {symbol} ({timeframe}) between {start} and {end}.")
+        return
+
+    is_daily = timeframe.lower() == "1d"
+    headers = ["DATE" if is_daily else "DATE/TIME", "OPEN", "HIGH", "LOW", "CLOSE", "VOLUME"]
+    rows: list[list[str]] = []
+    for b in bars:
+        ts_ist = b.start_ts.astimezone(ist)
+        d_str = ts_ist.strftime("%Y-%m-%d") if is_daily else ts_ist.strftime("%Y-%m-%d %H:%M")
+        rows.append(
+            [
+                d_str,
+                f"{b.open:.2f}",
+                f"{b.high:.2f}",
+                f"{b.low:.2f}",
+                f"{b.close:.2f}",
+                str(b.volume),
+            ]
+        )
+    typer.echo(format_table(headers, rows))
+
+
+@login_app.command("upstox")
+@handle_cli_errors
+def login_upstox(
+    ctx: typer.Context,
+    manual: bool = typer.Option(False, "--manual", help="Force manual browser login URL flow"),
+    run: str | None = typer.Option(None, "--run", help="Run configuration name"),
+) -> None:
+    """Authenticate with Upstox via automated loopback OAuth flow or manual URL."""
+    with _open_rt(ctx, ensure=False) as rt:
+        sec_prov = _resolve_secrets_provider(rt, run=run)
+        p_ctx = build_context(Mode.RESEARCH, run_id="login_upstox", secrets=sec_prov)
+        broker: Any = rt.plugins.create("broker", "upstox", config={}, ctx=p_ctx)
+        if manual:
+            req = broker.begin()
+            typer.echo("Open the following URL in your browser to authorize AlgoDesk:")
+            typer.echo(f"\n  {req.url}\n")
+            code = typer.prompt("Enter authorization code from redirect URL")
+            broker.complete(code.strip())
+            typer.echo("Successfully authenticated with Upstox! Access token stored.")
+        else:
+            typer.echo("Opening browser for Upstox OAuth login...")
+            try:
+                broker.begin_auto()
+                typer.echo("Successfully authenticated with Upstox! Access token stored.")
+            except Exception as exc:
+                typer.echo(f"Automated flow failed ({exc}). Falling back to manual flow...")
+                req = broker.begin()
+                typer.echo("Open the following URL in your browser to authorize AlgoDesk:")
+                typer.echo(f"\n  {req.url}\n")
+                code = typer.prompt("Enter authorization code from redirect URL")
+                broker.complete(code.strip())
+                typer.echo("Successfully authenticated with Upstox! Access token stored.")
+
+
+@login_app.command("status")
+@handle_cli_errors
+def login_status(
+    ctx: typer.Context,
+    run: str | None = typer.Option(None, "--run", help="Run configuration name"),
+) -> None:
+    """Show authentication status and token validity for configured brokers."""
+    with _open_rt(ctx, ensure=False) as rt:
+        sec_prov = _resolve_secrets_provider(rt, run=run)
+        p_ctx = build_context(Mode.RESEARCH, run_id="login_status", secrets=sec_prov)
+        broker: Any = rt.plugins.create("broker", "upstox", config={}, ctx=p_ctx)
+
+        headers = ["PROVIDER", "AUTH_TYPE", "CONFIGURED", "VALID", "EXPIRES"]
+        rows: list[list[str]] = []
+
+        # Analytics token check
+        ana_tok = None
+        try:
+            ana_tok = resolve_secret_ref(broker._cfg.analytics_token, p_ctx.secrets)
+        except Exception:
+            pass
+        if ana_tok:
+            from algodesk.api import AuthSession
+
+            sess = AuthSession(token=ana_tok)
+            valid = broker.validate(sess)
+            exp = broker.expires_at(sess)
+            exp_str = exp.strftime("%Y-%m-%d") if exp else "never"
+            rows.append(["upstox", "analytics", "yes", "valid" if valid else "invalid", exp_str])
+        else:
+            rows.append(["upstox", "analytics", "no", "-", "-"])
+
+        # OAuth access token check
+        oauth_tok = None
+        try:
+            oauth_tok = resolve_secret_ref(broker._cfg.access_token, p_ctx.secrets)
+        except Exception:
+            pass
+        if oauth_tok:
+            from algodesk.api import AuthSession
+
+            sess = AuthSession(token=oauth_tok)
+            valid = broker.validate(sess)
+            exp = broker.expires_at(sess)
+            exp_str = exp.strftime("%Y-%m-%d %H:%M") if exp else "unknown"
+            rows.append(["upstox", "oauth", "yes", "valid" if valid else "invalid", exp_str])
+        else:
+            rows.append(["upstox", "oauth", "no", "-", "-"])
+
+    typer.echo(format_table(headers, rows))
+
+
+def _format_event_line(event: Any, depth: bool) -> list[str]:
+    exch_ts = getattr(event, "exch_ts", None)
+    recv_ts = getattr(event, "recv_ts", datetime.now(UTC))
+    t_str = exch_ts.strftime("%H:%M:%S") if exch_ts else recv_ts.strftime("%H:%M:%S")
+    ev_type = type(event).__name__
+    inst = getattr(event, "instrument", "")
+    if ev_type == "Quote":
+        ltp = getattr(event, "ltp", "-")
+        vol = getattr(event, "volume", "-")
+        lines = [f"[{t_str}] QUOTE {inst} | LTP: {ltp} | Vol: {vol}"]
+        if depth:
+            bids = " | ".join(f"{b.price} x {b.qty}" for b in getattr(event, "bids", ()))
+            asks = " | ".join(f"{a.price} x {a.qty}" for a in getattr(event, "asks", ()))
+            lines.append(f"   Bids (L5): {bids or '-'}")
+            lines.append(f"   Asks (L5): {asks or '-'}")
+        return lines
+    if ev_type == "Tick":
+        ltp = getattr(event, "ltp", "-")
+        qty = getattr(event, "ltq", "-")
+        vol = getattr(event, "volume", "-")
+        return [f"[{t_str}] TICK  {inst} | LTP: {ltp} | Qty: {qty} | Vol: {vol}"]
+    if ev_type == "FeedStatus":
+        return [f"[{t_str}] STATUS state={getattr(event, 'state', '-')}"]
+    return []
+
+
+def _track_latency(
+    event: Any,
+    latencies: dict[str, list[float]],
+    gaps: dict[str, int],
+    last_ts: dict[str, datetime],
+) -> None:
+    recv_ts = getattr(event, "recv_ts", datetime.now(UTC))
+    inst_k = str(getattr(event, "instrument", ""))
+    exch_ts = getattr(event, "exch_ts", None)
+    if inst_k in latencies and exch_ts is not None:
+        latencies[inst_k].append((recv_ts - exch_ts).total_seconds() * 1000.0)
+        if inst_k in last_ts and (exch_ts - last_ts[inst_k]).total_seconds() > 5.0:
+            gaps[inst_k] += 1
+        last_ts[inst_k] = exch_ts
+
+
+async def _run_feed_probe(
+    broker: Any,
+    inst_ids: list[InstrumentId],
+    seconds: float,
+    record: Path | None,
+    live: bool = False,
+    depth: bool = False,
+) -> tuple[dict[str, list[float]], dict[str, int], list[list[str]], int]:
+    import asyncio
+
+    latencies: dict[str, list[float]] = {str(i): [] for i in inst_ids}
+    gaps: dict[str, int] = {str(i): 0 for i in inst_ids}
+    sample_rows: list[list[str]] = []
+    rec_count, start_t = 0, datetime.now(UTC).timestamp()
+    last_ts: dict[str, datetime] = {}
+    if record is not None:
+        record.mkdir(parents=True, exist_ok=True)
+
+    stream_iter = broker.stream(inst_ids).__aiter__()
+    while seconds <= 0 or (datetime.now(UTC).timestamp() - start_t) < seconds:
+        t_out = (
+            max(0.1, seconds - (datetime.now(UTC).timestamp() - start_t)) if seconds > 0 else 1.0
+        )
+        try:
+            event = await asyncio.wait_for(stream_iter.__anext__(), timeout=t_out)
+        except TimeoutError:
+            continue
+        except (StopAsyncIteration, asyncio.CancelledError):
+            break
+
+        _track_latency(event, latencies, gaps, last_ts)
+        if live:
+            for line in _format_event_line(event, depth):
+                typer.echo(line)
+        inst_k = str(getattr(event, "instrument", ""))
+        if len(sample_rows) < 10 and inst_k:
+            e_val = getattr(event, "exch_ts", None) or getattr(event, "recv_ts", None)
+            t_str = e_val.strftime("%H:%M:%S") if isinstance(e_val, datetime) else "-"
+            sample_rows.append(
+                [t_str, inst_k, f"{getattr(event, 'ltp', '-')}", str(getattr(event, "volume", "-"))]
+            )
+        if record is not None:
+            rec_count += 1
+            (record / f"event_{rec_count:06d}.txt").write_text(str(event), encoding="utf-8")
+
+    return latencies, gaps, sample_rows, rec_count
+
+
+def _build_probe_summary(
+    inst_ids: list[InstrumentId], lats: dict[str, list[float]], gaps: dict[str, int]
+) -> list[list[str]]:
+    import statistics
+
+    rows: list[list[str]] = []
+    for inst in inst_ids:
+        k = str(inst)
+        lat_list = lats.get(k, [])
+        min_l = f"{min(lat_list):.1f}" if lat_list else "-"
+        med_l = f"{statistics.median(lat_list):.1f}" if lat_list else "-"
+        max_l = f"{max(lat_list):.1f}" if lat_list else "-"
+        rows.append([k, str(len(lat_list)), min_l, med_l, max_l, str(gaps.get(k, 0))])
+    return rows
+
+
+@feed_app.command("probe")
+@handle_cli_errors
+def feed_probe_cmd(
+    ctx: typer.Context,
+    symbols: str = typer.Option(..., "--symbols", help="Comma-separated symbols to probe"),
+    seconds: float = typer.Option(5.0, "--seconds", help="Duration in seconds (0 for continuous)"),
+    record: Path | None = typer.Option(None, "--record", help="Directory to save raw frames"),
+    source: str = typer.Option("upstox", "--source", help="Data source broker plugin"),
+    run: str | None = typer.Option(None, "--run", help="Run configuration name"),
+    live: bool = typer.Option(False, "--live", help="Stream incoming events live to terminal"),
+    depth: bool = typer.Option(
+        False, "--depth", help="Include 5-level market depth for quote events"
+    ),
+) -> None:
+    """Probe live market data feed latency, tick arrival, and gaps."""
+    import asyncio
+
+    raw_syms = [s.strip() for s in symbols.split(",") if s.strip()]
+    if not raw_syms:
+        raise typer.BadParameter("Symbols must not be empty", param_hint="--symbols")
+    inst_ids = [InstrumentId(s if ":" in s else f"NSE:EQ:{s}") for s in raw_syms]
+
+    with _open_rt(ctx, ensure=False) as rt:
+        sec_prov = _resolve_secrets_provider(rt, run=run)
+        p_ctx = build_context(Mode.RESEARCH, run_id="feed_probe", secrets=sec_prov)
+        broker: Any = rt.plugins.create("broker", source, config={}, ctx=p_ctx)
+        try:
+            lats, gaps, samples, rec_count = asyncio.run(
+                _run_feed_probe(broker, inst_ids, seconds, record, live=live, depth=depth)
+            )
+        except KeyboardInterrupt:
+            typer.echo("\nInterrupted by user.")
+            return
+
+    headers = ["INSTRUMENT", "TICKS", "MIN_LAT_MS", "MED_LAT_MS", "MAX_LAT_MS", "GAPS"]
+    typer.echo(format_table(headers, _build_probe_summary(inst_ids, lats, gaps)))
+    if samples:
+        typer.echo("\nSample rows:")
+        typer.echo(format_table(["TIME", "INSTRUMENT", "LTP", "VOLUME"], samples))
+    if record is not None:
+        typer.echo(f"\nRecorded {rec_count} event(s) to {record}")
 
 
 def main() -> None:

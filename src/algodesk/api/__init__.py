@@ -71,6 +71,7 @@ from algodesk.api.services import (
     ParamValue,
     PluginContext,
     SecretReader,
+    resolve_secret_ref,
 )
 from algodesk.api.trading import (
     ORDER_TRANSITIONS,
@@ -129,6 +130,7 @@ __all__ = [
     "ParamValue",
     "PluginContext",
     "SecretReader",
+    "resolve_secret_ref",
     # market
     "Bar",
     "FeedStatus",

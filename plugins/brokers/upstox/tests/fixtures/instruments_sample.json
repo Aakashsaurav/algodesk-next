@@ -1,0 +1,26 @@
+[
+  {
+    "instrument_key": "NSE_EQ|INE002A01018",
+    "exchange_token": "2885",
+    "tradingsymbol": "RELIANCE",
+    "name": "RELIANCE INDUSTRIES LTD",
+    "last_price": 2500.5,
+    "strike": null,
+    "tick_size": 0.05,
+    "lot_size": 1,
+    "instrument_type": "EQUITY",
+    "freeze_quantity": null
+  },
+  {
+    "instrument_key": "NSE_INDEX|Nifty 50",
+    "exchange_token": "26000",
+    "tradingsymbol": "Nifty 50",
+    "name": "NIFTY 50",
+    "last_price": 24500.0,
+    "strike": null,
+    "tick_size": 0.05,
+    "lot_size": 25,
+    "instrument_type": "INDEX",
+    "freeze_quantity": null
+  }
+]

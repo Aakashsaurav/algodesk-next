@@ -1,0 +1,21 @@
+name = "upstox"
+kind = "broker"
+version = "0.1.0"
+api_version = 1
+entry = "plugin:UpstoxBrokerPlugin"
+config_schema = "config_schema:UpstoxConfig"
+modes_allowed = ["research", "backtest", "paper", "live"]
+order_capable = false
+verified_on = "2026-10-23"
+sources = ["Upstox Developer API V2 and V3, WebSocket V3 with Protobuf"]
+
+[capabilities]
+history = true
+stream = true
+realtime = true
+live_suitable = true
+official_api = true
+delay_seconds = 0
+
+[requires]
+packages = ["httpx", "websockets", "protobuf", "pydantic", "pytest"]

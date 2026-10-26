@@ -401,3 +401,87 @@ def build_core_checks(runtime: Runtime) -> list[DoctorCheck]:
     checks.extend(registry_doctor_checks(runtime.plugins))
     checks.extend(_build_journal_and_disk_checks(runtime))
     return checks
+
+
+def build_run_checks(runtime: Runtime, run_name: str) -> list[DoctorCheck]:
+    """Build diagnostic doctor checks for a specific run configuration."""
+    from typing import Any
+
+    from algodesk.api.kinds import Mode
+    from algodesk.config.snapshot import build_effective
+    from algodesk.ops.context import build_context
+
+    checks: list[DoctorCheck] = []
+    try:
+        eff = build_effective(runtime.root, run_name=run_name)
+    except Exception as exc:
+        err = str(exc)
+        checks.append(
+            DoctorCheck(
+                id=f"run.{run_name}.config",
+                severity=Severity.CRITICAL,
+                run=lambda: CheckResult(
+                    ok=False,
+                    message=f"Failed to load run configuration '{run_name}': {err}",
+                    fix=f"Verify TOML syntax in config/runs/{run_name}.toml",
+                ),
+            )
+        )
+        return checks
+
+    if eff.run is None:
+        return checks
+
+    sec_plugin: Any = None
+    if getattr(eff.run, "secrets", None) is not None:
+        p_name = eff.run.secrets.plugin
+        sec_cfg = {k: v for k, v in eff.run.secrets.model_dump().items() if k != "plugin"}
+        try:
+            p_sec_ctx = build_context(
+                Mode.RESEARCH, run_id=f"doctor_sec_{run_name}", params=runtime.params
+            )
+            sec_plugin = runtime.plugins.create("secrets", p_name, config=sec_cfg, ctx=p_sec_ctx)
+            if hasattr(sec_plugin, "doctor_checks"):
+                checks.extend(sec_plugin.doctor_checks())
+        except Exception as exc:
+            err = str(exc)
+            checks.append(
+                DoctorCheck(
+                    id=f"run.secrets.{p_name}",
+                    severity=Severity.WARNING,
+                    run=lambda: CheckResult(
+                        ok=False,
+                        message=f"Could not initialize secrets provider: {err}",
+                        fix="Check secrets configuration",
+                    ),
+                )
+            )
+
+    if getattr(eff.run, "data_source", None) is not None:
+        ds_name = eff.run.data_source.plugin
+        ds_cfg = {k: v for k, v in eff.run.data_source.model_dump().items() if k != "plugin"}
+        try:
+            p_ds_ctx = build_context(
+                Mode.RESEARCH,
+                run_id=f"doctor_ds_{run_name}",
+                params=runtime.params,
+                secrets=sec_plugin,
+            )
+            ds_plugin = runtime.plugins.create("broker", ds_name, config=ds_cfg, ctx=p_ds_ctx)
+            if hasattr(ds_plugin, "doctor_checks"):
+                checks.extend(ds_plugin.doctor_checks())
+        except Exception as exc:
+            err = str(exc)
+            checks.append(
+                DoctorCheck(
+                    id=f"run.data_source.{ds_name}",
+                    severity=Severity.WARNING,
+                    run=lambda: CheckResult(
+                        ok=False,
+                        message=f"Could not initialize data source plugin: {err}",
+                        fix="Check data source configuration",
+                    ),
+                )
+            )
+
+    return checks

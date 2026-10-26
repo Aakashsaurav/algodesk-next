@@ -33,6 +33,26 @@ Checklists for working on AlgoDesk Next from the terminal. Always start a termin
 
 `algodesk journal verify` (hash chain), `algodesk journal tail -n 20`, `algodesk journal runs` (runs that did not close cleanly appear as crashed).
 
+## Upstox authentication & login ceremony
+
+### 1. Analytics token (recommended for backtest/research)
+- Generate a 1-year Analytics Token in the Upstox Developer Console.
+- Store token securely: `algodesk secrets set upstox_analytics_token`.
+- Verify presence: `algodesk login status`.
+- Note: Analytics tokens never expire daily, but cannot place live orders.
+
+### 2. OAuth interactive login ceremony
+- Ensure credentials exist: `algodesk secrets set upstox_client_id` and `algodesk secrets set upstox_client_secret`.
+- Run automated login: `algodesk login upstox`.
+- Authorize in browser; redirect hits `http://127.0.0.1:5000/` and stores `upstox_access_token`.
+- Manual fallback: `algodesk login upstox --manual` prints the URL and prompts for code.
+
+### 3. Port 5000 note (macOS AirPlay Receiver)
+- On macOS Monterey and later, system AirPlay Receiver listens on port 5000 by default.
+- If port 5000 is occupied, `algodesk doctor --run demo_paper` warns `upstox.redirect_port in use`.
+- To free port 5000: System Settings -> General -> AirDrop & AirPlay -> Turn off "AirPlay Receiver".
+- Alternatively, run `algodesk login upstox --manual` which requires no local port.
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |

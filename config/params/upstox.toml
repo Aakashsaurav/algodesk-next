@@ -1,0 +1,118 @@
+# config/params/upstox.toml — Upstox broker plugin parameters
+
+[[param]]
+name = "upstox.redirect_uri"
+type = "str"
+default = "http://127.0.0.1:5000/"
+scope = "global"
+tighten = "none"
+description = "Local redirect URI registered in Upstox developer console for OAuth authorization"
+owner = "upstox"
+
+[[param]]
+name = "upstox.auth_timeout_seconds"
+type = "int"
+default = 120
+min = 10
+max = 600
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Timeout in seconds for automatic browser-based OAuth authorization code flow"
+owner = "upstox"
+
+[[param]]
+name = "upstox.instrument_cache_hours"
+type = "int"
+default = 24
+min = 1
+max = 168
+unit = "hours"
+scope = "global"
+tighten = "down"
+description = "Maximum age in hours before the local instrument master cache is refreshed"
+owner = "upstox"
+
+[[param]]
+name = "upstox.max_connections"
+type = "int"
+default = 2
+min = 1
+max = 5
+unit = "connections"
+scope = "global"
+tighten = "down"
+description = "Maximum concurrent WebSocket connections allowed per API key"
+owner = "upstox"
+
+[[param]]
+name = "upstox.max_subscribed_keys"
+type = "int"
+default = 2000
+min = 1
+max = 5000
+unit = "keys"
+scope = "global"
+tighten = "down"
+description = "Maximum number of instrument keys subscribed across feeds in full mode"
+owner = "upstox"
+
+[[param]]
+name = "upstox.reconnect_base_delay_s"
+type = "float"
+default = 1.0
+min = 0.1
+max = 10.0
+unit = "s"
+scope = "global"
+tighten = "up"
+description = "Initial exponential backoff delay in seconds for WebSocket reconnect"
+owner = "upstox"
+
+[[param]]
+name = "upstox.reconnect_max_delay_s"
+type = "float"
+default = 30.0
+min = 1.0
+max = 300.0
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Maximum backoff cap in seconds for WebSocket reconnect"
+owner = "upstox"
+
+[[param]]
+name = "upstox.reconnect_jitter_s"
+type = "float"
+default = 0.5
+min = 0.0
+max = 5.0
+unit = "s"
+scope = "global"
+tighten = "none"
+description = "Random jitter in seconds added to WebSocket reconnect delays"
+owner = "upstox"
+
+[[param]]
+name = "upstox.staleness_threshold_s"
+type = "float"
+default = 10.0
+min = 1.0
+max = 120.0
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Age in seconds after which market data for an instrument is considered stale"
+owner = "upstox"
+
+[[param]]
+name = "upstox.request_timeout_s"
+type = "float"
+default = 15.0
+min = 1.0
+max = 60.0
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "HTTP request timeout in seconds for Upstox REST calls"
+owner = "upstox"
