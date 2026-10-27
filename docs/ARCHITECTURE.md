@@ -4,15 +4,15 @@ Owner: Aakash · Version: 1.0 · Date: 19 October 2026
 
 ## Summary
 
-AlgoDesk Next is a small core plus plugins. The core is organized in strict layers: `api` at the bottom; foundation packages (`fees`, `config`, `params`, `registry`, `journal`, `logs`, `data`); trading execution layers (`oms`, `portfolio`, `risk`); runtime `engine`; `ops` and `devtools`; and `cli` on top. Plugins import only `algodesk.api`; the core never imports a plugin. Every adjustable number lives in the parameter registry, every event in a hash-chained journal, and every plugin load passes mode, capability and conformance gates. Orders follow a strict state machine with write-ahead journaling. Risk checks evaluate without short-circuiting, backed by an atomic persistent kill-switch. Import rules are enforced by tests. Market data, strategies, orders and brokers arrive as plugins.
+AlgoDesk Next is a small core plus plugins. The core is organized in strict layers: `api` at the bottom; foundation packages (`fees`, `config`, `params`, `registry`, `journal`, `logs`, `data`); trading execution layers (`oms`, `portfolio`, `risk`, `results`); `ops` and `devtools`; runtime `engine`; and `cli` on top. Plugins import only `algodesk.api`; the core never imports a plugin. Every adjustable number lives in the parameter registry, every event in a hash-chained journal, and every plugin load passes mode, capability and conformance gates. Orders follow a strict state machine with write-ahead journaling. Risk checks evaluate without short-circuiting, backed by an atomic persistent kill-switch. Import rules are enforced by tests. Market data, strategies, orders, notifiers, and brokers arrive as plugins.
 
 ## 1. Layers
 
 ```
 cli
-ops | devtools
 engine
-oms | portfolio | risk
+ops | devtools
+oms | portfolio | risk | results
 fees | config | params | registry | journal | logs | data   (independent of each other)
 api                                                           (imports no other algodesk package)
 plugins/  ->  algodesk.api only
@@ -31,10 +31,11 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 | `journal` | Append-only hash-chained event log (SQLite) | `Journal`, `JournalSettings`, `verify_journal` |
 | `logs` | JSON logging with secret scrubbing | `setup_logging`, `get_logger` |
 | `data` | Tick recording, compaction, replay, catalog, and groups | `Recorder`, `ReplayFeed`, `DataManifest`, `DataCatalog`, `DataService`, `synth_market_data` |
-| `engine` | Deterministic event bus, clocks, scheduler, bars, and sessions | `EventBus`, `WallClock`, `SimClock`, `Scheduler`, `BarBuilder`, `SessionManager`, `MarketState` |
+| `engine` | Deterministic event bus, clocks, scheduler, bars, runner, and strategy runtime | `EventBus`, `WallClock`, `SimClock`, `Scheduler`, `BarBuilder`, `SessionManager`, `SessionRunner`, `StrategyRuntime`, `IndicatorManager`, `NotifyBridge` |
 | `oms` | Order lifecycle, state machine, write-ahead journaling | `OrderManager` |
 | `portfolio` | Realized/unrealized accounting, mark-to-market, snapshots | `PortfolioLedger` |
 | `risk` | Pre-trade evaluation, persistent kill-switch, loss monitor | `RiskEngine`, `KillSwitch`, `RiskMonitor`, `RiskViewContext` |
+| `results` | Execution performance metrics and artifact report generator | `ResultsWriter`, `compute_max_drawdown` |
 | `ops` | Wiring and diagnostics | `open_runtime`, `Runtime`, `DoctorRegistry`, `build_core_checks` |
 | `devtools` | Automatic fences | budget, docs, archlint, secretscan, `build_tool_checks` |
 | `cli` | The `algodesk` command | Typer app |
@@ -57,6 +58,7 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 | `data/state/data_manifest.db` | Market data manifest SQLite DB (files and instruments metadata) |
 | `data/ticks/exchange=E/segment=S/symbol=X/date=D/` | Hive-partitioned parquet part and compacted day files |
 | `data/.trash/<timestamp>/` | Two-stage soft deletion safety trash awaiting purge |
+| `results/<run_id>/` | Session execution artifacts (`SUMMARY.md`, `metrics.json`, `trades.csv`, `equity.csv`, configs) |
 | `logs/algodesk.log` | JSON log lines, rotated daily (git-ignored) |
 | `.algodesk/conformance.json` | Conformance pass records keyed by plugin code hash |
 | `.venv/`, `.local/` | Virtual environment, project-local Python and caches (isolation rule) |
@@ -88,6 +90,10 @@ Market sessions (open, close, square-off, weekdays) are centralized as parameter
 
 Secrets providers (`keychain`, `env`) expose name-based lookup through `SecretReader`. In `build_context`, all retrieved secret values are registered with `Scrubber` to guarantee redaction in logs and journals. Broker plugins implement `DataSource` (historical bars, real-time tick/quote feeds) and `AuthFlow` (interactive browser login or analytics tokens).
 
-## 10. Not built yet
+## 10. Strategy Runtime, Runner & Reporting
 
-The strategy runner, Telegram notifier, and remote runner.
+`SessionRunner` coordinates event streaming, bar building, strategy execution, order routing, risk evaluation, simulated matching, and portfolio ledgering. `StrategyRuntime` provides strategies with a read-only `StrategyContext` (completed bars, incremental indicators, position and portfolio snapshots), dispatches lifecycle hooks (`on_start`, `on_bar`, `on_fill`, `on_timer`, `on_stop`), and isolates strategy exceptions so failed strategies are halted without interrupting the session. `ResultsWriter` produces an 8-file artifact bundle in `results/<run_id>/` (`SUMMARY.md`, `metrics.json`, `trades.csv`, `equity.csv`, `config.effective.txt`, `registry.snapshot.json`, `manifest.json`, and `session.md`). Telegram alerts are delivered out-of-band via `NotifyBridge`.
+
+## 11. Not built yet
+
+Remote runner and micro-live execution (M7-M9).

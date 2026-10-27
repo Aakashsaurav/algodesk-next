@@ -1,0 +1,1 @@
+"""SMA cross tests package."""

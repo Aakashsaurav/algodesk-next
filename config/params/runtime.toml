@@ -1,0 +1,129 @@
+# Runtime parameters for session runner, Telegram notifier, and operational checks
+
+[[param]]
+name = "runtime.heartbeat_seconds"
+type = "int"
+default = 900
+min = 10
+max = 86400
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Interval in seconds between session heartbeat alerts and logs"
+owner = "engine"
+
+[[param]]
+name = "runtime.equity_snapshot_interval_seconds"
+type = "float"
+default = 60.0
+min = 1.0
+max = 3600.0
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Interval in seconds between portfolio equity curve snapshots"
+owner = "engine"
+
+[[param]]
+name = "telegram.queue_max_size"
+type = "int"
+default = 1000
+min = 10
+max = 50000
+scope = "global"
+tighten = "down"
+description = "Bounded queue maximum message capacity for Telegram notifier"
+owner = "plugins.notifiers.telegram"
+
+[[param]]
+name = "telegram.retry_max_attempts"
+type = "int"
+default = 3
+min = 1
+max = 10
+scope = "global"
+tighten = "down"
+description = "Maximum delivery retry attempts for Telegram messages"
+owner = "plugins.notifiers.telegram"
+
+[[param]]
+name = "telegram.retry_backoff_base_s"
+type = "float"
+default = 1.0
+min = 0.1
+max = 60.0
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Base back-off in seconds for Telegram delivery retries"
+owner = "plugins.notifiers.telegram"
+
+[[param]]
+name = "telegram.retry_jitter_s"
+type = "float"
+default = 0.5
+min = 0.0
+max = 30.0
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Jitter range in seconds applied to retry back-off"
+owner = "plugins.notifiers.telegram"
+
+[[param]]
+name = "telegram.rate_limit_messages_per_second"
+type = "float"
+default = 1.0
+min = 0.1
+max = 30.0
+scope = "global"
+tighten = "down"
+description = "Maximum message dispatch rate per second to avoid Telegram 429 errors"
+owner = "plugins.notifiers.telegram"
+
+[[param]]
+name = "telegram.circuit_breaker_failures"
+type = "int"
+default = 5
+min = 1
+max = 50
+scope = "global"
+tighten = "down"
+description = "Consecutive failures before opening Telegram delivery circuit breaker"
+owner = "plugins.notifiers.telegram"
+
+[[param]]
+name = "telegram.circuit_breaker_reset_seconds"
+type = "float"
+default = 60.0
+min = 1.0
+max = 3600.0
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Cool-off time in seconds before attempting half-open probe after trip"
+owner = "plugins.notifiers.telegram"
+
+[[param]]
+name = "telegram.timeout_seconds"
+type = "float"
+default = 10.0
+min = 1.0
+max = 120.0
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "HTTP request timeout in seconds for Telegram Bot API calls"
+owner = "plugins.notifiers.telegram"
+
+[[param]]
+name = "ops.max_clock_offset_ms"
+type = "int"
+default = 500
+min = 10
+max = 10000
+unit = "ms"
+scope = "global"
+tighten = "down"
+description = "Maximum allowed local clock offset in milliseconds against SNTP reference"
+owner = "ops"

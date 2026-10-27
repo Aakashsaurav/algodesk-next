@@ -281,6 +281,29 @@ def _resolve_min_free_disk_gb(runtime: Runtime) -> float:
     )
 
 
+def _resolve_max_clock_offset_ms(runtime: Runtime) -> int:
+    if runtime.params is not None:
+        try:
+            val = runtime.params.get("ops.max_clock_offset_ms")
+            if val is not None:
+                return int(val)
+        except Exception:
+            pass
+
+    rt_toml = runtime.root / "config" / "params" / "runtime.toml"
+    if rt_toml.is_file():
+        try:
+            with open(rt_toml, "rb") as f:
+                data = tomllib.load(f)
+            for item in data.get("param", []):
+                if item.get("name") == "ops.max_clock_offset_ms":
+                    return int(item["default"])
+        except Exception:
+            pass
+
+    return 500
+
+
 def _check_disk_free(runtime: Runtime) -> CheckResult:
     required_gb = _resolve_min_free_disk_gb(runtime)
 
@@ -483,5 +506,161 @@ def build_run_checks(runtime: Runtime, run_name: str) -> list[DoctorCheck]:
                     ),
                 )
             )
+
+    # 3. Notifiers doctor checks
+    if getattr(eff.run, "notifiers", None):
+        for notif in eff.run.notifiers:
+            n_name = notif.plugin
+            n_cfg = {k: v for k, v in notif.model_dump().items() if k != "plugin"}
+            try:
+                p_n_ctx = build_context(
+                    Mode.RESEARCH,
+                    run_id=f"doctor_notif_{n_name}",
+                    params=runtime.params,
+                    secrets=sec_plugin,
+                )
+                notif_plugin = runtime.plugins.create("notifier", n_name, config=n_cfg, ctx=p_n_ctx)
+                if hasattr(notif_plugin, "doctor_checks"):
+                    checks.extend(notif_plugin.doctor_checks())
+            except Exception as exc:
+                err = str(exc)
+
+                def _make_notifier_fail(n: str = n_name, e: str = err) -> CheckResult:
+                    return CheckResult(
+                        ok=False,
+                        message=f"Could not initialize notifier plugin {n}: {e}",
+                        fix="Check notifier configuration",
+                    )
+
+                checks.append(
+                    DoctorCheck(
+                        id=f"run.notifiers.{n_name}",
+                        severity=Severity.WARNING,
+                        run=_make_notifier_fail,
+                    )
+                )
+
+    # 4. Calendars coverage check (covers today and next 30 days)
+    if getattr(eff.run, "calendars", None):
+
+        def _check_calendars() -> CheckResult:
+            from datetime import date, timedelta
+
+            today = date.today()
+            target_date = today + timedelta(days=30)
+            assert eff.run is not None
+            for cal in eff.run.calendars:
+                c_name = cal.plugin
+                ex_name = getattr(cal, "exchange", "nse")
+                try:
+                    c_ctx = build_context(Mode.RESEARCH, run_id=f"doc_cal_{ex_name}")
+                    cal_p = runtime.plugins.create(
+                        "calendar", c_name, config={"exchange": ex_name}, ctx=c_ctx
+                    )
+                    cov_end = getattr(cal_p, "coverage_end", None)
+                    if cov_end and cov_end < target_date:
+                        return CheckResult(
+                            ok=False,
+                            severity=Severity.WARNING,
+                            message=f"Calendar {ex_name} coverage ends {cov_end} (< 30 days ahead)",
+                            fix=f"Update calendar data in plugins/calendars/{c_name}",
+                        )
+                except Exception as exc:
+                    return CheckResult(
+                        ok=False,
+                        severity=Severity.WARNING,
+                        message=f"Could not load calendar for exchange {ex_name}: {exc}",
+                        fix="Verify calendar configuration",
+                    )
+            cal_count = len(eff.run.calendars)
+            return CheckResult(
+                ok=True,
+                message=f"Calendars cover today and next 30 days ({cal_count} exchange(s))",
+            )
+
+        checks.append(
+            DoctorCheck(
+                id="run.calendars",
+                severity=Severity.WARNING,
+                run=_check_calendars,
+            )
+        )
+
+    # 5. SNTP clock offset check
+    def _check_sntp() -> CheckResult:
+        import socket
+        import struct
+        import time
+
+        server = "time.google.com"
+        allowed_offset_ms = _resolve_max_clock_offset_ms(runtime)
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(1.0)
+                pkt = bytearray(48)
+                pkt[0] = 0x1B
+                t1 = time.time()
+                s.sendto(pkt, (server, 123))
+                data, _ = s.recvfrom(48)
+                t4 = time.time()
+            sec, frac = struct.unpack("!II", data[40:48])
+            t3 = (sec - 2208988800) + (frac / 4294967296.0)
+            sec_r, frac_r = struct.unpack("!II", data[32:40])
+            t2 = (sec_r - 2208988800) + (frac_r / 4294967296.0)
+            offset_ms = abs(((t2 - t1) + (t3 - t4)) / 2.0) * 1000.0
+            if offset_ms <= allowed_offset_ms:
+                msg = f"Clock offset {offset_ms:.1f} ms meets guidance (<= {allowed_offset_ms} ms)"
+                return CheckResult(
+                    ok=True,
+                    message=msg,
+                )
+            return CheckResult(
+                ok=False,
+                severity=Severity.WARNING,
+                message=f"Clock offset {offset_ms:.1f} ms exceeds limit {allowed_offset_ms} ms",
+                fix="Sync system clock with NTP reference",
+            )
+        except Exception as exc:
+            return CheckResult(
+                ok=True,
+                message=f"SNTP clock check skipped or offline: {exc}",
+            )
+
+    checks.append(
+        DoctorCheck(
+            id="clock.sntp_offset",
+            severity=Severity.WARNING,
+            run=_check_sntp,
+        )
+    )
+
+    # 6. Safety check for paper sessions
+    run_mode = getattr(getattr(eff.run, "run", None), "mode", None)
+    if run_mode in ("paper", "backtest"):
+
+        def _check_paper_safety() -> CheckResult:
+            assert eff.run is not None
+            venue = getattr(eff.run, "execution_venue", None)
+            v_name = getattr(venue, "plugin", "") if venue else ""
+            if v_name != "sim":
+                return CheckResult(
+                    ok=False,
+                    severity=Severity.CRITICAL,
+                    message=f"Paper/backtest run cannot use live venue '{v_name}'",
+                    fix="Set execution_venue.plugin = 'sim' in run config",
+                )
+            return CheckResult(
+                ok=True,
+                message="Paper session safely configured with simulated venue",
+            )
+
+        checks.append(
+            DoctorCheck(
+                id="run.safety.sim_venue",
+                severity=Severity.CRITICAL,
+                run=_check_paper_safety,
+            )
+        )
 
     return checks

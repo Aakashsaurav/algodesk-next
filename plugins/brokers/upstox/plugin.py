@@ -219,6 +219,7 @@ class UpstoxBrokerPlugin(PluginBase):
         host = parsed.hostname or "127.0.0.1"
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 s.bind((host, port))
             return CheckResult(ok=True, message=f"Redirect port {port} is free on {host}")
         except OSError:

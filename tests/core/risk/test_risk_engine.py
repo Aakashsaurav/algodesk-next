@@ -403,3 +403,55 @@ def test_cli_killswitch_commands(tmp_path: Path) -> None:
     # Status cleared
     res_stat2 = runner.invoke(app, ["--root", str(root), "killswitch", "status"])
     assert "CLEARED" in res_stat2.output
+
+
+def test_risk_engine_observe_mode_blocks_non_reducing(tmp_path: Path) -> None:
+    ks = KillSwitch(state_file=tmp_path / "killswitch.json")
+    clock = FakeClock()
+    engine = RiskEngine(killswitch=ks, rules=[], observe=True)
+
+    pos_long = Position(
+        instrument=InstrumentId("NSE:EQ:INFY"),
+        product=Product.CNC,
+        qty=10,
+        avg_price=Decimal("100"),
+        realized=Decimal("0"),
+        unrealized=Decimal("0"),
+    )
+    q = make_quote(recv_ts=clock.now())
+    view = RiskViewContext(
+        portfolio=None,
+        positions={"NSE:EQ:INFY:CNC": pos_long},
+        open_orders=[],
+        daily_pnl=Decimal("0"),
+        latest_quotes={
+            InstrumentId("NSE:EQ:INFY"): q,
+            InstrumentId("NSE:EQ:TCS"): q,
+        },
+        params={"risk.conservative.stale_data_seconds": 5.0},
+        clock=clock,
+    )
+
+    # 1. Non-reducing BUY on INFY (already long 10)
+    buy_spec = OrderSpec(
+        instrument=InstrumentId("NSE:EQ:INFY"), side=Side.BUY, qty=5, type=OrderType.MARKET
+    )
+    dec_buy = engine.evaluate(PlaceOrder(spec=buy_spec, intent_id="i-1"), view)
+    assert dec_buy.allow is False
+    assert dec_buy.rule == "observe_mode"
+    assert "observe mode" in dec_buy.reason
+
+    # 2. Reducing SELL on INFY (selling 5 of 10)
+    sell_reducing = OrderSpec(
+        instrument=InstrumentId("NSE:EQ:INFY"), side=Side.SELL, qty=5, type=OrderType.MARKET
+    )
+    dec_red = engine.evaluate(PlaceOrder(spec=sell_reducing, intent_id="i-2"), view)
+    assert dec_red.allow is True
+
+    # 3. Non-reducing SELL on TCS (0 position)
+    tcs_spec = OrderSpec(
+        instrument=InstrumentId("NSE:EQ:TCS"), side=Side.SELL, qty=5, type=OrderType.MARKET
+    )
+    dec_tcs = engine.evaluate(PlaceOrder(spec=tcs_spec, intent_id="i-3"), view)
+    assert dec_tcs.allow is False
+    assert "observe mode" in dec_tcs.reason

@@ -29,6 +29,13 @@ ALLOWED_NON_PARAM_NAMES = {
     "data_manifest.db": "Data manifest database filename",
     "day.parquet": "Compacted day parquet filename",
     "order.created": "Journal event type for order creation",
+    "config.effective.txt": "Effective configuration snapshot filename",
+    "equity.csv": "Equity curve timeseries filename",
+    "journal.db.lock": "Journal database lock filename",
+    "manifest.json": "Execution run manifest filename",
+    "registry.snapshot.json": "Parameter registry snapshot filename",
+    "session.md": "Telegram session markdown summary filename",
+    "trades.csv": "Executed trades CSV filename",
 }
 
 KNOWN_RUNTIME_PREFIXES = (

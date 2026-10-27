@@ -97,6 +97,16 @@ Merge instrument-day part files into single daily parquet files:
 - List groups: `algodesk groups list`
 - Inspect a group: `algodesk groups show demo5`
 
+### 7. Paper trading and historical replay
+- Pre-start verification: `algodesk doctor --run demo_paper`
+- Component inspection dry-run: `algodesk run demo_paper --dry-run`
+- Start paper trading session: `algodesk run demo_paper`
+- Run in observation mode (no order creation): `algodesk run demo_paper --observe`
+- Replay recorded session: `algodesk replay --dates 2026-10-26 --run demo_paper`
+- Verify deterministic replay equivalence: `algodesk replay --dates 2026-10-26 --run demo_paper --twice`
+- Review results: `algodesk results list` and `algodesk results show <run-id>`
+- Test Telegram notifications: `algodesk telegram test`
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |

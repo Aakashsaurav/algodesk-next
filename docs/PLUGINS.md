@@ -34,6 +34,8 @@ Plugins implement domain protocols defined in `algodesk.api.protocols` (re-expor
 | `brokers/upstox` | `broker` | `auth`, `instruments`, `history`, `stream` | Official Upstox v2/v3 thin client for OAuth/analytics auth, daily instrument master, history, and Protobuf feed. |
 | `risk_rules/builtin` | `risk_rule` | `pre_trade`, `limits`, `capital_checks` | Pre-trade risk rule plugin evaluating 9 safety controls (cash, exposure, orders/min, daily loss) from registry. |
 | `venues/sim` | `venue` | `market_orders`, `limit_orders`, `depth_matching`, `failure_injection` | Simulated execution venue with latency, seeded jitter, depth walking, trade-through limit fills, and failure drills. |
+| `strategies/sma_cross` | `strategy` | `signals`, `lifecycle`, `intraday_exit` | Demo dual moving-average crossover strategy exercising bar processing, warmup, signals, and exit timers. |
+| `notifiers/telegram` | `notifier` | `alerts`, `heartbeats`, `rate_limiting` | Asynchronous Telegram operational notifier with leaky-bucket rate limiting, circuit breaking, and retry jitter. |
 
 ## Manifest (`plugin.toml`)
 

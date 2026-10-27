@@ -32,7 +32,9 @@ from algodesk.cli.login_feed import feed_app, login_app
 from algodesk.cli.param import config_app, param_app
 from algodesk.cli.plugins import new_app, plugins_app
 from algodesk.cli.risk import killswitch_app
+from algodesk.cli.run_replay import replay_cmd, results_app, run_cmd
 from algodesk.cli.secrets import secrets_app
+from algodesk.cli.telegram import telegram_app
 from algodesk.ops.checks import build_core_checks
 from algodesk.ops.runtime import Runtime
 
@@ -63,11 +65,15 @@ app.add_typer(feed_app, name="feed")
 app.add_typer(docs_app, name="docs")
 app.add_typer(api_app, name="api")
 app.add_typer(killswitch_app, name="killswitch")
+app.add_typer(results_app, name="results")
+app.add_typer(telegram_app, name="telegram")
 
 # Register top-level commands
 app.command("doctor")(doctor_cmd)
 app.command("budget")(budget_cmd)
 app.command("lint")(lint_cmd)
+app.command("run")(run_cmd)
+app.command("replay")(replay_cmd)
 
 
 @app.callback()

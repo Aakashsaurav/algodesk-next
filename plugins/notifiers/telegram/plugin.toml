@@ -1,0 +1,17 @@
+name = "telegram"
+kind = "notifier"
+version = "0.1.0"
+api_version = 1
+entry = "plugin:TelegramNotifierPlugin"
+config_schema = "config_schema:TelegramNotifierConfig"
+modes_allowed = ["research", "backtest", "paper", "live"]
+order_capable = false
+verified_on = "2026-10-27"
+sources = ["Telegram Bot API Documentation"]
+
+[capabilities]
+alerts = true
+reports = true
+
+[requires]
+packages = ["httpx", "pydantic", "pytest"]

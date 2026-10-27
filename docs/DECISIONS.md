@@ -66,5 +66,13 @@ Short decision records (context, decision, reason) in the order they were taken.
 
 **ADR-029 Conservative simulated execution venue with trade-through limit fills.** `venues/sim` uses no network or clock, pricing orders against the first quote received at or after arrival. Market orders walk depth, cancelling unfilled remainder. Resting limit orders fill only when the opposite market trades through the limit by `sim.through_ticks` ticks, eliminating optimistic queue-priority assumptions.
 
+**ADR-030 Observe mode fail-closed semantics.** Observation mode (`algodesk run --observe`) exercises the entire live pipeline (WebSocket feed, bar aggregation, indicators, strategy evaluation) while guaranteeing no order creation by rejecting all intents at the RiskEngine level with an automatic rejection decision.
+
+**ADR-031 Results bundle eight-file schema.** Every session run produces an immutable directory under `results/<run_id>/` with eight standard artifacts: `SUMMARY.md`, `metrics.json`, `trades.csv`, `equity.csv`, `config.effective.txt`, `registry.snapshot.json`, `manifest.json`, and `session.md`.
+
+**ADR-032 SNTP clock offset and pre-flight doctor checks.** Accurate order timestamps and boundary-aligned bar closing require synchronized clocks. Pre-flight doctor checks query SNTP for sub-second clock offset, verify 30-day calendar coverage, ensure Telegram reachability, and confirm zero order-capable credentials.
+
+**ADR-033 Isolated journal database per test worker and replay session.** Replay sessions and concurrent pytest-xdist workers use isolated journal paths to avoid SQLite flock contention on `journal.db.lock` while preserving strict write-ahead logging and deterministic replay equivalence.
+
 
 

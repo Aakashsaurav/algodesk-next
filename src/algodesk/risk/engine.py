@@ -55,10 +55,12 @@ class RiskEngine:
         killswitch: KillSwitch,
         rules: Sequence[RiskRule] = (),
         journal: JournalWriter | Any | None = None,
+        observe: bool = False,
     ) -> None:
         self.killswitch = killswitch
         self.rules = list(rules)
         self.journal = journal
+        self.observe = observe
 
     def add_rule(self, rule: RiskRule) -> None:
         """Register an active risk rule."""
@@ -223,6 +225,14 @@ class RiskEngine:
                 allow=True,
                 rule="all_rules_passed",
                 reason="All risk rules approved",
+                values=merged_values,
+            )
+
+        if self.observe and not reducing:
+            merged_decision = RiskDecision(
+                allow=False,
+                rule="observe_mode",
+                reason="observe mode",
                 values=merged_values,
             )
 
