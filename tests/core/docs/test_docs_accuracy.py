@@ -28,6 +28,7 @@ ALLOWED_NON_PARAM_NAMES = {
     "zerodha_nse.toml": "Example fee schedule filename",
     "data_manifest.db": "Data manifest database filename",
     "day.parquet": "Compacted day parquet filename",
+    "order.created": "Journal event type for order creation",
 }
 
 KNOWN_RUNTIME_PREFIXES = (

@@ -33,6 +33,15 @@ Checklists for working on AlgoDesk Next from the terminal. Always start a termin
 
 `algodesk journal verify` (hash chain), `algodesk journal tail -n 20`, `algodesk journal runs` (runs that did not close cleanly appear as crashed).
 
+## Kill-switch operations
+
+Emergency trading halt controls backed by atomic state file `data/state/killswitch.json` and mtime checks:
+- Activate kill-switch: `algodesk killswitch on --reason "<why>"`
+- Inspect kill-switch state: `algodesk killswitch status` (add `--json` for machine output)
+- Clear kill-switch: `algodesk killswitch off --reason "<why>"`
+- Cross-process effect: any process checking `is_active()` reloads instantly when mtime changes. Every transition is journaled with `durable=True`.
+
+
 ## Upstox authentication & login ceremony
 
 ### 1. Analytics token (recommended for backtest/research)

@@ -150,6 +150,13 @@ class PlaceOrder:
     """Strategy order placement intent."""
 
     spec: OrderSpec
+    intent_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.intent_id:
+            import uuid
+
+            object.__setattr__(self, "intent_id", uuid.uuid4().hex)
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,10 +164,15 @@ class CancelOrder:
     """Strategy order cancellation intent."""
 
     client_ref: str
+    intent_id: str = ""
 
     def __post_init__(self) -> None:
         if not self.client_ref:
             raise ValueError("client_ref cannot be empty")
+        if not self.intent_id:
+            import uuid
+
+            object.__setattr__(self, "intent_id", uuid.uuid4().hex)
 
 
 Intent = PlaceOrder | CancelOrder
@@ -277,6 +289,30 @@ class Fill:
 
 
 @dataclass(frozen=True, slots=True)
+class OrderEventMsg:
+    """Lifecycle transition event for an order."""
+
+    event: OrderEvent
+    order: Order | None = None
+
+    @property
+    def ts(self) -> datetime:
+        return self.event.ts
+
+
+@dataclass(frozen=True, slots=True)
+class FillEvent:
+    """Execution fill event reported by venue."""
+
+    fill: Fill
+    order: Order | None = None
+
+    @property
+    def ts(self) -> datetime:
+        return self.fill.ts
+
+
+@dataclass(frozen=True, slots=True)
 class Position:
     """Portfolio position for an instrument."""
 
@@ -335,6 +371,47 @@ class VenueAck:
 
 
 @dataclass(frozen=True, slots=True)
+class OrderStatus:
+    """Execution venue order status query result."""
+
+    client_ref: str
+    state: OrderState
+    venue_ref: str | None = None
+    filled_qty: int = 0
+    avg_price: Decimal = Decimal("0.00")
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.client_ref:
+            raise ValueError("client_ref cannot be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class GrossFill:
+    """Gross fill reported by an execution venue without charges."""
+
+    client_ref: str
+    qty: int
+    price: Decimal
+    ts: datetime
+    venue_fill_id: str
+
+    def __post_init__(self) -> None:
+        if not self.client_ref:
+            raise ValueError("client_ref cannot be empty")
+        if self.qty <= 0:
+            raise ValueError(f"qty must be positive, got {self.qty}")
+        if self.price <= Decimal("0.00"):
+            raise ValueError(f"price must be positive, got {self.price}")
+        if not self.venue_fill_id:
+            raise ValueError("venue_fill_id cannot be empty")
+        _validate_utc_ts(self.ts, "ts")
+
+
+VenueGrossFill = GrossFill
+
+
+@dataclass(frozen=True, slots=True)
 class VenueEvent:
     """Execution venue event (ack, fill, reject, cancel)."""
 
@@ -342,13 +419,43 @@ class VenueEvent:
     client_ref: str
     ts: datetime
     venue_ref: str | None = None
-    fill: Fill | None = None
+    gross_fill: GrossFill | None = None
+    fill: GrossFill | Fill | None = None
     reason: str = ""
+    venue_fill_id: str | None = None
+    qty: int = 0
+    price: Decimal = Decimal("0.00")
 
     def __post_init__(self) -> None:
         if not self.client_ref:
             raise ValueError("client_ref cannot be empty")
         _validate_utc_ts(self.ts, "ts")
+
+        gf = self.gross_fill
+        if gf is None and isinstance(self.fill, GrossFill):
+            gf = self.fill
+            object.__setattr__(self, "gross_fill", gf)
+        elif gf is not None and self.fill is None:
+            object.__setattr__(self, "fill", gf)
+
+        if gf is not None:
+            if not self.venue_fill_id:
+                object.__setattr__(self, "venue_fill_id", gf.venue_fill_id)
+            if self.qty == 0:
+                object.__setattr__(self, "qty", gf.qty)
+            if self.price == Decimal("0.00"):
+                object.__setattr__(self, "price", gf.price)
+        elif self.venue_fill_id and self.qty > 0 and self.price > Decimal("0.00"):
+            gf = GrossFill(
+                client_ref=self.client_ref,
+                qty=self.qty,
+                price=self.price,
+                ts=self.ts,
+                venue_fill_id=self.venue_fill_id,
+            )
+            object.__setattr__(self, "gross_fill", gf)
+            if self.fill is None:
+                object.__setattr__(self, "fill", gf)
 
 
 @dataclass(frozen=True, slots=True)

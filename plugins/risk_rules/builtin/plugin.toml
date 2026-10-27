@@ -1,0 +1,17 @@
+name = "builtin"
+kind = "risk_rule"
+version = "0.1.0"
+api_version = 1
+entry = "plugin:BuiltinRiskRulesPlugin"
+modes_allowed = ["research", "backtest", "paper", "live"]
+order_capable = false
+verified_on = "2026-10-27"
+sources = ["AlgoDesk Next Risk Architecture Specification §4.6"]
+
+[capabilities]
+pre_trade = true
+limits = true
+capital_checks = true
+
+[requires]
+packages = ["pydantic", "pytest"]

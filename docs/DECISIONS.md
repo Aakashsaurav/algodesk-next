@@ -60,4 +60,11 @@ Short decision records (context, decision, reason) in the order they were taken.
 
 **ADR-026 Two-stage data deletion with safety trash directory.** Market tick data cannot be redownloaded. Deletion moves files to a timestamped safety trash directory (`data/.trash/<timestamp>/`) with metadata audit logs, purged only after `data.trash_days` or with explicit `--purge`. Deletions require typed confirmation and refuse execution if the journal lock is held.
 
+**ADR-027 Order state machine, write-ahead journaling and deterministic client refs.** The order manager drives order states strictly through `check_transition`, refusing unapproved intents (INV-3) and logging transitions as `OrderEvent`. To prevent phantom orders, `intent` and `order.created` are journaled with `durable=True` before submission to the execution venue. Client references are deterministic (`<run_id>-<counter>`).
+
+**ADR-028 Pre-trade risk evaluation without short-circuiting and persistent kill-switch.** `RiskEngine` evaluates all configured risk rules without early exit, recording all compared numbers in the journal for full auditability. Reducing intents bypass entry-only rules. The emergency kill-switch persists in `data/state/killswitch.json` and checks mtime on every call for instantaneous cross-process trading halts.
+
+**ADR-029 Conservative simulated execution venue with trade-through limit fills.** `venues/sim` uses no network or clock, pricing orders against the first quote received at or after arrival. Market orders walk depth, cancelling unfilled remainder. Resting limit orders fill only when the opposite market trades through the limit by `sim.through_ticks` ticks, eliminating optimistic queue-priority assumptions.
+
+
 

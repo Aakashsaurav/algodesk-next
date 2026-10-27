@@ -51,6 +51,7 @@ class DeletePlan:
     total_files: int
     total_rows: int
     total_bytes: int
+    no_data_instruments: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,18 +76,17 @@ def _check_journal_lock(lock_path: Path) -> None:
     if not lock_path.exists():
         return
     try:
-        f = open(lock_path, "a")
-        if sys.platform == "win32":
-            import msvcrt
+        with open(lock_path, "a") as f:
+            if sys.platform == "win32":
+                import msvcrt
 
-            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
-            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
 
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        f.close()
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     except (BlockingIOError, OSError) as exc:
         raise ConfigError(
             what=f"Refusing deletion while journal writer lock is held: {exc}",
@@ -268,6 +268,7 @@ def plan_delete(
             resolved_insts.add(inst)
 
     matching_files: list[FileRecord] = []
+    insts_with_files: set[str] = set()
     for inst in sorted(resolved_insts):
         files = manifest.get_files(instrument=inst, kind=kind)
         for f in files:
@@ -276,6 +277,9 @@ def plan_delete(
             if to_date and f.date > to_date:
                 continue
             matching_files.append(f)
+            insts_with_files.add(inst)
+
+    no_data_insts = sorted(resolved_insts - insts_with_files)
 
     dates = sorted({f.date for f in matching_files})
     first_d = dates[0] if dates else ""
@@ -285,13 +289,14 @@ def plan_delete(
 
     return DeletePlan(
         selectors=tuple(selectors),
-        instruments=tuple(sorted(resolved_insts)),
+        instruments=tuple(sorted(insts_with_files)),
         files=tuple(matching_files),
         first_date=first_d,
         last_date=last_d,
         total_files=len(matching_files),
         total_rows=total_rows,
         total_bytes=total_bytes,
+        no_data_instruments=tuple(no_data_insts),
     )
 
 

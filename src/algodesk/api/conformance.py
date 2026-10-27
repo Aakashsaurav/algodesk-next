@@ -32,7 +32,17 @@ def venue_problems(obj: Any) -> list[str]:
     """Verify ExecutionVenue protocol conformance."""
     problems = _check_methods(
         obj,
-        ["place", "cancel", "on_quote", "events", "positions", "funds"],
+        [
+            "configure",
+            "place",
+            "cancel",
+            "order_status",
+            "end_of_day",
+            "on_quote",
+            "events",
+            "positions",
+            "funds",
+        ],
         "ExecutionVenue",
     )
     # Check that place and cancel are coroutine functions

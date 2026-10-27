@@ -60,11 +60,20 @@ def test_data_source_problems_good_and_bad() -> None:
 
 def test_venue_problems_good_and_bad() -> None:
     class GoodVenue:
+        def configure(self, instruments: Any) -> None:
+            pass
+
         async def place(self, spec: OrderSpec, client_ref: str) -> VenueAck:
             return VenueAck(client_ref="r", venue_ref="v", ts=datetime.now(UTC))
 
         async def cancel(self, client_ref: str) -> VenueAck:
             return VenueAck(client_ref="r", venue_ref="v", ts=datetime.now(UTC))
+
+        def order_status(self, client_ref: str) -> Any:
+            return None
+
+        def end_of_day(self) -> None:
+            pass
 
         def on_quote(self, quote: Quote) -> None:
             pass
@@ -81,11 +90,20 @@ def test_venue_problems_good_and_bad() -> None:
     assert venue_problems(GoodVenue()) == []
 
     class SyncPlaceVenue:
+        def configure(self, instruments: Any) -> None:
+            pass
+
         def place(self, spec: OrderSpec, client_ref: str) -> VenueAck:  # non-async!
             return VenueAck(client_ref="r", venue_ref="v", ts=datetime.now(UTC))
 
         async def cancel(self, client_ref: str) -> VenueAck:
             return VenueAck(client_ref="r", venue_ref="v", ts=datetime.now(UTC))
+
+        def order_status(self, client_ref: str) -> Any:
+            return None
+
+        def end_of_day(self) -> None:
+            pass
 
         def on_quote(self, quote: Quote) -> None:
             pass

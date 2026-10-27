@@ -1,0 +1,90 @@
+# Simulated Venue parameters
+
+[[param]]
+name = "sim.latency_ms"
+type = "int"
+default = 300
+min = 0
+max = 10000
+unit = "ms"
+scope = "global"
+tighten = "down"
+description = "Simulated venue order placement latency in milliseconds"
+owner = "sim"
+
+[[param]]
+name = "sim.latency_jitter_ms"
+type = "int"
+default = 0
+min = 0
+max = 500
+unit = "ms"
+scope = "global"
+tighten = "down"
+description = "Simulated venue latency jitter in milliseconds"
+owner = "sim"
+
+[[param]]
+name = "sim.through_ticks"
+type = "int"
+default = 1
+min = 0
+max = 100
+unit = "ticks"
+scope = "global"
+tighten = "up"
+description = "Ticks opposite price must trade through limit for non-marketable limit fill"
+owner = "sim"
+
+[[param]]
+name = "sim.allow_short"
+type = "bool"
+default = false
+scope = "global"
+tighten = "none"
+description = "Whether to allow short selling beyond current long position"
+owner = "sim"
+
+[[param]]
+name = "sim.reject_rate"
+type = "float"
+default = 0.0
+min = 0.0
+max = 1.0
+scope = "global"
+tighten = "down"
+description = "Injectable random reject rate for venue orders"
+owner = "sim"
+
+[[param]]
+name = "sim.timeout_rate"
+type = "float"
+default = 0.0
+min = 0.0
+max = 1.0
+scope = "global"
+tighten = "down"
+description = "Injectable random timeout rate for venue orders"
+owner = "sim"
+
+[[param]]
+name = "sim.partial_fill_rate"
+type = "float"
+default = 0.0
+min = 0.0
+max = 1.0
+scope = "global"
+tighten = "down"
+description = "Injectable random partial fill rate for fills"
+owner = "sim"
+
+[[param]]
+name = "sim.seed"
+type = "int"
+default = 42
+min = 0
+max = 2147483647
+scope = "global"
+tighten = "none"
+description = "Random seed for repeatable simulation jitter and failure injection"
+owner = "sim"

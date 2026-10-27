@@ -19,7 +19,13 @@ from algodesk.api.market import (
     Tick,
     _validate_utc_ts,
 )
-from algodesk.api.trading import Fill, Intent, Order, OrderEvent, Portfolio, RiskDecision
+from algodesk.api.trading import (
+    FillEvent,
+    Intent,
+    OrderEventMsg,
+    Portfolio,
+    RiskDecision,
+)
 
 __all__ = [
     "BarClosed",
@@ -92,30 +98,6 @@ class RiskEvent:
 
     def __post_init__(self) -> None:
         _validate_utc_ts(self.ts, "ts")
-
-
-@dataclass(frozen=True, slots=True)
-class OrderEventMsg:
-    """Lifecycle transition event for an order."""
-
-    event: OrderEvent
-    order: Order | None = None
-
-    @property
-    def ts(self) -> datetime:
-        return self.event.ts
-
-
-@dataclass(frozen=True, slots=True)
-class FillEvent:
-    """Execution fill event reported by venue."""
-
-    fill: Fill
-    order: Order | None = None
-
-    @property
-    def ts(self) -> datetime:
-        return self.fill.ts
 
 
 @dataclass(frozen=True, slots=True)

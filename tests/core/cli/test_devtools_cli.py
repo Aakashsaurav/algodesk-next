@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from algodesk.cli.app import app
@@ -195,11 +192,24 @@ def test_cli_secrets_scan_help(runner: CliRunner) -> None:
     assert "Scan codebase for exposed secrets" in res.output
 
 
-def test_check_sh_script_passes() -> None:
-    if os.environ.get("CHECK_SH_RUNNING"):
-        pytest.skip("Avoid recursion when invoked from scripts/check.sh")
+def test_check_sh_has_required_steps() -> None:
+    """CP0 step 2: Light test that parses scripts/check.sh for the required steps."""
     root = find_project_root()
     script = root / "scripts" / "check.sh"
-    res = subprocess.run(["bash", str(script)], cwd=str(root), capture_output=True, text=True)
-    assert res.returncode == 0, f"check.sh failed:\n{res.stdout}\n{res.stderr}"
-    assert "CHECK: PASS" in res.stdout
+    assert script.exists()
+    content = script.read_text(encoding="utf-8")
+
+    required_steps = [
+        "isolation",
+        "ruff check",
+        "ruff format",
+        "mypy",
+        "pytest",
+        "lint-imports",
+        "budget",
+        "docs check",
+        "lint",
+        "secrets scan",
+    ]
+    for step in required_steps:
+        assert step in content, f"Step '{step}' missing from scripts/check.sh"

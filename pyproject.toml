@@ -25,6 +25,7 @@ dev = [
     "ruff",
     "mypy",
     "pytest",
+    "pytest-xdist",
     "pytest-cov",
     "hypothesis",
     "import-linter",
@@ -64,7 +65,10 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 filterwarnings = [
     "error",
-    "ignore::ResourceWarning",
+    # Python 3.13 emits ResourceWarning when unclosed sqlite3 connections are garbage collected during test teardown;
+    # pytest wraps these in PytestUnraisableExceptionWarning. Narrowly ignore unclosed sqlite3 connections.
+    "ignore:unclosed database in <sqlite3.Connection:ResourceWarning",
+    "ignore:Exception ignored in.*sqlite3.Connection:pytest.PytestUnraisableExceptionWarning",
 ]
 markers = [
     "live: tests requiring live network access (disallowed in offline test runs)",

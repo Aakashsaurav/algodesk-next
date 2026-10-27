@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
@@ -18,6 +18,7 @@ from algodesk.api.trading import (
     Intent,
     Order,
     OrderSpec,
+    OrderStatus,
     Position,
     RiskDecision,
     VenueAck,
@@ -66,6 +67,18 @@ class Clock(Protocol):
     def monotonic_ns(self) -> int:
         """Monotonic nanosecond timestamp."""
         ...
+
+
+class SystemClock:
+    """Standard system clock providing timezone-aware UTC datetime and monotonic ns."""
+
+    def now(self) -> datetime:
+        return datetime.now(UTC)
+
+    def monotonic_ns(self) -> int:
+        import time
+
+        return time.monotonic_ns()
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,9 +171,15 @@ class DataSource(Protocol):
 class ExecutionVenue(Protocol):
     """Execution venue protocol for placing orders and receiving fills."""
 
+    def configure(self, instruments: Sequence[InstrumentId]) -> None: ...
+
     async def place(self, spec: OrderSpec, client_ref: str) -> VenueAck: ...
 
     async def cancel(self, client_ref: str) -> VenueAck: ...
+
+    def order_status(self, client_ref: str) -> OrderStatus | None: ...
+
+    def end_of_day(self) -> None: ...
 
     def on_quote(self, quote: Quote) -> None: ...
 

@@ -4,7 +4,7 @@ Owner: Aakash · Version: 1.0 · Date: 19 October 2026
 
 ## Summary
 
-AlgoDesk Next is a small core plus plugins. The core is ten packages in strict layers: `api` (contracts, no internal imports) at the bottom; `fees`, `config`, `params`, `registry`, `journal` and `logs` above it, independent of each other; `ops` (composition root, doctor) and `devtools` (budget, docs, lint, secret scan) above those; `cli` on top. Plugins import only `algodesk.api`; the core never imports a plugin. Every adjustable number lives in the parameter registry, every event in a hash-chained journal, and every plugin load passes mode, capability and conformance gates. Import rules are enforced by tests. Market data, strategies, orders and brokers arrive from milestone M1 onward as plugins.
+AlgoDesk Next is a small core plus plugins. The core is organized in strict layers: `api` at the bottom; foundation packages (`fees`, `config`, `params`, `registry`, `journal`, `logs`, `data`); trading execution layers (`oms`, `portfolio`, `risk`); runtime `engine`; `ops` and `devtools`; and `cli` on top. Plugins import only `algodesk.api`; the core never imports a plugin. Every adjustable number lives in the parameter registry, every event in a hash-chained journal, and every plugin load passes mode, capability and conformance gates. Orders follow a strict state machine with write-ahead journaling. Risk checks evaluate without short-circuiting, backed by an atomic persistent kill-switch. Import rules are enforced by tests. Market data, strategies, orders and brokers arrive as plugins.
 
 ## 1. Layers
 
@@ -12,6 +12,7 @@ AlgoDesk Next is a small core plus plugins. The core is ten packages in strict l
 cli
 ops | devtools
 engine
+oms | portfolio | risk
 fees | config | params | registry | journal | logs | data   (independent of each other)
 api                                                           (imports no other algodesk package)
 plugins/  ->  algodesk.api only
@@ -31,6 +32,9 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 | `logs` | JSON logging with secret scrubbing | `setup_logging`, `get_logger` |
 | `data` | Tick recording, compaction, replay, catalog, and groups | `Recorder`, `ReplayFeed`, `DataManifest`, `DataCatalog`, `DataService`, `synth_market_data` |
 | `engine` | Deterministic event bus, clocks, scheduler, bars, and sessions | `EventBus`, `WallClock`, `SimClock`, `Scheduler`, `BarBuilder`, `SessionManager`, `MarketState` |
+| `oms` | Order lifecycle, state machine, write-ahead journaling | `OrderManager` |
+| `portfolio` | Realized/unrealized accounting, mark-to-market, snapshots | `PortfolioLedger` |
+| `risk` | Pre-trade evaluation, persistent kill-switch, loss monitor | `RiskEngine`, `KillSwitch`, `RiskMonitor`, `RiskViewContext` |
 | `ops` | Wiring and diagnostics | `open_runtime`, `Runtime`, `DoctorRegistry`, `build_core_checks` |
 | `devtools` | Automatic fences | budget, docs, archlint, secretscan, `build_tool_checks` |
 | `cli` | The `algodesk` command | Typer app |
@@ -49,6 +53,7 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 |---|---|
 | `config/` | `platform.toml`, `profiles/`, `runs/`, `params/*.toml` defaults, `groups/*.toml`, lint and scan rules |
 | `data/state/params.db`, `data/state/journal.db` | Parameter overrides and history; journal (git-ignored) |
+| `data/state/killswitch.json` | Persistent emergency trading kill-switch state (git-ignored) |
 | `data/state/data_manifest.db` | Market data manifest SQLite DB (files and instruments metadata) |
 | `data/ticks/exchange=E/segment=S/symbol=X/date=D/` | Hive-partitioned parquet part and compacted day files |
 | `data/.trash/<timestamp>/` | Two-stage soft deletion safety trash awaiting purge |
@@ -85,4 +90,4 @@ Secrets providers (`keychain`, `env`) expose name-based lookup through `SecretRe
 
 ## 10. Not built yet
 
-The order manager, portfolio engine, execution engine, demo strategy runner, Telegram notifier, and remote runner.
+The strategy runner, Telegram notifier, and remote runner.

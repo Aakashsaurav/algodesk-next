@@ -16,10 +16,12 @@ from algodesk.api.trading import (
     Charges,
     Fill,
     Funds,
+    GrossFill,
     Order,
     OrderEvent,
     OrderSpec,
     OrderState,
+    OrderStatus,
     OrderType,
     PlaceOrder,
     Portfolio,
@@ -30,6 +32,7 @@ from algodesk.api.trading import (
     Validity,
     VenueAck,
     VenueEvent,
+    VenueGrossFill,
     check_transition,
 )
 
@@ -111,9 +114,17 @@ def test_intents_validation() -> None:
     )
     place = PlaceOrder(spec=spec)
     assert place.spec.instrument == "NSE:EQ:TCS"
+    assert len(place.intent_id) > 0
+
+    place_explicit = PlaceOrder(spec=spec, intent_id="custom-intent-1")
+    assert place_explicit.intent_id == "custom-intent-1"
 
     cancel = CancelOrder(client_ref="run1-1")
     assert cancel.client_ref == "run1-1"
+    assert len(cancel.intent_id) > 0
+
+    cancel_explicit = CancelOrder(client_ref="run1-1", intent_id="custom-cancel-1")
+    assert cancel_explicit.intent_id == "custom-cancel-1"
 
     with pytest.raises(ValueError, match="client_ref cannot be empty"):
         CancelOrder(client_ref="")
@@ -283,6 +294,45 @@ def test_venue_ack_and_event() -> None:
 
     evt = VenueEvent(kind="ack", client_ref="run-1", ts=now, venue_ref="v-99")
     assert evt.kind == "ack"
+
+    # GrossFill validation
+    gf = GrossFill(
+        client_ref="run-1",
+        qty=10,
+        price=Decimal("150.25"),
+        ts=now,
+        venue_fill_id="vf-1",
+    )
+    assert gf.client_ref == "run-1"
+    assert gf.qty == 10
+    assert gf.price == Decimal("150.25")
+    assert gf.venue_fill_id == "vf-1"
+    assert VenueGrossFill is GrossFill
+
+    with pytest.raises(ValueError, match="qty must be positive"):
+        GrossFill(client_ref="run-1", qty=0, price=Decimal("100"), ts=now, venue_fill_id="vf-2")
+
+    # VenueEvent with gross fill
+    fill_evt = VenueEvent(
+        kind="fill",
+        client_ref="run-1",
+        ts=now,
+        venue_ref="v-99",
+        gross_fill=gf,
+    )
+    assert fill_evt.gross_fill == gf
+    assert fill_evt.venue_fill_id == "vf-1"
+    assert fill_evt.qty == 10
+    assert fill_evt.price == Decimal("150.25")
+
+    # OrderStatus
+    status = OrderStatus(
+        client_ref="run-1",
+        state=OrderState.ACKNOWLEDGED,
+        venue_ref="v-99",
+    )
+    assert status.client_ref == "run-1"
+    assert status.state == OrderState.ACKNOWLEDGED
 
 
 def test_funds() -> None:

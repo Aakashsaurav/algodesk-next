@@ -32,6 +32,8 @@ Plugins implement domain protocols defined in `algodesk.api.protocols` (re-expor
 | `secrets/env` | `secrets` | `get`, `names` | Environment variable provider (`ALGODESK_SECRET_<NAME>`); read-only, `set`/`delete` raise `NotSupported`. |
 | `brokers/yfinance` | `broker` | `history`, `actions`, `fundamentals`, `info`, `options` | Historical equity data from Yahoo Finance with NSE/BSE mappings, raw/adjusted OHLCV, and rate limits. |
 | `brokers/upstox` | `broker` | `auth`, `instruments`, `history`, `stream` | Official Upstox v2/v3 thin client for OAuth/analytics auth, daily instrument master, history, and Protobuf feed. |
+| `risk_rules/builtin` | `risk_rule` | `pre_trade`, `limits`, `capital_checks` | Pre-trade risk rule plugin evaluating 9 safety controls (cash, exposure, orders/min, daily loss) from registry. |
+| `venues/sim` | `venue` | `market_orders`, `limit_orders`, `depth_matching`, `failure_injection` | Simulated execution venue with latency, seeded jitter, depth walking, trade-through limit fills, and failure drills. |
 
 ## Manifest (`plugin.toml`)
 

@@ -29,6 +29,12 @@ Typed (mypy), linted (ruff), tested (pytest, including a failing-case test), fun
 ## Token discipline
 Do not restate the task or the files. Output only code changes, commands with their real output, and the report. If your budget is running low, stop at a safe point and write the handoff block.
 
+## Efficiency (saves tokens and time)
+- Do not narrate waiting. Run commands in the foreground and read the result; never poll a background task in a loop.
+- Before opening source files to learn signatures, read `_workbench/API_INDEX.md` (regenerate with `algodesk api index`). Open a file only for the part you must change, and read each file at most once per checkpoint (use search to find line ranges).
+- While iterating use `bash scripts/check.sh --quick`; run the full `bash scripts/check.sh` once at each checkpoint and before the report. Use `--summary` to see only failing sections.
+- If a requirement can be met in several ways, take the simplest mechanism that satisfies the Accept line and say so in the report; do not experiment with framework internals.
+
 ## Finish
 1. Run the card's `Accept` commands and paste the real output.
 2. Run `bash scripts/check.sh` and paste the last line.

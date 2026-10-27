@@ -108,3 +108,30 @@ def test_cli_data_delete_dry_run_and_confirm(runner: CliRunner) -> None:
     res_purge = runner.invoke(app, ["--root", str(root), "data", "trash", "purge", "--yes"])
     assert res_purge.exit_code == 0
     assert "Purged" in res_purge.output
+
+
+def test_cli_data_delete_group_with_no_data_instruments(runner: CliRunner, tmp_path: Path) -> None:
+    """CP0 step 5: data delete plan line counts only instruments that have files;
+    members of a @group without data are listed as 'no data'.
+    """
+    root = find_project_root()
+    # Dry-run delete on @demo5
+    res = runner.invoke(
+        app,
+        [
+            "--root",
+            str(root),
+            "data",
+            "delete",
+            "@demo5",
+            "--dry-run",
+            "--reason",
+            "test partial group delete",
+        ],
+    )
+    assert res.exit_code == 0
+    # Members of @group without data are listed as "no data"
+    assert "NSE:EQ:RELIANCE: no data" in res.output
+    assert "NSE:EQ:TCS: no data" in res.output
+    # Plan line counts only instruments that have files (2 instruments, not 5)
+    assert "across 2 instrument(s)" in res.output
