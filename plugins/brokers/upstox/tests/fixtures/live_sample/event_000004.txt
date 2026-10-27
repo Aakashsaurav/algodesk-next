@@ -1,0 +1,1 @@
+Tick(instrument='MCX:FNO:GOLD FUT 04 DEC 26', exch_ts=datetime.datetime(2026, 10, 23, 11, 11, 36, tzinfo=datetime.timezone.utc), recv_ts=datetime.datetime(2026, 10, 23, 11, 11, 44, 828657, tzinfo=datetime.timezone.utc), ltp=142920.0, ltq=1, volume=3469, oi=16153)

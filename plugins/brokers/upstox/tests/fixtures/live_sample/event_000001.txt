@@ -1,0 +1,1 @@
+FeedStatus(state='connected', ts=datetime.datetime(2026, 10, 23, 11, 11, 44, 635255, tzinfo=datetime.timezone.utc), details='WebSocket connected', gap_start=None, gap_end=None)

@@ -41,6 +41,17 @@ class ArchlintConfig:
     ignore_numeric_values: tuple[int | float, ...]
     allowed_framework_roots: tuple[str, ...]
     excluded_dirs: tuple[str, ...] = (".agents", "_workbench", "__pycache__")
+    direct_clock_symbols: tuple[str, ...] = ("datetime.now", "datetime.utcnow", "time.time")
+    direct_clock_prefixes: tuple[str, ...] = (
+        "src/algodesk/engine",
+        "src/algodesk/oms",
+        "src/algodesk/risk",
+        "src/algodesk/portfolio",
+        "src/algodesk/results",
+        "src/algodesk/strategies",
+        "plugins/strategies",
+    )
+    direct_clock_exempt: tuple[str, ...] = ("src/algodesk/engine/clock.py",)
 
 
 @dataclass(frozen=True)
@@ -76,6 +87,17 @@ def load_archlint_config(root: Path) -> ArchlintConfig:
     ignore_vals: tuple[int | float, ...] = (0, 1, -1, 0.0, 1.0, -1.0)
     allowed_fw = ("algodesk.api",)
     ex_dirs: tuple[str, ...] = (".agents", "_workbench", "__pycache__", "proto")
+    dc_symbols = ("datetime.now", "datetime.utcnow", "time.time")
+    dc_prefixes = (
+        "src/algodesk/engine",
+        "src/algodesk/oms",
+        "src/algodesk/risk",
+        "src/algodesk/portfolio",
+        "src/algodesk/results",
+        "src/algodesk/strategies",
+        "plugins/strategies",
+    )
+    dc_exempt = ("src/algodesk/engine/clock.py",)
 
     if cfg_file.is_file():
         try:
@@ -105,6 +127,14 @@ def load_archlint_config(root: Path) -> ArchlintConfig:
             ex = data.get("exclusions", {})
             if "directories" in ex:
                 ex_dirs = tuple(ex["directories"])
+
+            dc = data.get("direct_clock", {})
+            if "banned_symbols" in dc:
+                dc_symbols = tuple(dc["banned_symbols"])
+            if "enforced_prefixes" in dc:
+                dc_prefixes = tuple(dc["enforced_prefixes"])
+            if "exempt_files" in dc:
+                dc_exempt = tuple(dc["exempt_files"])
         except Exception:
             pass
 
@@ -117,6 +147,9 @@ def load_archlint_config(root: Path) -> ArchlintConfig:
         ignore_numeric_values=ignore_vals,
         allowed_framework_roots=allowed_fw,
         excluded_dirs=ex_dirs,
+        direct_clock_symbols=dc_symbols,
+        direct_clock_prefixes=dc_prefixes,
+        direct_clock_exempt=dc_exempt,
     )
 
 
@@ -209,6 +242,13 @@ class _AstChecker(ast.NodeVisitor):
             "defaults.py" in rel_path
             or rel_path.startswith("config/params")
             or "tests/" in rel_path
+        )
+        self._imported_symbols: dict[str, str] = {}
+        exempt_names = {Path(ex).name for ex in self.cfg.direct_clock_exempt}
+        self._check_direct_clock = (
+            any(rel_path.startswith(pfx) for pfx in self.cfg.direct_clock_prefixes)
+            and rel_path not in self.cfg.direct_clock_exempt
+            and not any(rel_path.endswith("/" + name) for name in exempt_names)
         )
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -395,7 +435,43 @@ class _AstChecker(ast.NodeVisitor):
         self._check_banned_calls(node)
         if self._check_limits:
             self._check_call_limits(node)
+        if self._check_direct_clock:
+            self._check_direct_clock_call(node)
         self.generic_visit(node)
+
+    def _check_direct_clock_call(self, node: ast.Call) -> None:
+        parts: list[str] = []
+        curr: ast.AST | None = node.func
+        while isinstance(curr, ast.Attribute):
+            parts.append(curr.attr)
+            curr = curr.value
+        if isinstance(curr, ast.Name):
+            resolved_root = self._imported_symbols.get(curr.id, curr.id)
+            parts.append(resolved_root)
+        parts.reverse()
+        full_name = ".".join(parts)
+
+        matched_symbol = ""
+        if full_name in ("datetime.now", "datetime.datetime.now"):
+            matched_symbol = "datetime.now"
+        elif full_name in ("datetime.utcnow", "datetime.datetime.utcnow"):
+            matched_symbol = "datetime.utcnow"
+        elif full_name == "time.time":
+            matched_symbol = "time.time"
+        elif full_name in self.cfg.direct_clock_symbols:
+            matched_symbol = full_name
+
+        if matched_symbol and matched_symbol in self.cfg.direct_clock_symbols:
+            msg = f"Direct clock call '{matched_symbol}' is forbidden; use an injected Clock"
+            self.findings.append(
+                LintFinding(
+                    path=self.rel_path,
+                    line=node.lineno,
+                    rule="archlint.direct_clock",
+                    symbol=matched_symbol,
+                    message=msg,
+                )
+            )
 
     def _check_banned_calls(self, node: ast.Call) -> None:
         func_name = ""
@@ -500,6 +576,8 @@ class _AstChecker(ast.NodeVisitor):
             )
 
     def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self._imported_symbols[alias.asname or alias.name] = alias.name
         if self.is_plugin:
             for alias in node.names:
                 root_pkg = alias.name.split(".")[0]
@@ -521,11 +599,15 @@ class _AstChecker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        mod = node.module or ""
+        for alias in node.names:
+            as_name = alias.asname or alias.name
+            full = f"{mod}.{alias.name}" if mod else alias.name
+            self._imported_symbols[as_name] = full
         if self.is_plugin:
             if node.level and node.level > 0:
                 self.generic_visit(node)
                 return
-            mod = node.module or ""
             root_pkg = mod.split(".")[0]
             if root_pkg in sys.stdlib_module_names:
                 self.generic_visit(node)

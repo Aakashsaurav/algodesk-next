@@ -201,5 +201,5 @@ def test_check_sh_script_passes() -> None:
     root = find_project_root()
     script = root / "scripts" / "check.sh"
     res = subprocess.run(["bash", str(script)], cwd=str(root), capture_output=True, text=True)
-    assert res.returncode == 0
+    assert res.returncode == 0, f"check.sh failed:\n{res.stdout}\n{res.stderr}"
     assert "CHECK: PASS" in res.stdout

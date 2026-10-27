@@ -64,7 +64,46 @@ def test_cli_secrets_flow(runner: CliRunner, tmp_path: Path, monkeypatch: Any) -
 
 
 def test_cli_data_get(runner: CliRunner, monkeypatch: Any) -> None:
-    # Test data get command with yfinance
+    from datetime import timedelta
+
+    from algodesk.api import Bar
+    from algodesk.registry.registry import PluginRegistry
+
+    class FakeYFinanceBroker:
+        def history(self, key: Any, start: Any, end: Any) -> list[Bar]:
+            # Generate fake daily bars between start and end, skipping Oct 2 and Oct 20
+            bars: list[Bar] = []
+            cur = start
+            while cur <= end:
+                d_str = cur.strftime("%Y-%m-%d")
+                if d_str not in ("2026-10-02", "2026-10-20") and cur.weekday() < 5:
+                    bars.append(
+                        Bar(
+                            instrument=key.instrument,
+                            timeframe=key.timeframe,
+                            start_ts=cur,
+                            end_ts=cur + timedelta(days=1),
+                            open=2500.0,
+                            high=2550.0,
+                            low=2490.0,
+                            close=2530.0,
+                            volume=1000000,
+                            complete=True,
+                        )
+                    )
+                cur += timedelta(days=1)
+            return bars
+
+    orig_create = PluginRegistry.create
+
+    def fake_create(self: Any, kind: str, name: str, **kwargs: Any) -> Any:
+        if kind == "broker" and name == "yfinance":
+            return FakeYFinanceBroker()
+        return orig_create(self, kind, name, **kwargs)
+
+    monkeypatch.setattr(PluginRegistry, "create", fake_create)
+
+    # Test data get command with fake yfinance broker
     res = runner.invoke(app, ["data", "get", "RELIANCE", "1d", "2026-10-01", "2026-10-20"])
     assert res.exit_code == 0
     assert "OPEN" in res.output

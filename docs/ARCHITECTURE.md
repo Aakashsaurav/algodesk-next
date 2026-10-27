@@ -11,8 +11,9 @@ AlgoDesk Next is a small core plus plugins. The core is ten packages in strict l
 ```
 cli
 ops | devtools
-fees | config | params | registry | journal | logs   (independent of each other)
-api                                                    (imports no other algodesk package)
+engine
+fees | config | params | registry | journal | logs | data   (independent of each other)
+api                                                           (imports no other algodesk package)
 plugins/  ->  algodesk.api only
 ```
 Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.sh`) and by `algodesk lint`.
@@ -21,13 +22,15 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 
 | Package | Purpose | Main public names |
 |---|---|---|
-| `api` | Contracts, domain types and protocols | `Instrument`, `Quote`, `Bar`, `Order`, `Fill`, `Position`, `Portfolio`, `Indicator`, `Calendar`, `PluginBase`, error classes |
+| `api` | Contracts, domain types and protocols | `Instrument`, `Quote`, `Bar`, `Order`, `Fill`, `Position`, `Portfolio`, `Indicator`, `Calendar`, `Clock`, `PluginBase`, error classes |
 | `fees` | Deterministic fee calculation and schedules | `FeeEngine`, `Schedule`, `charges_for_fills` |
 | `config` | Layered TOML configuration, validated | `PlatformConfig`, `RunConfig`, `load_platform`, `load_run`, `build_effective`, `render_effective`, `resolve_paths`, `ensure_dirs` |
 | `params` | Central parameter registry (SQLite) | `ParamRegistry`, `ParamSpec`, `load_defaults`, `ChangeResult` |
 | `registry` | Plugin discovery, validation, gating, loading | `PluginRegistry`, `discover`, `code_hash`, `ConformanceStore`, `scaffold_plugin`, `base_contract_problems` |
 | `journal` | Append-only hash-chained event log (SQLite) | `Journal`, `JournalSettings`, `verify_journal` |
 | `logs` | JSON logging with secret scrubbing | `setup_logging`, `get_logger` |
+| `data` | Tick recording, compaction, replay, catalog, and groups | `Recorder`, `ReplayFeed`, `DataManifest`, `DataCatalog`, `DataService`, `synth_market_data` |
+| `engine` | Deterministic event bus, clocks, scheduler, bars, and sessions | `EventBus`, `WallClock`, `SimClock`, `Scheduler`, `BarBuilder`, `SessionManager`, `MarketState` |
 | `ops` | Wiring and diagnostics | `open_runtime`, `Runtime`, `DoctorRegistry`, `build_core_checks` |
 | `devtools` | Automatic fences | budget, docs, archlint, secretscan, `build_tool_checks` |
 | `cli` | The `algodesk` command | Typer app |
@@ -44,8 +47,11 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 
 | Path | Content |
 |---|---|
-| `config/` | `platform.toml`, `profiles/`, `runs/`, `params/*.toml` defaults, lint and scan rules and their allow-lists |
+| `config/` | `platform.toml`, `profiles/`, `runs/`, `params/*.toml` defaults, `groups/*.toml`, lint and scan rules |
 | `data/state/params.db`, `data/state/journal.db` | Parameter overrides and history; journal (git-ignored) |
+| `data/state/data_manifest.db` | Market data manifest SQLite DB (files and instruments metadata) |
+| `data/ticks/exchange=E/segment=S/symbol=X/date=D/` | Hive-partitioned parquet part and compacted day files |
+| `data/.trash/<timestamp>/` | Two-stage soft deletion safety trash awaiting purge |
 | `logs/algodesk.log` | JSON log lines, rotated daily (git-ignored) |
 | `.algodesk/conformance.json` | Conformance pass records keyed by plugin code hash |
 | `.venv/`, `.local/` | Virtual environment, project-local Python and caches (isolation rule) |
@@ -79,4 +85,4 @@ Secrets providers (`keychain`, `env`) expose name-based lookup through `SecretRe
 
 ## 10. Not built yet
 
-The clock, order manager, portfolio engine, execution engine, demo strategy runner, Telegram notifier, and remote runner.
+The order manager, portfolio engine, execution engine, demo strategy runner, Telegram notifier, and remote runner.

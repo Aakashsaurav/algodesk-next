@@ -1,0 +1,34 @@
+# Engine parameters for bar builder, scheduling, and session lifecycle
+
+[[param]]
+name = "engine.bar_close_grace_ms"
+type = "int"
+default = 500
+min = 0
+max = 10000
+unit = "ms"
+scope = "global"
+tighten = "down"
+description = "Grace period in milliseconds before boundary timer closes incomplete bar"
+owner = "engine"
+
+[[param]]
+name = "engine.fill_empty_bars"
+type = "bool"
+default = true
+scope = "global"
+tighten = "none"
+description = "Whether to synthesize flat bars for empty periods after first session tick"
+owner = "engine"
+
+[[param]]
+name = "engine.scheduler_tolerance_ms"
+type = "int"
+default = 50
+min = 1
+max = 5000
+unit = "ms"
+scope = "global"
+tighten = "down"
+description = "Tolerance in milliseconds for scheduler timer dispatch"
+owner = "engine"

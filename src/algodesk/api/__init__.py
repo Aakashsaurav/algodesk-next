@@ -6,6 +6,7 @@ Public API surface — re-exports everything downstream code needs.
 from algodesk.api.checks import CheckResult, DoctorCheck, Severity
 from algodesk.api.conformance import (
     calendar_problems,
+    clock_problems,
     data_source_problems,
     fees_problems,
     indicator_problems,
@@ -20,6 +21,7 @@ from algodesk.api.errors import (
     AlgoDeskError,
     CalendarCoverageError,
     ConfigError,
+    DataError,
     JournalError,
     ManifestError,
     NotSupported,
@@ -49,6 +51,7 @@ from algodesk.api.protocols import (
     AuthFlow,
     AuthSession,
     Calendar,
+    Clock,
     DataSource,
     ExecutionVenue,
     Indicator,
@@ -108,6 +111,7 @@ __all__ = [
     "AlgoDeskError",
     "CalendarCoverageError",
     "ConfigError",
+    "DataError",
     "JournalError",
     "ManifestError",
     "NotSupported",
@@ -171,6 +175,7 @@ __all__ = [
     "AuthFlow",
     "AuthSession",
     "Calendar",
+    "Clock",
     "DataSource",
     "ExecutionVenue",
     "Indicator",
@@ -187,6 +192,7 @@ __all__ = [
     "TradingSession",
     # conformance
     "calendar_problems",
+    "clock_problems",
     "data_source_problems",
     "fees_problems",
     "indicator_problems",

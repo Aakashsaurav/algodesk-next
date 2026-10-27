@@ -37,7 +37,7 @@ def test_fence_budget_dependency_violation_fails(tmp_path: Path) -> None:
     """Deliberate dependency overshoot fixture makes budget tool fail."""
     src_dir = tmp_path / "src" / "algodesk" / "mod"
     src_dir.mkdir(parents=True)
-    (src_dir / "app.py").write_text("x = 1\n")
+    (src_dir / "app.py").write_text("import dep1\nimport dep2\nimport dep3\nimport dep4\nx = 1\n")
     (tmp_path / "pyproject.toml").write_text(
         "[project]\ndependencies = ['dep1', 'dep2', 'dep3', 'dep4']\n"
     )

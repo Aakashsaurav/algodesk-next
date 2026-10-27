@@ -253,6 +253,45 @@ def extract_pyproject_dependencies(pyproject_path: Path) -> list[str]:
         return []
 
 
+def scan_core_dependencies(src_dir: Path) -> list[str]:
+    """Extract third-party package dependencies imported by src/algodesk (excluding devtools)."""
+    import ast
+    import sys
+
+    deps: set[str] = set()
+    if not src_dir.is_dir():
+        return []
+
+    for p in src_dir.rglob("*.py"):
+        if "devtools" in p.parts or "__pycache__" in p.parts:
+            continue
+        try:
+            tree = ast.parse(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for name in node.names:
+                    top = name.name.split(".")[0]
+                    if (
+                        top
+                        and top not in sys.stdlib_module_names
+                        and top not in ("algodesk", "__future__")
+                    ):
+                        deps.add(_parse_canonical_dep_name(top))
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    top = node.module.split(".")[0]
+                    if (
+                        top
+                        and top not in sys.stdlib_module_names
+                        and top not in ("algodesk", "__future__")
+                    ):
+                        deps.add(_parse_canonical_dep_name(top))
+
+    return sorted(deps)
+
+
 def run_budget(root: Path, params: ParamReader | Mapping[str, Any] | None = None) -> BudgetReport:
     """Calculate and evaluate codebase budget metrics against guidance and limits."""
     bp = load_budget_params(root, params)
@@ -269,8 +308,9 @@ def run_budget(root: Path, params: ParamReader | Mapping[str, Any] | None = None
     plugins_dir = root / "plugins"
     plugins, plugin_deps = scan_plugins(plugins_dir, plugin_guidance, overshoot_pct)
 
-    core_deps = extract_pyproject_dependencies(root / "pyproject.toml")
-    total_deps = sorted(set(core_deps) | set(plugin_deps))
+    core_deps = scan_core_dependencies(src_dir)
+    pyproject_deps = extract_pyproject_dependencies(root / "pyproject.toml")
+    total_deps = sorted(set(pyproject_deps) | set(plugin_deps))
 
     lines_status = evaluate_metric_status(total_lines, core_lines_guidance, overshoot_pct)
     mods_status = evaluate_metric_status(total_mods, core_mods_guidance, overshoot_pct)

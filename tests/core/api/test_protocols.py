@@ -220,3 +220,28 @@ def test_secrets_provider_protocol_runtime_check() -> None:
             return ["key1"]
 
     assert isinstance(FakeSecrets(), SecretsProvider)
+
+
+def test_clock_protocol_runtime_check() -> None:
+    from algodesk.api import Clock
+
+    class FakeClock:
+        def now(self) -> datetime:
+            return datetime.now(UTC)
+
+        def monotonic_ns(self) -> int:
+            return 1000000
+
+    assert isinstance(FakeClock(), Clock)
+
+
+def test_trading_session_tradable_attribute() -> None:
+    now = datetime.now(UTC)
+    s_default = TradingSession(name="regular", start=now, end=now)
+    assert s_default.tradable is True
+
+    s_preopen = TradingSession(name="preopen", start=now, end=now, tradable=False)
+    assert s_preopen.tradable is False
+
+    s_trad = TradingSession(name="regular", start=now, end=now, tradable=True)
+    assert s_trad.tradable is True

@@ -369,6 +369,22 @@ def test_bar_validation() -> None:
         complete=True,
     )
     assert bar.complete is True
+    assert bar.synthetic is False
+
+    synth_bar = Bar(
+        instrument=InstrumentId("NSE:EQ:INFY"),
+        timeframe="5m",
+        start_ts=t0,
+        end_ts=t1,
+        open=1505.0,
+        high=1505.0,
+        low=1505.0,
+        close=1505.0,
+        volume=0,
+        complete=True,
+        synthetic=True,
+    )
+    assert synth_bar.synthetic is True
 
     # High less than low
     with pytest.raises(ValueError, match="low.*cannot exceed high"):

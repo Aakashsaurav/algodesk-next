@@ -266,9 +266,11 @@ def test_logging_handle_context_manager(tmp_path: Path) -> None:
 
 def test_json_formatter_special_chars_in_msg(tmp_path: Path) -> None:
     sc = Scrubber()
-    h = setup_logging(level="INFO", fmt="json", log_dir=tmp_path, run_id="r_spec", scrubber=sc, retention_days=7)
+    h = setup_logging(
+        level="INFO", fmt="json", log_dir=tmp_path, run_id="r_spec", scrubber=sc, retention_days=7
+    )
     logger = get_logger("special")
-    logger.info("Message with \"quotes\", \n newline, and \t tabs")
+    logger.info('Message with "quotes", \n newline, and \t tabs')
     h.close()
 
     lines = (tmp_path / "algodesk.log").read_text(encoding="utf-8").strip().splitlines()
@@ -278,7 +280,9 @@ def test_json_formatter_special_chars_in_msg(tmp_path: Path) -> None:
 
 def test_json_formatter_numeric_and_bool_extras(tmp_path: Path) -> None:
     sc = Scrubber()
-    h = setup_logging(level="INFO", fmt="json", log_dir=tmp_path, run_id="r_num", scrubber=sc, retention_days=7)
+    h = setup_logging(
+        level="INFO", fmt="json", log_dir=tmp_path, run_id="r_num", scrubber=sc, retention_days=7
+    )
     logger = get_logger("num_comp")
     logger.info("Event", extra={"flag": True, "count": 42, "ratio": 3.14})
     h.close()
@@ -293,7 +297,14 @@ def test_json_formatter_numeric_and_bool_extras(tmp_path: Path) -> None:
 def test_scrubber_filter_scrubs_dict_args(tmp_path: Path) -> None:
     sc = Scrubber()
     sc.register("secret_dict_arg_val")
-    h = setup_logging(level="INFO", fmt="json", log_dir=tmp_path, run_id="r_dict_args", scrubber=sc, retention_days=7)
+    h = setup_logging(
+        level="INFO",
+        fmt="json",
+        log_dir=tmp_path,
+        run_id="r_dict_args",
+        scrubber=sc,
+        retention_days=7,
+    )
     logger = get_logger("dict_arg_comp")
     logger.info("Hello %(user)s", {"user": "secret_dict_arg_val"})
     h.close()
@@ -306,7 +317,9 @@ def test_scrubber_filter_scrubs_dict_args(tmp_path: Path) -> None:
 def test_scrubber_filter_scrubs_nested_extra_objects(tmp_path: Path) -> None:
     sc = Scrubber()
     sc.register("secret_nested_extra")
-    h = setup_logging(level="INFO", fmt="json", log_dir=tmp_path, run_id="r_nest", scrubber=sc, retention_days=7)
+    h = setup_logging(
+        level="INFO", fmt="json", log_dir=tmp_path, run_id="r_nest", scrubber=sc, retention_days=7
+    )
     logger = get_logger("nest_comp")
     logger.info("Action", extra={"meta": {"items": ["safe", "secret_nested_extra"]}})
     h.close()
@@ -319,7 +332,9 @@ def test_scrubber_filter_scrubs_nested_extra_objects(tmp_path: Path) -> None:
 def test_scrubber_filter_scrubs_multiline_traceback(tmp_path: Path) -> None:
     sc = Scrubber()
     sc.register("secret_traceback_token")
-    h = setup_logging(level="INFO", fmt="json", log_dir=tmp_path, run_id="r_tb", scrubber=sc, retention_days=7)
+    h = setup_logging(
+        level="INFO", fmt="json", log_dir=tmp_path, run_id="r_tb", scrubber=sc, retention_days=7
+    )
     logger = get_logger("tb_comp")
     try:
         raise ValueError("Error with secret_traceback_token in frame")
@@ -334,7 +349,14 @@ def test_scrubber_filter_scrubs_multiline_traceback(tmp_path: Path) -> None:
 
 def test_text_formatter_with_and_without_extras(tmp_path: Path) -> None:
     sc = Scrubber()
-    h = setup_logging(level="INFO", fmt="text", log_dir=tmp_path, run_id="r_txt_both", scrubber=sc, retention_days=7)
+    h = setup_logging(
+        level="INFO",
+        fmt="text",
+        log_dir=tmp_path,
+        run_id="r_txt_both",
+        scrubber=sc,
+        retention_days=7,
+    )
     logger = get_logger("txt_both")
     logger.info("Message without extra")
     logger.info("Message with extra", extra={"tag": "v1"})
@@ -347,7 +369,14 @@ def test_text_formatter_with_and_without_extras(tmp_path: Path) -> None:
 
 def test_text_formatter_with_exception(tmp_path: Path) -> None:
     sc = Scrubber()
-    h = setup_logging(level="INFO", fmt="text", log_dir=tmp_path, run_id="r_txt_exc", scrubber=sc, retention_days=7)
+    h = setup_logging(
+        level="INFO",
+        fmt="text",
+        log_dir=tmp_path,
+        run_id="r_txt_exc",
+        scrubber=sc,
+        retention_days=7,
+    )
     logger = get_logger("txt_exc")
     try:
         raise RuntimeError("Text format error occurred")
@@ -361,7 +390,14 @@ def test_text_formatter_with_exception(tmp_path: Path) -> None:
 
 def test_setup_logging_integer_log_level(tmp_path: Path) -> None:
     sc = Scrubber()
-    h = setup_logging(level=logging.ERROR, fmt="json", log_dir=tmp_path, run_id="r_int_lvl", scrubber=sc, retention_days=7)
+    h = setup_logging(
+        level=logging.ERROR,
+        fmt="json",
+        log_dir=tmp_path,
+        run_id="r_int_lvl",
+        scrubber=sc,
+        retention_days=7,
+    )
     logger = get_logger("int_lvl")
     logger.warning("Should not be logged")
     logger.error("Should be logged")
@@ -374,8 +410,9 @@ def test_setup_logging_integer_log_level(tmp_path: Path) -> None:
 
 def test_setup_logging_close_idempotent(tmp_path: Path) -> None:
     sc = Scrubber()
-    h = setup_logging(level="INFO", fmt="json", log_dir=tmp_path, run_id="r_idem", scrubber=sc, retention_days=7)
+    h = setup_logging(
+        level="INFO", fmt="json", log_dir=tmp_path, run_id="r_idem", scrubber=sc, retention_days=7
+    )
     h.close()
     h.close()
     assert h._closed is True
-

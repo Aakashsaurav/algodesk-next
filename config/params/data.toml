@@ -1,0 +1,59 @@
+# Data recorder, compaction, catalog, and retention parameters
+
+[[param]]
+name = "recorder.flush_seconds"
+type = "int"
+default = 60
+min = 5
+max = 600
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Interval in seconds between buffered market tick flushes to parquet part files"
+owner = "data"
+
+[[param]]
+name = "recorder.max_buffer_rows"
+type = "int"
+default = 5000
+min = 100
+max = 500000
+unit = "rows"
+scope = "global"
+tighten = "down"
+description = "Maximum in-memory buffer row count before flushing a part file"
+owner = "data"
+
+[[param]]
+name = "data.trash_days"
+type = "int"
+default = 7
+min = 1
+max = 365
+unit = "days"
+scope = "global"
+tighten = "down"
+description = "Retention period in days for files in the data trash before purging"
+owner = "data"
+
+[[param]]
+name = "data.compact_on_close"
+type = "bool"
+default = true
+scope = "global"
+tighten = "none"
+description = "Whether to automatically compact part files into day.parquet at session close"
+owner = "data"
+
+[[param]]
+name = "recorder.min_free_disk_gb"
+type = "int"
+default = 5
+min = 1
+max = 1000
+unit = "GB"
+scope = "global"
+tighten = "down"
+description = "Minimum free disk space in gigabytes required before halting recording"
+owner = "data"
+

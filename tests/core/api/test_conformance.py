@@ -344,3 +344,74 @@ def test_kind_problems_catches_empty_implementation(kind: PluginKind) -> None:
     probs = kind_problems(obj)
     assert len(probs) > 0
     assert any("must" in p.lower() or "callable" in p.lower() for p in probs)
+
+
+def test_clock_problems_good_and_bad() -> None:
+    from algodesk.api import clock_problems
+
+    class GoodClock:
+        def now(self) -> datetime:
+            return datetime.now(UTC)
+
+        def monotonic_ns(self) -> int:
+            return 123456789
+
+    assert clock_problems(GoodClock()) == []
+
+    class BadClockNoMethods:
+        pass
+
+    probs = clock_problems(BadClockNoMethods())
+    assert any("now" in p for p in probs)
+    assert any("monotonic_ns" in p for p in probs)
+
+    class BadClockNaiveNow:
+        def now(self) -> datetime:
+            return datetime(2026, 1, 1, 10, 0)  # naive
+
+        def monotonic_ns(self) -> int:
+            return 100
+
+    probs2 = clock_problems(BadClockNaiveNow())
+    assert any("timezone-aware" in p for p in probs2)
+
+    class BadClockBadMono:
+        def now(self) -> datetime:
+            return datetime.now(UTC)
+
+        def monotonic_ns(self) -> str:
+            return "not-an-int"  # type: ignore[return-value]
+
+    probs3 = clock_problems(BadClockBadMono())
+    assert any("monotonic_ns" in p for p in probs3)
+
+
+def test_exchange_calendar_tradable_sessions_flag() -> None:
+    from plugins.calendars.exchange.plugin import ExchangeCalendarPlugin
+
+    manifest = PluginManifest(
+        name="exchange",
+        kind=PluginKind.CALENDAR,
+        version="0.1.0",
+        api_version=1,
+        entry="plugin:ExchangeCalendarPlugin",
+        capabilities={"trading_days": True},
+    )
+    # Test NSE EQ
+    cal_nse = ExchangeCalendarPlugin(manifest, {"exchange": "nse"}, None)
+    d = date(2026, 10, 21)  # Regular trading day
+    sessions = cal_nse.sessions(d, segment="eq")
+    assert len(sessions) == 2
+    preopen = next(s for s in sessions if s.name == "preopen")
+    regular = next(s for s in sessions if s.name == "regular")
+    assert preopen.tradable is False
+    assert regular.tradable is True
+
+    # Test MCX COM
+    cal_mcx = ExchangeCalendarPlugin(manifest, {"exchange": "mcx"}, None)
+    mcx_sessions = cal_mcx.sessions(d, segment="com")
+    assert len(mcx_sessions) == 2
+    morning = next(s for s in mcx_sessions if s.name == "morning")
+    evening = next(s for s in mcx_sessions if s.name == "evening")
+    assert morning.tradable is True
+    assert evening.tradable is True

@@ -55,6 +55,19 @@ class IndicatorSpec:
     warmup: int = 0
 
 
+@runtime_checkable
+class Clock(Protocol):
+    """Injected system or simulation clock."""
+
+    def now(self) -> datetime:
+        """Current timezone-aware UTC datetime."""
+        ...
+
+    def monotonic_ns(self) -> int:
+        """Monotonic nanosecond timestamp."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class TradingSession:
     """Market operating session with timezone-aware start and end times."""
@@ -62,6 +75,7 @@ class TradingSession:
     name: str
     start: datetime
     end: datetime
+    tradable: bool = True
 
     @property
     def open(self) -> datetime:
@@ -209,11 +223,11 @@ class Notifier(Protocol):
 class Calendar(Protocol):
     """Market calendar protocol."""
 
-    def is_trading_day(self, d: date) -> bool: ...
+    def is_trading_day(self, d: date, segment: str = "") -> bool: ...
 
-    def sessions(self, d: date) -> Sequence[TradingSession]: ...
+    def sessions(self, d: date, segment: str = "") -> Sequence[TradingSession]: ...
 
-    def next_session(self, ts: datetime) -> TradingSession: ...
+    def next_session(self, ts: datetime, segment: str = "") -> TradingSession: ...
 
 
 @runtime_checkable

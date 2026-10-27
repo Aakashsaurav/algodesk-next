@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from algodesk.api.errors import CalendarCoverageError, ConfigError
@@ -162,6 +162,41 @@ def calendar_problems(obj: Any) -> list[str]:
     except Exception as exc:
         msg = f"Calendar raised {type(exc).__name__} instead of CalendarCoverageError: {exc}"
         problems.append(msg)
+
+    # Check sessions on coverage start date have tradable: bool
+    if hasattr(obj, "coverage"):
+        try:
+            start_d, _ = obj.coverage()
+            sess_list = obj.sessions(start_d)
+            for s in sess_list:
+                if not hasattr(s, "tradable") or not isinstance(s.tradable, bool):
+                    problems.append(f"TradingSession {s} missing boolean 'tradable' attribute")
+        except Exception:
+            pass
+
+    return problems
+
+
+def clock_problems(obj: Any) -> list[str]:
+    """Verify Clock protocol conformance (now, monotonic_ns)."""
+    problems = _check_methods(obj, ["now", "monotonic_ns"], "Clock")
+    if problems:
+        return problems
+
+    try:
+        ts = obj.now()
+        if not isinstance(ts, datetime) or ts.tzinfo is None:
+            problems.append(f"Clock.now() returned {ts!r}, expected timezone-aware UTC datetime")
+    except Exception as exc:
+        problems.append(f"Clock.now() raised {type(exc).__name__}: {exc}")
+
+    try:
+        mono = obj.monotonic_ns()
+        if not isinstance(mono, int):
+            problems.append(f"Clock.monotonic_ns() returned {type(mono).__name__}, expected int")
+    except Exception as exc:
+        problems.append(f"Clock.monotonic_ns() raised {type(exc).__name__}: {exc}")
+
     return problems
 
 
@@ -247,5 +282,7 @@ def kind_problems(plugin: Any) -> list[str]:
         return secrets_problems(plugin)
     if kind_str in ("fees", "fee"):
         return fees_problems(plugin)
+    if kind_str == "clock":
+        return clock_problems(plugin)
 
     return []

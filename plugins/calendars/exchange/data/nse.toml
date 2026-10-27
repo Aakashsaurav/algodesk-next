@@ -1,0 +1,111 @@
+# NSE trading calendar data for 2026 (equity, F&O, currency segments).
+# DRAFT from a public broker holiday calendar; owner cross-checks against the official NSE circular.
+exchange = "nse"
+coverage_start = 2026-01-01
+coverage_end = 2026-12-31
+source = "Zerodha market holiday calendar (secondary source); official NSE circular to be cross-checked"
+verified_on = 2026-10-21
+verified = false
+
+[segments.eq]
+sessions = ["preopen", "regular"]
+tradable = ["regular"]
+
+[segments.fno]
+sessions = ["regular"]
+tradable = ["regular"]
+
+[segments.cds]
+sessions = ["regular"]
+tradable = ["regular"]
+
+[[holiday]]
+date = 2026-01-15
+name = "Municipal Corporation Elections in Maharashtra"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-01-26
+name = "Republic Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-03-03
+name = "Holi"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-03-26
+name = "Shri Ram Navami"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-03-31
+name = "Shri Mahavir Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-04-03
+name = "Good Friday"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-04-14
+name = "Dr. Baba Saheb Ambedkar Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-05-01
+name = "Maharashtra Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-05-28
+name = "Bakri Eid"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-06-26
+name = "Moharram"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-09-14
+name = "Ganesh Chaturthi"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-10-02
+name = "Mahatma Gandhi Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-10-20
+name = "Dussehra"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-11-10
+name = "Diwali-Balipratipada"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-11-24
+name = "Prakash Gurpurb Sri Guru Nanak Dev"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-12-25
+name = "Christmas"
+closed = ["all"]
+
+# Holidays that fall on a weekend (informational; the market is closed anyway):
+# 2026-02-15 Maha Shivaratri (Sun), 2026-03-21 Eid-Ul-Fitr (Sat), 2026-08-15 Independence Day (Sat)
+
+# Settlement holidays: trading is open, settlement is closed (informational):
+# 2026-02-19, 2026-03-19, 2026-04-01, 2026-08-26
+
+[[special]]
+date = 2026-11-08
+name = "Diwali-Laxmi Pujan (Muhurat trading session)"
+timings_pending = true   # the exchange announces the timings by circular; add them when published

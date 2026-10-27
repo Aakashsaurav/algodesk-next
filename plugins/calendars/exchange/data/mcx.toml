@@ -1,0 +1,106 @@
+# MCX trading calendar data for 2026.
+# Source: MCX "Trading Holidays" page (https://www.mcxindia.com/market-operations/trading-surveillance/trading-holidays),
+# copied by the owner on 21 Oct 2026. Sessions: morning 09:00-17:00, evening 17:00-23:30 or 23:55 (seasonal).
+exchange = "mcx"
+coverage_start = 2026-01-01
+coverage_end = 2026-12-31
+source = "MCX Trading Holidays page, supplied by the owner on 2026-10-21"
+verified_on = 2026-10-21
+verified = true
+
+[segments.com]
+sessions = ["morning", "evening"]
+tradable = ["morning", "evening"]
+
+[[holiday]]
+date = 2026-01-01
+name = "New Year Day"
+closed = ["evening"]
+
+[[holiday]]
+date = 2026-01-26
+name = "Republic Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-03-03
+name = "Holi"
+closed = ["morning"]
+
+[[holiday]]
+date = 2026-03-26
+name = "Shri Ram Navmi"
+closed = ["morning"]
+
+[[holiday]]
+date = 2026-03-31
+name = "Shri Mahavir Jayanti"
+closed = ["morning"]
+
+[[holiday]]
+date = 2026-04-03
+name = "Good Friday"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-04-14
+name = "Dr. Baba Saheb Ambedkar Jayanti"
+closed = ["morning"]
+
+[[holiday]]
+date = 2026-05-01
+name = "Maharashtra Day"
+closed = ["morning"]
+
+[[holiday]]
+date = 2026-05-28
+name = "Bakri Id"
+closed = ["morning"]
+
+[[holiday]]
+date = 2026-06-26
+name = "Moharram"
+closed = ["morning"]
+
+[[holiday]]
+date = 2026-09-14
+name = "Ganesh Chaturthi"
+closed = ["morning"]
+
+[[holiday]]
+date = 2026-10-02
+name = "Mahatma Gandhi Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2026-10-20
+name = "Dussera"
+closed = ["morning"]
+
+[[holiday]]
+date = 2026-11-10
+name = "Diwali-Balipratipada"
+closed = ["morning"]
+
+[[holiday]]
+date = 2026-11-24
+name = "Guru Nanak Jayanti"
+closed = ["morning"]
+
+[[holiday]]
+date = 2026-12-25
+name = "Christmas"
+closed = ["all"]
+
+# Not listed on the MCX page: Diwali Laxmi Pujan, Sunday 2026-11-08 (special session timings to be announced).
+[[special]]
+date = 2026-11-08
+name = "Diwali-Laxmi Pujan (special session, if announced)"
+timings_pending = true
+
+# Evening-close override (enable when the exchange announces the seasonal change):
+# [[session_override]]
+# from = 2026-11-02
+# to = 2027-03-12
+# session = "evening"
+# close = "23:55"

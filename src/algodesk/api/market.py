@@ -262,6 +262,7 @@ class Bar:
     close: float
     volume: int
     complete: bool = False
+    synthetic: bool = False
 
     def __post_init__(self) -> None:
         if not self.instrument or str(self.instrument) != str(self.instrument).upper():

@@ -15,6 +15,7 @@ from algodesk.devtools.budget import (
     load_budget_params,
     make_budget_checks,
     run_budget,
+    scan_core_dependencies,
     scan_core_packages,
     scan_plugins,
 )
@@ -28,6 +29,23 @@ def test_count_file_lines_ignores_blank_and_comments(tmp_path: Path) -> None:
 
 def test_count_file_lines_nonexistent_returns_zero(tmp_path: Path) -> None:
     assert count_file_lines(tmp_path / "absent.py") == 0
+
+
+def test_scan_core_dependencies(tmp_path: Path) -> None:
+    src_dir = tmp_path / "src" / "algodesk"
+    pkg = src_dir / "mypkg"
+    pkg.mkdir(parents=True)
+    (pkg / "mod.py").write_text(
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "import pydantic\n"
+        "from typer import Typer\n"
+        "from . import sub\n"
+        "import algodesk.api\n"
+    )
+    deps = scan_core_dependencies(src_dir)
+    assert deps == ["pydantic", "typer"]
 
 
 def test_scan_core_packages_skips_empty_init(tmp_path: Path) -> None:
@@ -120,7 +138,7 @@ def test_evaluate_metric_status() -> None:
 def test_run_budget_ok_status(tmp_path: Path) -> None:
     src_dir = tmp_path / "src" / "algodesk" / "pkg"
     src_dir.mkdir(parents=True)
-    (src_dir / "mod.py").write_text("x = 1\n")
+    (src_dir / "mod.py").write_text("import pydantic\nx = 1\n")
     (tmp_path / "pyproject.toml").write_text("[project]\ndependencies = ['pydantic']\n")
 
     params = {
@@ -134,7 +152,7 @@ def test_run_budget_ok_status(tmp_path: Path) -> None:
     rep = run_budget(tmp_path, params)
     assert rep.summary.status == "OK"
     assert rep.exit_code == 0
-    assert rep.summary.core_lines == 1
+    assert rep.summary.core_lines == 2
     assert rep.summary.core_modules == 1
     assert rep.summary.core_deps == 1
 
@@ -162,7 +180,7 @@ def test_run_budget_advisory_when_lines_exceed_guidance(tmp_path: Path) -> None:
 def test_run_budget_fail_when_core_dependencies_exceed(tmp_path: Path) -> None:
     src_dir = tmp_path / "src" / "algodesk" / "pkg"
     src_dir.mkdir(parents=True)
-    (src_dir / "mod.py").write_text("x = 1\n")
+    (src_dir / "mod.py").write_text("import dep1\nimport dep2\nimport dep3\nx = 1\n")
     (tmp_path / "pyproject.toml").write_text("[project]\ndependencies = ['dep1', 'dep2', 'dep3']\n")
 
     params = {
@@ -207,7 +225,7 @@ def test_run_budget_fail_when_total_dependencies_exceed(tmp_path: Path) -> None:
 def test_format_budget_text_first_line_format(tmp_path: Path) -> None:
     src_dir = tmp_path / "src" / "algodesk" / "pkg"
     src_dir.mkdir(parents=True)
-    (src_dir / "mod.py").write_text("x = 1\n")
+    (src_dir / "mod.py").write_text("import pydantic\nx = 1\n")
     (tmp_path / "pyproject.toml").write_text("[project]\ndependencies = ['pydantic']\n")
 
     params = {
@@ -222,7 +240,7 @@ def test_format_budget_text_first_line_format(tmp_path: Path) -> None:
     text = format_budget_text(rep)
     lines = text.splitlines()
     expected_first = (
-        "BUDGET: core 1 lines (guidance 100) | 1 modules (guidance 10) | "
+        "BUDGET: core 2 lines (guidance 100) | 1 modules (guidance 10) | "
         "deps 1/2 core, 1/5 total | OK"
     )
     assert lines[0] == expected_first
@@ -283,6 +301,7 @@ def test_make_budget_checks_doctor_passes_and_fails(tmp_path: Path) -> None:
     assert r_size.ok is True
 
     # Overshoot dependencies -> deps fails
+    (src_dir / "mod.py").write_text("import d1\nimport d2\nimport d3\nx = 1\n")
     (tmp_path / "pyproject.toml").write_text("[project]\ndependencies = ['d1', 'd2', 'd3']\n")
     r_deps_fail = deps_check.run()
     assert r_deps_fail.ok is False

@@ -1,0 +1,11 @@
+# config/groups/demo5.toml — Five demo instruments for AlgoDesk Next walkthrough
+
+name = "demo5"
+description = "Five representative NSE equity instruments for demonstration and testing"
+members = [
+    "NSE:EQ:HDFCBANK",
+    "NSE:EQ:RELIANCE",
+    "NSE:EQ:INFY",
+    "NSE:EQ:TCS",
+    "NSE:EQ:SBIN",
+]

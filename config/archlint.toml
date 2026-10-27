@@ -18,3 +18,16 @@ allowed_framework_roots = ["algodesk.api"]
 
 [exclusions]
 directories = [".agents", "_workbench", "__pycache__", "proto"]
+
+[direct_clock]
+banned_symbols = ["datetime.now", "datetime.utcnow", "time.time"]
+enforced_prefixes = [
+    "src/algodesk/engine",
+    "src/algodesk/oms",
+    "src/algodesk/risk",
+    "src/algodesk/portfolio",
+    "src/algodesk/results",
+    "src/algodesk/strategies",
+    "plugins/strategies",
+]
+exempt_files = ["src/algodesk/engine/clock.py"]

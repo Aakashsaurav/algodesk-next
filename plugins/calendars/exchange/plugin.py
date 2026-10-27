@@ -96,6 +96,16 @@ class ExchangeCalendarPlugin(PluginBase):
             return ["regular"]
         return ["preopen", "regular"]
 
+    def _get_segment_tradable(self, segment: str) -> list[str]:
+        seg_info = self._data.get("segments", {}).get(segment)
+        if seg_info and "tradable" in seg_info:
+            return list(seg_info["tradable"])
+        if self.exchange == "mcx":
+            return ["morning", "evening"]
+        if segment in ("fno", "cds"):
+            return ["regular"]
+        return ["regular"]
+
     def _get_param(self, name: str, default: str) -> str:
         if self.ctx is not None and getattr(self.ctx, "params", None) is not None:
             try:
@@ -200,7 +210,10 @@ class ExchangeCalendarPlugin(PluginBase):
                     s_close = s_def["close"]
                     ts_start = self._to_utc(d, s_open)
                     ts_end = self._to_utc(d, s_close)
-                    spec_sessions.append(TradingSession(name=s_name, start=ts_start, end=ts_end))
+                    is_trad = bool(s_def.get("tradable", True))
+                    spec_sessions.append(
+                        TradingSession(name=s_name, start=ts_start, end=ts_end, tradable=is_trad)
+                    )
                 return spec_sessions
 
         # Check weekdays
@@ -221,13 +234,17 @@ class ExchangeCalendarPlugin(PluginBase):
                 closed_sessions.extend(closed)
 
         results: list[TradingSession] = []
+        tradable_names = self._get_segment_tradable(seg)
         for s_name in self._get_segment_sessions(seg):
             if s_name in closed_sessions:
                 continue
             open_str, close_str = self._get_session_times(seg, s_name, d)
             ts_start = self._to_utc(d, open_str)
             ts_end = self._to_utc(d, close_str)
-            results.append(TradingSession(name=s_name, start=ts_start, end=ts_end))
+            is_tradable = s_name in tradable_names
+            results.append(
+                TradingSession(name=s_name, start=ts_start, end=ts_end, tradable=is_tradable)
+            )
 
         return results
 

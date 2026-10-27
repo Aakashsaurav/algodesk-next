@@ -53,6 +53,41 @@ Checklists for working on AlgoDesk Next from the terminal. Always start a termin
 - To free port 5000: System Settings -> General -> AirDrop & AirPlay -> Turn off "AirPlay Receiver".
 - Alternatively, run `algodesk login upstox --manual` which requires no local port.
 
+## Market data management
+
+### 1. Synthetic data generation
+Generate deterministic synthetic ticks and quotes for offline testing:
+`algodesk data synth --symbols NSE:EQ:HDFCBANK,NSE:EQ:SBIN --days 3 --rows 2000 --seed 1`
+
+### 2. Inspecting coverage
+List data files grouped by dimensions:
+- By exchange: `algodesk data list --group-by exchange`
+- By segment: `algodesk data list --group-by segment`
+- Filter by group: `algodesk data list --group demo5`
+- As JSON: `algodesk data list --json`
+
+### 3. Deleting market data
+Deletion stages files into `data/.trash/<timestamp>/` and records a journal event.
+- Dry run: `algodesk data delete HDFCBANK --from 2026-10-01 --dry-run --reason "cleanup"`
+- Typed confirmation: `algodesk data delete HDFCBANK --reason "cleanup"` (prompts `DELETE <n> files`)
+- Force confirmation: `algodesk data delete HDFCBANK --reason "cleanup" --yes`
+- Group delete: `algodesk data delete "@demo5" --dry-run --reason "cleanup"`
+- Permanent purge: `algodesk data delete HDFCBANK --purge --reason "immediate"`
+Note: Deletions are refused while another process holds an active journal writer lock.
+
+### 4. Safety trash management
+- List staged trash: `algodesk data trash list`
+- Purge trash: `algodesk data trash purge --yes`
+
+### 5. Compaction
+Merge instrument-day part files into single daily parquet files:
+- All uncompacted: `algodesk data compact`
+- Specific date: `algodesk data compact --date 2026-10-23`
+
+### 6. Instrument groups
+- List groups: `algodesk groups list`
+- Inspect a group: `algodesk groups show demo5`
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |

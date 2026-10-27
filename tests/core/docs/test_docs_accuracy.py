@@ -26,6 +26,8 @@ ALLOWED_NON_PARAM_NAMES = {
     "plugin.toml": "Plugin manifest configuration filename",
     "uv.lock": "Dependency lockfile filename",
     "zerodha_nse.toml": "Example fee schedule filename",
+    "data_manifest.db": "Data manifest database filename",
+    "day.parquet": "Compacted day parquet filename",
 }
 
 KNOWN_RUNTIME_PREFIXES = (
@@ -49,14 +51,17 @@ def _gather_doc_files(root: Path) -> list[Path]:
 
 def _extract_cli_command_tree(cli_root: Any) -> dict[str, set[str]]:
     tree: dict[str, set[str]] = {}
-    for name, cmd in cli_root.commands.items():
-        if hasattr(cmd, "commands"):
-            for sub_name, sub_cmd in cmd.commands.items():
-                opts = {opt for param in sub_cmd.params for opt in param.opts}
-                tree[f"{name} {sub_name}"] = opts
-        else:
-            opts = {opt for param in cmd.params for opt in param.opts}
-            tree[name] = opts
+
+    def _walk(prefix: str, command: Any) -> None:
+        if hasattr(command, "commands"):
+            for sub_name, sub_cmd in command.commands.items():
+                sub_prefix = f"{prefix} {sub_name}".strip()
+                _walk(sub_prefix, sub_cmd)
+        opts = {opt for param in command.params for opt in param.opts}
+        if prefix:
+            tree[prefix] = opts
+
+    _walk("", cli_root)
     return tree
 
 
@@ -83,14 +88,15 @@ def test_every_documented_algodesk_command_exists_in_cli() -> None:
         assert tokens[0] == "algodesk"
         cmd_tokens = tokens[1:]
 
-        # Identify command path (e.g., 'doctor' or 'param set')
+        # Identify command path of arbitrary depth (e.g., 'doctor', 'param set', 'data trash purge')
         matched_cmd: str | None = None
-        if len(cmd_tokens) >= 2 and f"{cmd_tokens[0]} {cmd_tokens[1]}" in cli_tree:
-            matched_cmd = f"{cmd_tokens[0]} {cmd_tokens[1]}"
-            rest = cmd_tokens[2:]
-        elif len(cmd_tokens) >= 1 and cmd_tokens[0] in cli_tree:
-            matched_cmd = cmd_tokens[0]
-            rest = cmd_tokens[1:]
+        rest: list[str] = []
+        for k in range(min(len(cmd_tokens), 4), 0, -1):
+            candidate = " ".join(cmd_tokens[:k])
+            if candidate in cli_tree:
+                matched_cmd = candidate
+                rest = cmd_tokens[k:]
+                break
 
         assert matched_cmd is not None, (
             f"Document '{doc_name}' references unknown CLI command '{full_cmd}'. "

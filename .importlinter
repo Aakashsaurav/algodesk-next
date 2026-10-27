@@ -25,6 +25,8 @@ forbidden_modules =
     algodesk.ops
     algodesk.devtools
     algodesk.fees
+    algodesk.engine
+    algodesk.data
 
 [importlinter:contract:core-modules-independence]
 name = Core foundation modules are independent
@@ -36,6 +38,7 @@ modules =
     algodesk.journal
     algodesk.logs
     algodesk.fees
+    algodesk.data
 
 [importlinter:contract:architecture-layers]
 name = Architecture layers
@@ -43,5 +46,7 @@ type = layers
 layers =
     algodesk.cli
     algodesk.ops | algodesk.devtools
-    algodesk.config | algodesk.params | algodesk.registry | algodesk.journal | algodesk.logs | algodesk.fees
+    algodesk.engine
+    algodesk.config | algodesk.params | algodesk.registry | algodesk.journal | algodesk.logs | algodesk.fees | algodesk.data
     algodesk.api
+

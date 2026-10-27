@@ -54,3 +54,10 @@ Short decision records (context, decision, reason) in the order they were taken.
 
 **ADR-023 Upstox thin client on httpx, websockets and protobuf over official SDK.** Upstox distributes an official `upstox-python-sdk`, but installing it pulls legacy dependencies (`uuid==1.30`) containing Python 2 syntax (`32L`) that fail immediately with SyntaxError on Python 3.13. We implement a focused thin client directly on `httpx`, `websockets`, and compiled official Protobuf frames. This eliminates 20+ transitive dependencies, works cleanly on Python 3.13, and gives full deterministic control over reconnection backoff and 5-level market depth parsing.
 
+**ADR-024 Injected Clock protocol and ban on direct datetime.now.** To guarantee deterministic replay in backtesting and simulation, modules in engine, oms, risk, portfolio, results, and strategies must never call `datetime.now()` or `time.time()`. Time is accessed strictly through an injected `Clock` protocol (`WallClock` in live/paper, `SimClock` driven by historical events in replay). Enforced by archlint rule `direct_clock`.
+
+**ADR-025 Partitioned Parquet storage layout for tick data with day compaction.** Market events are stored partitioned by `exchange=E/segment=S/symbol=X/date=D/` using zstd compression. Streaming recording writes numbered part files every flush interval without blocking trading; at session end, compaction combines parts into `day.parquet` sorted by `(exch_ts, recv_ts)` and verifies checksums. File metadata is tracked transactionally in SQLite `data_manifest.db`.
+
+**ADR-026 Two-stage data deletion with safety trash directory.** Market tick data cannot be redownloaded. Deletion moves files to a timestamped safety trash directory (`data/.trash/<timestamp>/`) with metadata audit logs, purged only after `data.trash_days` or with explicit `--purge`. Deletions require typed confirmation and refuse execution if the journal lock is held.
+
+

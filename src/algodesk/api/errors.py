@@ -60,3 +60,7 @@ class JournalError(AlgoDeskError):
 
 class CalendarCoverageError(AlgoDeskError):
     """Requested date or exchange is outside calendar coverage."""
+
+
+class DataError(AlgoDeskError):
+    """A data operation, selector, or catalog query failed."""
