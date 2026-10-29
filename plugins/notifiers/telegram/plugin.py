@@ -40,6 +40,7 @@ class TelegramNotifierPlugin(PluginBase):
         self._cfg = TelegramNotifierConfig.model_validate(self.config)
         self._transport = http_transport
         self._client: TelegramClient | None = None
+        self._client_init_attempted = False
         self._init_client()
 
     def _param(self, name: str, default: Any) -> Any:
@@ -52,16 +53,26 @@ class TelegramNotifierPlugin(PluginBase):
         return default
 
     def _init_client(self) -> None:
+        self._client_init_attempted = True
         try:
             reader = getattr(self.ctx, "secrets", None)
             token = resolve_secret_ref(self._cfg.bot_token, reader)
             chat_id = resolve_secret_ref(self._cfg.chat_id, reader)
-            if not token or not chat_id:
+            if not token or not str(token).strip() or not chat_id or not str(chat_id).strip():
+                self._client = None
+                return
+
+            token_str = str(token).strip()
+            chat_id_str = str(chat_id).strip()
+
+            if self._transport is None and (":" not in token_str or " " in token_str):
+                logger.debug("Invalid Telegram bot token format; notifications disabled")
+                self._client = None
                 return
 
             self._client = TelegramClient(
-                bot_token=token,
-                chat_id=chat_id,
+                bot_token=token_str,
+                chat_id=chat_id_str,
                 parse_mode=self._cfg.parse_mode,
                 queue_max_size=int(self._param("telegram.queue_max_size", 1000)),
                 retry_max_attempts=int(self._param("telegram.retry_max_attempts", 3)),
@@ -70,9 +81,7 @@ class TelegramNotifierPlugin(PluginBase):
                 rate_limit_messages_per_second=float(
                     self._param("telegram.rate_limit_messages_per_second", 1.0)
                 ),
-                circuit_breaker_failures=int(
-                    self._param("telegram.circuit_breaker_failures", 5)
-                ),
+                circuit_breaker_failures=int(self._param("telegram.circuit_breaker_failures", 5)),
                 circuit_breaker_reset_seconds=float(
                     self._param("telegram.circuit_breaker_reset_seconds", 60.0)
                 ),
@@ -86,7 +95,7 @@ class TelegramNotifierPlugin(PluginBase):
     def send(self, message: Message) -> None:
         """Enqueue message for delivery. Never raises or blocks."""
         try:
-            if self._client is None:
+            if self._client is None and not self._client_init_attempted:
                 self._init_client()
             if self._client is None:
                 logger.debug("Telegram client not configured; message ignored: %s", message.title)
@@ -125,21 +134,26 @@ class TelegramNotifierPlugin(PluginBase):
         except Exception:
             return CheckResult(
                 ok=True,
-                message="Telegram bot token or chat ID not configured in secrets (notifications disabled)",
+                message=(
+                    "Telegram bot token or chat ID not configured in secrets "
+                    "(notifications disabled)"
+                ),
             )
 
-        if not token or not chat_id:
+        token_str = str(token).strip() if token else ""
+        chat_id_str = str(chat_id).strip() if chat_id else ""
+        if not token_str or not chat_id_str:
             return CheckResult(
                 ok=True,
                 message="Telegram bot token or chat ID not configured (notifications disabled)",
             )
-        if self._transport is None and ":" not in token:
+        if self._transport is None and (":" not in token_str or " " in token_str):
             return CheckResult(
                 ok=True,
                 message="Telegram bot token or chat ID not configured (notifications disabled)",
             )
 
-        url = f"https://api.telegram.org/bot{token}/getMe"
+        url = f"https://api.telegram.org/bot{token_str}/getMe"
         timeout = float(self._param("telegram.timeout_seconds", 10.0))
         try:
             with httpx.Client(transport=self._transport, timeout=timeout) as client:

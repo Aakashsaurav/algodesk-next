@@ -1,6 +1,6 @@
 # Runbook
 
-Owner: Aakash · Version: 1.0 · Date: 19 October 2026
+Owner: Aakash · Version: 1.0 · Date: 29 October 2026
 
 ## Summary
 
@@ -9,14 +9,15 @@ Checklists for working on AlgoDesk Next from the terminal. Always start a termin
 ## Every terminal session
 
 1. `cd` into the project folder.
-2. `source scripts/env.sh` (prints `ENV: isolated at <folder>`).
+2. Source environment script `scripts/env.sh` via `source scripts/env.sh` (prints `ENV: isolated at <folder>`).
 3. Prefix every `uv` command with `source scripts/env.sh &&` if unsure.
 
 ## Before every commit
 
-1. `bash scripts/check.sh` ends with `CHECK: PASS`.
-2. `git status --short` shows only files you expect (never `data/`, `logs/`, `.local/`, `_workbench/`).
-3. Commit and push; AI agents never run `git add`, `commit` or `push`.
+1. Run quality gates in `scripts/check.sh` via `bash scripts/check.sh`; expect `CHECK: PASS`.
+2. Verify configuration in `config/runs/demo_paper.toml` and parameters in `config/params/core.toml`.
+3. `git status --short` shows only files you expect (never `data/`, `logs/`, `.local/`, `_workbench/`).
+4. Commit and push; AI agents never run `git add`, `commit` or `push`.
 
 ## Health check
 
@@ -98,14 +99,58 @@ Merge instrument-day part files into single daily parquet files:
 - Inspect a group: `algodesk groups show demo5`
 
 ### 7. Paper trading and historical replay
-- Pre-start verification: `algodesk doctor --run demo_paper`
-- Component inspection dry-run: `algodesk run demo_paper --dry-run`
-- Start paper trading session: `algodesk run demo_paper`
-- Run in observation mode (no order creation): `algodesk run demo_paper --observe`
-- Replay recorded session: `algodesk replay --dates 2026-10-26 --run demo_paper`
-- Verify deterministic replay equivalence: `algodesk replay --dates 2026-10-26 --run demo_paper --twice`
-- Review results: `algodesk results list` and `algodesk results show <run-id>`
-- Test Telegram notifications: `algodesk telegram test`
+
+Follow the four-step operating lifecycle for every trading session:
+
+#### Step 1: Run preparation
+Run preparation executes conformance testing for all plugins required by the run configuration, refreshes the broker instrument master, runs all pre-flight doctor checks, and halts:
+```bash
+algodesk run demo_paper --prepare
+```
+Alternatively, test all plugins directly:
+```bash
+algodesk plugins test --all --run demo_paper
+```
+If a plugin has not passed conformance or has been edited since its last pass, doctor fails with CRITICAL and prints the exact fix command (e.g. `algodesk plugins test broker upstox`).
+
+#### Step 2: Observation run
+Exercise the live market feed, bar building, incremental indicators, and strategy logic without taking on any risk exposure (orders are rejected by RiskEngine with `observe_mode`):
+```bash
+algodesk run demo_paper --observe
+```
+
+#### Step 3: Session day execution
+Start the paper trading session during market hours:
+```bash
+algodesk run demo_paper
+```
+To inspect execution plan beforehand:
+```bash
+algodesk run demo_paper --dry-run
+```
+
+#### Step 4: Post-session replay & results comparison
+Replay recorded ticks deterministically through the exact engine wiring:
+```bash
+algodesk replay --dates 2026-10-26 --run demo_paper
+```
+Compare performance metrics and ordered event sequences (signals, risk decisions, orders, fills) between paper and replay runs:
+```bash
+algodesk results compare <paper_run_id> <replay_run_id>
+```
+Verify bit-identical deterministic replay determinism:
+```bash
+algodesk replay --dates 2026-10-26 --run demo_paper --twice
+```
+List and view past run result artifacts:
+```bash
+algodesk results list
+algodesk results show <run_id>
+```
+Test Telegram notifications:
+```bash
+algodesk telegram test
+```
 
 ## If something fails
 

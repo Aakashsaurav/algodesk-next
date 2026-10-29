@@ -4,18 +4,31 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
+from datetime import UTC, datetime
 
 import typer
 
+from algodesk.api.checks import Severity
+from algodesk.api.conformance import kind_problems
 from algodesk.api.errors import ConfigError
+from algodesk.api.kinds import Mode, PluginKind
 from algodesk.cli.common import (
     _get_cli_state,
     _open_rt,
     format_table,
     handle_cli_errors,
 )
+from algodesk.cli.secrets import _resolve_secrets_provider
 from algodesk.config.snapshot import build_effective
 from algodesk.engine.runner import SessionRunner
+from algodesk.ops.checks import build_run_checks
+from algodesk.ops.context import build_context
+from algodesk.ops.doctor import DoctorRegistry
+from algodesk.registry import get_run_config_plugins
+from algodesk.registry.base_checks import base_contract_problems
+from algodesk.results.compare import compare_runs
 
 results_app = typer.Typer(help="Inspect and list past session execution results.")
 
@@ -24,6 +37,9 @@ results_app = typer.Typer(help="Inspect and list past session execution results.
 def run_cmd(
     ctx: typer.Context,
     run_name: str = typer.Argument("demo_paper", help="Run configuration name"),
+    prepare: bool = typer.Option(
+        False, "--prepare", help="Test plugins, refresh master, run doctor and stop"
+    ),
     observe: bool = typer.Option(
         False, "--observe", help="Run in observation mode (no new risk exposure)"
     ),
@@ -32,13 +48,82 @@ def run_cmd(
     ),
 ) -> None:
     """Execute a paper trading or live session with full engine wiring."""
-    with _open_rt(ctx, ensure=False) as rt:
+    with _open_rt(ctx, ensure=True) as rt:
         eff = build_effective(rt.root, run_name=run_name)
+        if eff.run is None:
+            raise ConfigError(
+                what=f"Run configuration '{run_name}' not found",
+                where=f"config/runs/{run_name}.toml",
+                fix=f"Verify configuration file exists for '{run_name}'",
+            )
+
+        if prepare:
+            # 1. plugins test --all for run config
+            targets = get_run_config_plugins(eff.run)
+            seen_p: set[tuple[str, str]] = set()
+            for pk, pn in targets:
+                pair = (pk.value if hasattr(pk, "value") else str(pk), pn)
+                if pair in seen_p:
+                    continue
+                seen_p.add(pair)
+                p_info = rt.plugins.info(pair[0], pair[1])
+                tests_dir = p_info.directory / "tests"
+                if tests_dir.is_dir() and any(tests_dir.glob("test_*.py")):
+                    cmd = [sys.executable, "-m", "pytest", str(tests_dir), "-q"]
+                    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                    if proc.returncode != 0:
+                        typer.echo(f"Plugin tests failed for {pair[0]}/{pair[1]}:")
+                        if proc.stdout:
+                            typer.echo(proc.stdout.strip())
+                        if proc.stderr:
+                            typer.echo(proc.stderr.strip())
+                        raise typer.Exit(code=1)
+
+                if not p_info.manifest.order_capable:
+                    p_ctx = build_context(Mode.RESEARCH, run_id=f"prepare_{pair[0]}_{pair[1]}")
+                    instance = rt.plugins.create(p_info.kind, p_info.name, ctx=p_ctx)
+                    probs = base_contract_problems(instance) or kind_problems(instance)
+                    if probs:
+                        typer.echo(f"Conformance problems in {pair[0]}/{pair[1]}:")
+                        for prob in probs:
+                            typer.echo(f"  - {prob}")
+                        raise typer.Exit(code=1)
+
+                rt.plugins.record_conformance(p_info.kind, p_info.name, suite="base+plugin-tests")
+
+            # 2. instrument master refresh
+            ds_cfg = getattr(eff.run, "data_source", None)
+            if ds_cfg is not None:
+                try:
+                    p_ds_ctx = build_context(Mode.RESEARCH, run_id=f"prepare_ds_{run_name}")
+                    ds_p = rt.plugins.create(PluginKind.BROKER, ds_cfg.plugin, ctx=p_ds_ctx)
+                    if hasattr(ds_p, "instruments"):
+                        _ = list(ds_p.instruments())
+                except Exception:
+                    pass
+
+            # 3. Doctor checks
+            checks = build_run_checks(rt, run_name)
+            reg = DoctorRegistry()
+            reg.register_many(checks)
+            report = reg.run()
+            if report.critical > 0:
+                typer.echo(f"Preparation doctor check failed: {report.critical} critical error(s)")
+                for r in report.results:
+                    if not r.ok and r.severity == Severity.CRITICAL:
+                        typer.echo(f"  CRITICAL: {r.message} (Fix: {r.fix})")
+                raise typer.Exit(code=1)
+
+            typer.echo(f"Preparation complete for run '{run_name}': all OK, doctor 0 critical")
+            return
+
+        sec_prov = _resolve_secrets_provider(rt, run=run_name)
         runner = SessionRunner(
             rt,
             run_config=eff.run,
             observe=observe,
             dry_run=dry_run,
+            secrets=sec_prov,
         )
 
         if dry_run:
@@ -65,8 +150,14 @@ def run_cmd(
             )
             return
 
-        res_path = asyncio.run(runner.run())
-        typer.echo(f"Results written to: {res_path}")
+        try:
+            res_path = asyncio.run(runner.run())
+            typer.echo(f"Results written to: {res_path}")
+        except Exception:
+            results_dir = rt.root / "results" / runner.run_id
+            if results_dir.is_dir():
+                typer.echo(f"Results written to: {results_dir}")
+            raise
 
 
 @handle_cli_errors
@@ -85,35 +176,35 @@ def replay_cmd(
     run_name = run or state.run or "demo_paper"
     parsed_dates = [d.strip() for d in dates.split(",")] if dates else None
 
-    with _open_rt(ctx, ensure=False) as rt:
+    with _open_rt(ctx, ensure=True) as rt:
         eff = build_effective(rt.root, run_name=run_name)
         if twice:
+            ts_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+            run_id_a = f"{run_name}_replay_{ts_str}_a"
+            run_id_b = f"{run_name}_replay_{ts_str}_b"
+
             runner1 = SessionRunner(
                 rt,
                 run_config=eff.run,
                 mode="replay",
                 replay_dates=parsed_dates,
+                run_id=run_id_a,
             )
-            p1 = asyncio.run(runner1.run())
-            m1_file = p1 / "metrics.json"
-            t1_file = p1 / "trades.csv"
-            m1 = json.loads(m1_file.read_text()) if m1_file.is_file() else {}
-            t1 = t1_file.read_text() if t1_file.is_file() else ""
+            asyncio.run(runner1.run())
 
             runner2 = SessionRunner(
                 rt,
                 run_config=eff.run,
                 mode="replay",
                 replay_dates=parsed_dates,
+                run_id=run_id_b,
             )
             p2 = asyncio.run(runner2.run())
-            m2_file = p2 / "metrics.json"
-            t2_file = p2 / "trades.csv"
-            m2 = json.loads(m2_file.read_text()) if m2_file.is_file() else {}
-            t2 = t2_file.read_text() if t2_file.is_file() else ""
 
-            is_equal = m1 == m2 and t1 == t2
+            is_equal, diff = compare_runs(rt.root, run_id_a, run_id_b)
             typer.echo(f"replay equal: {is_equal}")
+            if not is_equal and diff:
+                typer.echo(f"first difference: {diff}")
             typer.echo(f"results folder: {p2}")
         else:
             runner = SessionRunner(
@@ -130,7 +221,7 @@ def replay_cmd(
 @handle_cli_errors
 def results_list_cmd(ctx: typer.Context) -> None:
     """List execution results folders and summary performance metrics."""
-    with _open_rt(ctx, ensure=False) as rt:
+    with _open_rt(ctx, ensure=True) as rt:
         results_dir = rt.root / "results"
         if not results_dir.is_dir():
             typer.echo("No results directory found.")
@@ -198,7 +289,7 @@ def results_show_cmd(
     state = _get_cli_state(ctx)
     is_json = json_opt or state.json
 
-    with _open_rt(ctx, ensure=False) as rt:
+    with _open_rt(ctx, ensure=True) as rt:
         target = rt.root / "results" / run_id
         if not target.is_dir():
             raise ConfigError(
@@ -225,3 +316,24 @@ def results_show_cmd(
                 typer.echo(m_path.read_text())
             else:
                 typer.echo(f"Results bundle '{run_id}' contains no summary or metrics.")
+
+
+@results_app.command("compare")
+@handle_cli_errors
+def results_compare_cmd(
+    ctx: typer.Context,
+    run_a: str = typer.Argument(..., help="First run ID or results folder name"),
+    run_b: str = typer.Argument(..., help="Second run ID or results folder name"),
+) -> None:
+    """Compare performance metrics and ordered journal event sequences of two runs."""
+    state = _get_cli_state(ctx)
+    with _open_rt(ctx, ensure=True) as rt:
+        is_equal, diff = compare_runs(rt.root, run_a, run_b)
+        if state.json:
+            typer.echo(
+                json.dumps({"equal": is_equal, "run_a": run_a, "run_b": run_b, "difference": diff})
+            )
+        else:
+            typer.echo(f"equal: {is_equal}")
+            if not is_equal and diff:
+                typer.echo(f"first difference: {diff}")

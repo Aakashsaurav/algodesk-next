@@ -8,6 +8,7 @@ import sys
 import types
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from algodesk.api.errors import ConfigError, PluginError, SafetyViolation
 from algodesk.api.kinds import Mode, PluginKind
@@ -135,7 +136,7 @@ class PluginRegistry:
                         f"in mode '{ctx.mode.value}'"
                     ),
                     where=f"{k}/{name}",
-                    fix="Run test suite and record a conformance pass via record_conformance()",
+                    fix=f"algodesk plugins test {k} {name}",
                 )
 
     def _validate_config(
@@ -306,3 +307,39 @@ class PluginRegistry:
         self._check_mode_and_safety(info.manifest, ctx, k, name)
         self._validate_config(info, cfg, k, name)
         return self._load_and_instantiate(info, cfg, ctx, k, name)
+
+
+def get_run_config_plugins(run_config: Any) -> builtins.list[tuple[PluginKind, str]]:
+    """Return all (PluginKind, name) pairs required by the run configuration."""
+    plugins: builtins.list[tuple[PluginKind, str]] = []
+    if getattr(run_config, "data_source", None) is not None:
+        p = getattr(run_config.data_source, "plugin", None)
+        if p:
+            plugins.append((PluginKind.BROKER, str(p)))
+    if getattr(run_config, "execution_venue", None) is not None:
+        p = getattr(run_config.execution_venue, "plugin", None)
+        if p:
+            plugins.append((PluginKind.VENUE, str(p)))
+    if getattr(run_config, "fees", None) is not None:
+        p = getattr(run_config.fees, "schedule", None)
+        if p:
+            plugins.append((PluginKind.FEES, str(p)))
+    if getattr(run_config, "secrets", None) is not None:
+        p = getattr(run_config.secrets, "plugin", None)
+        if p:
+            plugins.append((PluginKind.SECRETS, str(p)))
+    for c in getattr(run_config, "calendars", []) or []:
+        p = getattr(c, "plugin", None)
+        if p:
+            plugins.append((PluginKind.CALENDAR, str(p)))
+    for s in getattr(run_config, "strategies", []) or []:
+        p = getattr(s, "plugin", None)
+        if p:
+            plugins.append((PluginKind.STRATEGY, str(p)))
+    for n in getattr(run_config, "notifiers", []) or []:
+        p = getattr(n, "plugin", None)
+        if p:
+            plugins.append((PluginKind.NOTIFIER, str(p)))
+    plugins.append((PluginKind.RISK_RULE, "builtin"))
+    plugins.append((PluginKind.INDICATOR, "builtin"))
+    return plugins

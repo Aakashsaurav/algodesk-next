@@ -1,6 +1,6 @@
 /data/
-logs/
-results/
+/logs/
+/results/
 _workbench/
 .algodesk/
 .venv/

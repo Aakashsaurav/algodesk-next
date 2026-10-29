@@ -1,6 +1,6 @@
 # Architecture
 
-Owner: Aakash · Version: 1.0 · Date: 19 October 2026
+Owner: Aakash · Version: 1.0 · Date: 29 October 2026
 
 ## Summary
 
@@ -90,10 +90,19 @@ Market sessions (open, close, square-off, weekdays) are centralized as parameter
 
 Secrets providers (`keychain`, `env`) expose name-based lookup through `SecretReader`. In `build_context`, all retrieved secret values are registered with `Scrubber` to guarantee redaction in logs and journals. Broker plugins implement `DataSource` (historical bars, real-time tick/quote feeds) and `AuthFlow` (interactive browser login or analytics tokens).
 
-## 10. Strategy Runtime, Runner & Reporting
+## 10. Strategy Runtime, Runner, Replay & Reporting
 
 `SessionRunner` coordinates event streaming, bar building, strategy execution, order routing, risk evaluation, simulated matching, and portfolio ledgering. `StrategyRuntime` provides strategies with a read-only `StrategyContext` (completed bars, incremental indicators, position and portfolio snapshots), dispatches lifecycle hooks (`on_start`, `on_bar`, `on_fill`, `on_timer`, `on_stop`), and isolates strategy exceptions so failed strategies are halted without interrupting the session. `ResultsWriter` produces an 8-file artifact bundle in `results/<run_id>/` (`SUMMARY.md`, `metrics.json`, `trades.csv`, `equity.csv`, `config.effective.txt`, `registry.snapshot.json`, `manifest.json`, and `session.md`). Telegram alerts are delivered out-of-band via `NotifyBridge`.
 
+Run preparation (`algodesk run --prepare`) runs conformance suites for all run plugins, refreshes the instrument master, and runs pre-start doctor checks before execution. Historical replay uses `SimClock` and `ReplayFeed` to replay recorded ticks through the exact production engine wiring. `compare_runs` validates bit-for-bit replay equivalence by checking performance metrics and the ordered journal event sequences (signals, risk decisions, orders, fills). Hermetic test isolation fixture (`tmp_project`) and conftest session guards guarantee tests never mutate repository data or results state.
+
 ## 11. Not built yet
 
-Remote runner and micro-live execution (M7-M9).
+- **M2 Data layer**: Cache, gap-fill, validation, quarantine, instrument mapping and diffs, accumulation job, data verify, BSE and MCX calendars.
+- **M3 Indicators and screens**: Full built-in set, custom-indicator scaffold, TOML and Python screens, saved screen runs.
+- **M4 Backtester and reports**: Backtest mode (bar and tick level), models, portfolio mode, results store, compare.
+- **M5 Risk and control**: Risk profiles in the parameter registry, monitors, health guards, Telegram commands, outage policies.
+- **M6 Zerodha plugin and shadow**: Zerodha venue (disabled by default), all order types, reconciliation, fee schedules, shadow mode.
+- **M7 Remote runner**: Profile B on the static-IP host, login ceremony, probe, supervisor, backups.
+- **M8 Extended paper**: Campaign per promoted strategy.
+- **M9 Micro-live**: Live gates §8.5, smallest size, supervised execution.

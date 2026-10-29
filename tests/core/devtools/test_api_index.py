@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 from algodesk.cli.app import app
@@ -34,9 +36,9 @@ def test_api_index_generation() -> None:
         assert name in content, f"Known symbol '{name}' missing from API index"
 
 
-def test_api_index_cli_command() -> None:
+def test_api_index_cli_command(tmp_project: Path) -> None:
     runner = CliRunner()
-    root = find_project_root()
+    root = tmp_project
     res = runner.invoke(app, ["--root", str(root), "api", "index"])
     assert res.exit_code == 0
     assert "OK: generated" in res.output

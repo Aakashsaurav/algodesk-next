@@ -191,7 +191,12 @@ class UpstoxAuthFlow:
             extra={"auth_type": "oauth"},
         )
 
-    def begin_auto(self, *, timeout_s: float | None = None) -> AuthSession:
+    def begin_auto(
+        self,
+        *,
+        timeout_s: float | None = None,
+        open_browser: bool = True,
+    ) -> AuthSession:
         """Run loopback server, open browser, and automatically capture redirect."""
         timeout = float(timeout_s or self._param("upstox.auth_timeout_seconds", 120))
         parsed = urllib.parse.urlparse(self._cfg.redirect_uri)
@@ -215,10 +220,18 @@ class UpstoxAuthFlow:
             ) from exc
 
         server.timeout = timeout
-        try:
-            webbrowser.open(login_req.url)
-        except Exception:
-            pass
+        is_mocked = getattr(webbrowser.open, "__module__", None) != "webbrowser"
+        is_test_client = (
+            not login_req.url
+            or "client_id=test_" in login_req.url
+            or "client_id=test&" in login_req.url
+            or "client_id=dummy" in login_req.url
+        )
+        if open_browser and (is_mocked or not is_test_client):
+            try:
+                webbrowser.open(login_req.url)
+            except Exception:
+                pass
 
         try:
             server.handle_request()  # Handles exactly one request

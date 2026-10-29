@@ -6,6 +6,7 @@ import struct
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -177,3 +178,33 @@ def test_telegram_doctor_check_http_statuses(
             tg_check = next(c for c in checks if c.id == "telegram.reachable")
             res = tg_check.run()
             assert res.ok is expected_ok
+
+
+def test_plugins_conformance_doctor_check_all_current(tmp_project: Path) -> None:
+    """Doctor check plugins.conformance passes when all plugins have current records."""
+    with open_runtime(tmp_project, ensure=False) as rt:
+        checks = build_run_checks(rt, "demo_paper")
+        conf_check = next(c for c in checks if c.id == "plugins.conformance")
+        assert conf_check.severity == Severity.CRITICAL
+        res = conf_check.run()
+        assert res.ok is True
+        assert "All" in res.message
+
+
+def test_plugins_conformance_doctor_check_missing_or_stale(tmp_project: Path) -> None:
+    """Doctor check plugins.conformance is CRITICAL when a plugin record is missing/stale."""
+    with open_runtime(tmp_project, ensure=False) as rt:
+        orig_status = rt.plugins.conformance_status
+
+        def mock_status(k: Any, name: str) -> str:
+            if name == "upstox":
+                return "stale"
+            return orig_status(k, name)
+
+        with patch.object(rt.plugins, "conformance_status", side_effect=mock_status):
+            checks = build_run_checks(rt, "demo_paper")
+            conf_check = next(c for c in checks if c.id == "plugins.conformance")
+            res = conf_check.run()
+            assert res.ok is False
+            assert "broker/upstox (stale)" in res.message
+            assert "algodesk plugins test broker upstox" in res.fix

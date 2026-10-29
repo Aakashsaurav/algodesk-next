@@ -663,4 +663,36 @@ def build_run_checks(runtime: Runtime, run_name: str) -> list[DoctorCheck]:
             )
         )
 
+    def _check_plugins_conformance() -> CheckResult:
+        from algodesk.registry import get_run_config_plugins
+
+        assert eff.run is not None
+        req_plugins = get_run_config_plugins(eff.run)
+        missing_or_stale: list[tuple[str, str, str]] = []
+        for k, name in req_plugins:
+            status = runtime.plugins.conformance_status(k, name)
+            if status != "current":
+                missing_or_stale.append((str(k.value if hasattr(k, "value") else k), name, status))
+        if missing_or_stale:
+            first_k, first_n, _ = missing_or_stale[0]
+            names_str = ", ".join(f"{k}/{n} ({st})" for k, n, st in missing_or_stale)
+            return CheckResult(
+                ok=False,
+                severity=Severity.CRITICAL,
+                message=f"Plugin conformance missing or stale for: {names_str}",
+                fix=f"algodesk plugins test {first_k} {first_n}",
+            )
+        return CheckResult(
+            ok=True,
+            message=f"All {len(req_plugins)} run plugins have current conformance records",
+        )
+
+    checks.append(
+        DoctorCheck(
+            id="plugins.conformance",
+            severity=Severity.CRITICAL,
+            run=_check_plugins_conformance,
+        )
+    )
+
     return checks

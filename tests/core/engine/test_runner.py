@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -15,9 +16,9 @@ from algodesk.engine.runner import SessionRunner
 from algodesk.ops.runtime import open_runtime
 
 
-def test_runner_initialization_and_prestart_doctor() -> None:
+def test_runner_initialization_and_prestart_doctor(tmp_project: Path) -> None:
     clock = SimClock(datetime(2026, 10, 26, 9, 15, tzinfo=UTC))
-    with open_runtime(run="demo_paper") as runtime:
+    with open_runtime(tmp_project, run="demo_paper") as runtime:
         runner = SessionRunner(
             runtime=runtime,
             mode="paper",
@@ -31,9 +32,9 @@ def test_runner_initialization_and_prestart_doctor() -> None:
         runner.run_prestart_doctor()
 
 
-def test_runner_prestart_doctor_refusal() -> None:
+def test_runner_prestart_doctor_refusal(tmp_project: Path) -> None:
     clock = SimClock(datetime(2026, 10, 26, 9, 15, tzinfo=UTC))
-    with open_runtime(run="demo_paper") as runtime:
+    with open_runtime(tmp_project, run="demo_paper") as runtime:
         runner = SessionRunner(
             runtime=runtime,
             mode="paper",
@@ -57,9 +58,9 @@ def test_runner_prestart_doctor_refusal() -> None:
             assert "Pre-start doctor check failed with 1 critical error" in str(exc_info.value)
 
 
-def test_runner_dry_run_skips_execution() -> None:
+def test_runner_dry_run_skips_execution(tmp_project: Path) -> None:
     clock = SimClock(datetime(2026, 10, 26, 9, 15, tzinfo=UTC))
-    with open_runtime(run="demo_paper") as runtime:
+    with open_runtime(tmp_project, run="demo_paper") as runtime:
         runner = SessionRunner(
             runtime=runtime,
             mode="paper",
@@ -70,9 +71,9 @@ def test_runner_dry_run_skips_execution() -> None:
         assert res_path.name == runner.run_id
 
 
-def test_runner_observe_mode_wires_risk_engine() -> None:
+def test_runner_observe_mode_wires_risk_engine(tmp_project: Path) -> None:
     clock = SimClock(datetime(2026, 10, 26, 9, 15, tzinfo=UTC))
-    with open_runtime(run="demo_paper") as runtime:
+    with open_runtime(tmp_project, run="demo_paper") as runtime:
         runner = SessionRunner(
             runtime=runtime,
             mode="paper",
@@ -87,9 +88,9 @@ def test_runner_observe_mode_wires_risk_engine() -> None:
         assert risk_engine.observe is True
 
 
-def test_runner_stop_sets_event() -> None:
+def test_runner_stop_sets_event(tmp_project: Path) -> None:
     clock = SimClock(datetime(2026, 10, 26, 9, 15, tzinfo=UTC))
-    with open_runtime(run="demo_paper") as runtime:
+    with open_runtime(tmp_project, run="demo_paper") as runtime:
         runner = SessionRunner(runtime=runtime, clock=clock)
         assert not runner._stop_event.is_set()
         runner.stop()

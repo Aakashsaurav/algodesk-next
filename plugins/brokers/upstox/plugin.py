@@ -87,8 +87,13 @@ class UpstoxBrokerPlugin(PluginBase):
     def begin(self) -> LoginRequest:
         return self._auth.begin()
 
-    def begin_auto(self, *, timeout_s: float | None = None) -> AuthSession:
-        self._session = self._auth.begin_auto(timeout_s=timeout_s)
+    def begin_auto(
+        self,
+        *,
+        timeout_s: float | None = None,
+        open_browser: bool = True,
+    ) -> AuthSession:
+        self._session = self._auth.begin_auto(timeout_s=timeout_s, open_browser=open_browser)
         return self._session
 
     def complete(self, code: str) -> AuthSession:

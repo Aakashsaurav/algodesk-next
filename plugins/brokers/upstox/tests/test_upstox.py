@@ -31,6 +31,12 @@ from ..plugin import UpstoxBrokerPlugin
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _mock_webbrowser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure no test ever attempts to launch a real browser."""
+    monkeypatch.setattr("webbrowser.open", lambda *args, **kwargs: True)
+
+
 @pytest.fixture
 def manifest() -> PluginManifest:
     return PluginManifest(

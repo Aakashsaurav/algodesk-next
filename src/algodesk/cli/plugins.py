@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from typing import Any
@@ -10,9 +11,12 @@ from typing import Any
 import typer
 
 from algodesk.api.conformance import kind_problems
+from algodesk.api.errors import ConfigError
 from algodesk.api.kinds import Mode
 from algodesk.cli.common import _get_cli_state, _open_rt, format_table, handle_cli_errors
+from algodesk.config.snapshot import build_effective
 from algodesk.ops.context import build_context
+from algodesk.registry import get_run_config_plugins
 from algodesk.registry.base_checks import base_contract_problems
 from algodesk.registry.scaffold import scaffold_plugin
 
@@ -82,38 +86,79 @@ def plugins_check(ctx: typer.Context) -> None:
 @handle_cli_errors
 def plugins_test(
     ctx: typer.Context,
-    kind: str = typer.Argument(..., help="Plugin kind (e.g. notifier, venue)"),
-    name: str = typer.Argument(..., help="Plugin name"),
+    kind: str | None = typer.Argument(None, help="Plugin kind (e.g. notifier, venue)"),
+    name: str | None = typer.Argument(None, help="Plugin name"),
+    all_plugins: bool = typer.Option(
+        False, "--all", help="Run conformance suite for all plugins used by run config or workspace"
+    ),
+    run: str | None = typer.Option(
+        None, "--run", help="Run configuration name to test plugins for"
+    ),
 ) -> None:
     """Run tests for plugin and verify contract adherence."""
     with _open_rt(ctx, ensure=True) as rt:
-        p_info = rt.plugins.info(kind, name)
-        tests_dir = p_info.directory / "tests"
-        if tests_dir.is_dir() and any(tests_dir.glob("test_*.py")):
-            cmd = [sys.executable, "-m", "pytest", str(tests_dir), "-q"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-            if proc.returncode != 0:
-                typer.echo(f"Plugin tests failed (exit code {proc.returncode}):")
-                if proc.stdout:
-                    typer.echo(proc.stdout.strip())
-                if proc.stderr:
-                    typer.echo(proc.stderr.strip())
-                raise typer.Exit(code=1)
+        targets: list[tuple[str, str]] = []
+        if all_plugins or run:
+            if run:
+                eff = build_effective(rt.root, run_name=run)
+                if eff.run is None:
+                    raise ConfigError(
+                        what=f"Run configuration '{run}' not found",
+                        where=f"config/runs/{run}.toml",
+                        fix=f"Verify configuration file exists for '{run}'",
+                    )
+                for pk, pn in get_run_config_plugins(eff.run):
+                    targets.append((pk.value if hasattr(pk, "value") else str(pk), pn))
+            else:
+                for p in rt.plugins.list():
+                    targets.append(
+                        (p.kind.value if hasattr(p.kind, "value") else str(p.kind), p.name)
+                    )
+        elif kind and name:
+            targets.append((kind, name))
+        else:
+            typer.echo("Error: specify plugin kind and name, or use '--all'.")
+            raise typer.Exit(code=1)
 
-        if not p_info.manifest.order_capable:
-            p_ctx = build_context(Mode.RESEARCH, run_id=f"test_{kind}_{name}")
-            instance = rt.plugins.create(p_info.kind, p_info.name, ctx=p_ctx)
-            problems = base_contract_problems(instance)
-            if not problems:
-                problems = kind_problems(instance)
-            if problems:
-                typer.echo(f"Conformance problems found in {kind}/{name}:")
-                for prob in problems:
-                    typer.echo(f"  - {prob}")
-                raise typer.Exit(code=1)
+        # Remove duplicate targets while preserving order
+        seen: set[tuple[str, str]] = set()
+        deduped: list[tuple[str, str]] = []
+        for t in targets:
+            if t not in seen:
+                seen.add(t)
+                deduped.append(t)
 
-        rt.plugins.record_conformance(p_info.kind, p_info.name, suite="base+plugin-tests")
-        typer.echo(f"OK: {kind}/{name} passed conformance suite 'base+plugin-tests'")
+        for t_kind, t_name in deduped:
+            p_info = rt.plugins.info(t_kind, t_name)
+            tests_dir = p_info.directory / "tests"
+            if tests_dir.is_dir() and any(tests_dir.glob("test_*.py")):
+                cmd = [sys.executable, "-m", "pytest", str(tests_dir), "-q"]
+                env = {**os.environ, "ALGODESK_NO_BROWSER": "1"}
+                proc = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
+                if proc.returncode != 0:
+                    typer.echo(
+                        f"Plugin tests failed for {t_kind}/{t_name} (exit code {proc.returncode}):"
+                    )
+                    if proc.stdout:
+                        typer.echo(proc.stdout.strip())
+                    if proc.stderr:
+                        typer.echo(proc.stderr.strip())
+                    raise typer.Exit(code=1)
+
+            if not p_info.manifest.order_capable:
+                p_ctx = build_context(Mode.RESEARCH, run_id=f"test_{t_kind}_{t_name}")
+                instance = rt.plugins.create(p_info.kind, p_info.name, ctx=p_ctx)
+                problems = base_contract_problems(instance)
+                if not problems:
+                    problems = kind_problems(instance)
+                if problems:
+                    typer.echo(f"Conformance problems found in {t_kind}/{t_name}:")
+                    for prob in problems:
+                        typer.echo(f"  - {prob}")
+                    raise typer.Exit(code=1)
+
+            rt.plugins.record_conformance(p_info.kind, p_info.name, suite="base+plugin-tests")
+            typer.echo(f"OK: {t_kind}/{t_name} passed conformance suite 'base+plugin-tests'")
 
 
 @new_app.command("plugin")

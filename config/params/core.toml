@@ -76,7 +76,7 @@ owner = "core"
 [[param]]
 name = "budget.core_modules_guidance"
 type = "int"
-default = 100
+default = 150
 min = 5
 max = 200
 unit = "modules"

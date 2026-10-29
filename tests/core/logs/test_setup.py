@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from pathlib import Path
 import time
+from pathlib import Path
+
 import pytest
 
 from algodesk.api.errors import ConfigError
@@ -103,7 +104,7 @@ def test_secret_never_in_output_msg_args_extras_and_exceptions(tmp_path: Path) -
 
 def test_idempotent_setup(tmp_path: Path) -> None:
     sc = Scrubber()
-    h1 = setup_logging(
+    setup_logging(
         level="INFO",
         fmt="json",
         log_dir=tmp_path,

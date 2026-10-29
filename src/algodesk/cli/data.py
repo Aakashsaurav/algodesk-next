@@ -324,8 +324,15 @@ def data_synth(
     days: int = typer.Option(1, "--days", help="Number of trading days to generate"),
     rows: int = typer.Option(1000, "--rows", help="Rows per day per symbol"),
     seed: int = typer.Option(1, "--seed", help="Random seed for deterministic generation"),
+    pattern: str = typer.Option("random", "--pattern", help="Data pattern: random or trend"),
 ) -> None:
     """Generate deterministic synthetic market data ticks."""
+    if pattern not in ("random", "trend"):
+        raise ConfigError(
+            what=f"Invalid pattern '{pattern}'",
+            where="data synth",
+            fix="Use '--pattern random' or '--pattern trend'",
+        )
     sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
     with _open_rt(ctx, ensure=False) as rt:
         manifest_db = rt.root / "data" / "state" / "data_manifest.db"
@@ -337,6 +344,7 @@ def data_synth(
             seed=seed,
             data_dir=rt.root / "data",
             manifest=manifest,
+            pattern=pattern,
         )
         typer.echo(
             f"Generated {total_rows} synthetic ticks for {len(sym_list)} "

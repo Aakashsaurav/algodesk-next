@@ -8,6 +8,7 @@ data/ticks/exchange=E/segment=S/symbol=X/date=D/day.parquet
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ import pyarrow.parquet as pq
 from algodesk.api.market import FeedStatus, InstrumentId, MarketEvent, Quote, Tick, parse_id
 from algodesk.data.manifest import DataManifest, FileRecord
 from algodesk.data.schema import events_to_table
+
+logger = logging.getLogger("algodesk.data.recorder")
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +64,7 @@ class Recorder:
     def __init__(
         self,
         data_dir: Path | str,
-        manifest: DataManifest,
+        manifest: DataManifest | None = None,
         bus: Any = None,
         scheduler: Any = None,
         flush_seconds: int | None = None,
@@ -157,11 +160,14 @@ class Recorder:
     def flush(self, instrument: InstrumentId | None = None) -> list[str]:
         """Flush buffer to part file(s) and record in manifest."""
         written: list[str] = []
-        targets = [instrument] if instrument else list(self._buffers.keys())
-        for inst in targets:
-            path = self._flush_instrument(inst)
-            if path:
-                written.append(path)
+        try:
+            targets = [instrument] if instrument else list(self._buffers.keys())
+            for inst in targets:
+                path = self._flush_instrument(inst)
+                if path:
+                    written.append(path)
+        except Exception as exc:
+            logger.warning("Recorder flush failed: %s", exc)
         return written
 
     def _flush_instrument(self, instrument: InstrumentId) -> str | None:
@@ -203,7 +209,8 @@ class Recorder:
             state="part",
             created_ts=created_ts,
         )
-        self._manifest.record_file(rec)
+        if self._manifest is not None:
+            self._manifest.record_file(rec)
         return file_path.as_posix()
 
     def compact(self, date_val: str | date) -> list[str]:
@@ -291,7 +298,8 @@ class Recorder:
             state="day",
             created_ts=datetime.now(UTC).isoformat(),
         )
-        self._manifest.replace_parts_with_day(inst_str, d_str, part_paths, day_rec)
+        if self._manifest is not None:
+            self._manifest.replace_parts_with_day(inst_str, d_str, part_paths, day_rec)
         return day_file.as_posix()
 
     def _derive_instrument_from_path(self, pdir: Path) -> str:

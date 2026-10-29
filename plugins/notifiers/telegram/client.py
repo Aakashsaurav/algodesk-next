@@ -42,18 +42,14 @@ class TelegramClient:
         )
         self._retry_jitter_s = retry_jitter_s if retry_jitter_s is not None else 0.5
         rate_limit = (
-            rate_limit_messages_per_second
-            if rate_limit_messages_per_second is not None
-            else 1.0
+            rate_limit_messages_per_second if rate_limit_messages_per_second is not None else 1.0
         )
         self._min_interval_s = 1.0 / rate_limit if rate_limit > 0 else 0.0
         self._circuit_breaker_failures = (
             circuit_breaker_failures if circuit_breaker_failures is not None else 5
         )
         self._circuit_breaker_reset_s = (
-            circuit_breaker_reset_seconds
-            if circuit_breaker_reset_seconds is not None
-            else 60.0
+            circuit_breaker_reset_seconds if circuit_breaker_reset_seconds is not None else 60.0
         )
         self._timeout_s = timeout_seconds if timeout_seconds is not None else 10.0
         self._transport = http_transport
@@ -124,24 +120,7 @@ class TelegramClient:
             time.sleep(self._min_interval_s - elapsed)
         self._last_send_mono = time.monotonic()
 
-    def _send_with_retries(self, text: str) -> bool:
-        for attempt in range(self._retry_max_attempts):
-            try:
-                res = self.send_direct(text)
-                if res:
-                    return True
-            except Exception as exc:
-                logger.warning("Telegram send attempt %d failed: %s", attempt + 1, exc)
-
-            if attempt < self._retry_max_attempts - 1:
-                backoff = (self._retry_backoff_base_s * (2**attempt)) + random.uniform(
-                    0.0, self._retry_jitter_s
-                )
-                time.sleep(backoff)
-        return False
-
-    def send_direct(self, text: str) -> bool:
-        """Synchronously send message via Bot API endpoint."""
+    def _send_request(self, text: str) -> tuple[int, bool]:
         url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
         payload = {
             "chat_id": self._chat_id,
@@ -151,11 +130,32 @@ class TelegramClient:
         with httpx.Client(transport=self._transport, timeout=self._timeout_s) as client:
             resp = client.post(url, json=payload)
             if resp.status_code == 200:
-                return True
-            logger.warning(
-                "Telegram API error %d: %s", resp.status_code, resp.text
-            )
-            return False
+                return 200, True
+            logger.warning("Telegram API error %d: %s", resp.status_code, resp.text)
+            return resp.status_code, False
+
+    def send_direct(self, text: str) -> bool:
+        """Synchronously send message via Bot API endpoint."""
+        _, ok = self._send_request(text)
+        return ok
+
+    def _send_with_retries(self, text: str) -> bool:
+        for attempt in range(self._retry_max_attempts):
+            try:
+                status_code, ok = self._send_request(text)
+                if ok:
+                    return True
+                if status_code in (400, 401, 403, 404):
+                    return False
+            except Exception as exc:
+                logger.warning("Telegram send attempt %d failed: %s", attempt + 1, exc)
+
+            if attempt < self._retry_max_attempts - 1:
+                backoff = (self._retry_backoff_base_s * (2**attempt)) + random.uniform(
+                    0.0, self._retry_jitter_s
+                )
+                time.sleep(backoff)
+        return False
 
     def get_updates(self, offset: int | None = None) -> list[dict[str, Any]]:
         """Fetch bot updates to inspect incoming commands (for telegram setup)."""

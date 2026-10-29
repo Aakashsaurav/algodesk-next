@@ -5,14 +5,14 @@ INV-9: Never leak secrets, tokens, credentials, or sensitive keys into logs.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
 import logging
 import logging.handlers
-from pathlib import Path
 import sys
 import time
 import traceback
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from algodesk.api.errors import ConfigError
@@ -45,7 +45,7 @@ _STANDARD_LOG_ATTRS = {
 
 
 def _iso_ms(created: float) -> str:
-    dt = datetime.fromtimestamp(created, tz=timezone.utc)
+    dt = datetime.fromtimestamp(created, tz=UTC)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{int(dt.microsecond / 1000):03d}Z"
 
 
@@ -119,7 +119,8 @@ class TextLogFormatter(logging.Formatter):
             if k not in _STANDARD_LOG_ATTRS and not k.startswith("_")
         }
         extras_str = f" | {extras}" if extras else ""
-        msg = f"{ts} [{record.levelname}] {record.name} (run={self.run_id}): {record.getMessage()}{extras_str}"
+        prefix = f"{ts} [{record.levelname}] {record.name} (run={self.run_id})"
+        msg = f"{prefix}: {record.getMessage()}{extras_str}"
         if record.exc_text:
             msg += f"\n{record.exc_text}"
         return msg

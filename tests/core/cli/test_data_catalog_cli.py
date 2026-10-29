@@ -7,11 +7,10 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from algodesk.cli.app import app
-from algodesk.ops.paths import find_project_root
 
 
-def test_cli_groups_list_and_show(runner: CliRunner) -> None:
-    root = find_project_root()
+def test_cli_groups_list_and_show(runner: CliRunner, tmp_project: Path) -> None:
+    root = tmp_project
     res = runner.invoke(app, ["--root", str(root), "groups", "list"])
     assert res.exit_code == 0
     assert "demo5" in res.output
@@ -25,8 +24,8 @@ def test_cli_groups_list_and_show(runner: CliRunner) -> None:
     assert "NSE:EQ:HDFCBANK" in res_show.output
 
 
-def test_cli_data_synth_and_list(runner: CliRunner, tmp_path: Path) -> None:
-    root = find_project_root()
+def test_cli_data_synth_and_list(runner: CliRunner, tmp_project: Path) -> None:
+    root = tmp_project
     # Synth ticks
     res = runner.invoke(
         app,
@@ -55,8 +54,8 @@ def test_cli_data_synth_and_list(runner: CliRunner, tmp_path: Path) -> None:
     assert "synthetic" in res_list.output
 
 
-def test_cli_data_delete_dry_run_and_confirm(runner: CliRunner) -> None:
-    root = find_project_root()
+def test_cli_data_delete_dry_run_and_confirm(runner: CliRunner, tmp_project: Path) -> None:
+    root = tmp_project
     # Ensure there is data to delete
     runner.invoke(
         app,
@@ -110,11 +109,32 @@ def test_cli_data_delete_dry_run_and_confirm(runner: CliRunner) -> None:
     assert "Purged" in res_purge.output
 
 
-def test_cli_data_delete_group_with_no_data_instruments(runner: CliRunner, tmp_path: Path) -> None:
+def test_cli_data_delete_group_with_no_data_instruments(
+    runner: CliRunner,
+    tmp_project: Path,
+) -> None:
     """CP0 step 5: data delete plan line counts only instruments that have files;
     members of a @group without data are listed as 'no data'.
     """
-    root = find_project_root()
+    root = tmp_project
+    # Pre-populate exactly 2 of the 5 demo5 instruments
+    runner.invoke(
+        app,
+        [
+            "--root",
+            str(root),
+            "data",
+            "synth",
+            "--symbols",
+            "NSE:EQ:HDFCBANK,NSE:EQ:SBIN",
+            "--days",
+            "1",
+            "--rows",
+            "10",
+            "--seed",
+            "42",
+        ],
+    )
     # Dry-run delete on @demo5
     res = runner.invoke(
         app,

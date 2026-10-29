@@ -7,7 +7,9 @@ order management, simulated venue matching, portfolio ledgering, and results rep
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import sys
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
@@ -16,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from algodesk.api import (
+    AlgoDeskError,
     Bar,
     Fill,
     FillEvent,
@@ -30,6 +33,7 @@ from algodesk.api import (
     Tick,
     parse_id,
 )
+from algodesk.api.checks import Severity
 from algodesk.api.market import FeedStatus, MarketEvent
 from algodesk.api.protocols import Clock
 from algodesk.data.catalog import resolve_selector
@@ -46,6 +50,7 @@ from algodesk.engine.scheduler import Scheduler
 from algodesk.engine.sessions import SessionManager
 from algodesk.engine.strategy_runtime import StrategyRuntime
 from algodesk.fees.engine import FeeEngine
+from algodesk.journal.store import JournalReader
 from algodesk.journal.writer import Journal, JournalSettings
 from algodesk.oms.manager import OrderManager
 from algodesk.ops.checks import build_run_checks
@@ -77,8 +82,11 @@ class SessionRunner:
         dry_run: bool = False,
         clock: Clock | None = None,
         journal_db: Path | None = None,
+        run_id: str | None = None,
+        secrets: Any | None = None,
     ) -> None:
         self.runtime = runtime
+        self._secrets_provider = secrets
         self.run_config = run_config or runtime.effective.run
         if isinstance(mode, str):
             self.mode = Mode.BACKTEST if mode.lower() == "replay" else Mode(mode.lower())
@@ -94,15 +102,19 @@ class SessionRunner:
 
         self.run_name = getattr(getattr(self.run_config, "run", None), "name", "run")
         ts_str = self.clock.now().strftime("%Y%m%d_%H%M%S")
-        if self._is_replay:
-            self.run_id = f"{self.run_name}_{self.mode}_{ts_str}"
+        mode_str = "replay" if self._is_replay else str(self.mode.value)
+        if run_id is not None:
+            self.run_id = run_id
+        elif self._is_replay:
+            self.run_id = f"{self.run_name}_{mode_str}_{ts_str}"
         else:
             rand_suffix = uuid.uuid4().hex[:6]
-            self.run_id = f"{self.run_name}_{self.mode}_{ts_str}_{rand_suffix}"
+            self.run_id = f"{self.run_name}_{mode_str}_{ts_str}_{rand_suffix}"
 
         self._stop_event = asyncio.Event()
         self._interrupted = False
         self._feed_halted = False
+        self._run_error: str | None = None
 
         self._fills: list[Fill] = []
         self._tick_stats: dict[str, int] = {}
@@ -111,6 +123,12 @@ class SessionRunner:
         self._rejects_by_rule: dict[str, int] = {}
         self._equity_curve: list[dict[str, Any]] = []
         self._latest_quotes: dict[InstrumentId, Quote] = {}
+
+    @property
+    def mode_name(self) -> str:
+        if self._is_replay:
+            return "replay"
+        return str(self.mode.value if hasattr(self.mode, "value") else self.mode)
 
     def stop(self) -> None:
         """Signal the session runner to stop event streaming and cleanly shut down."""
@@ -123,33 +141,43 @@ class SessionRunner:
         registry.register_many(checks)
         report = registry.run()
         if report.critical > 0:
-            msg = f"Pre-start doctor check failed with {report.critical} critical error(s)"
+            crit_res = [r for r in report.results if not r.ok and r.severity == Severity.CRITICAL]
+            first = crit_res[0] if crit_res else None
+            detail = f": {first.message}" if first else ""
+            msg = f"Pre-start doctor check failed with {report.critical} critical error(s){detail}"
+            fix = (
+                first.fix
+                if (first and first.fix)
+                else f"Run 'algodesk doctor --run {self.run_name}' to fix"
+            )
             raise SafetyViolation(
                 what=msg,
                 where="SessionRunner.run_prestart_doctor",
-                fix="Run 'algodesk doctor --run <name>' to inspect and fix critical issues",
+                fix=fix,
             )
 
     async def run(self) -> Path:
         """Execute the configured paper or replay session and write results."""
-        self.run_prestart_doctor()
         if self.dry_run:
+            self.run_prestart_doctor()
             logger.info("Dry-run mode: components inspected, skipping execution.")
-            return Path("results") / self.run_id
+            return self.runtime.paths.results / self.run_id
 
-        # 1. Initialize clock & journal
         clock = self.clock
         journal = self._init_journal()
+        components: dict[str, Any] = {}
+        error_to_reraise: Exception | None = None
 
-        # 2. Wire core components
-        components = self._build_components(clock, journal)
-
-        # 3. Execute market stream with failure and interrupt isolation
         try:
+            self.run_prestart_doctor()
+
+            # Wire core components
+            components = self._build_components(clock, journal)
+
             with journal:
                 config_hash = getattr(self.runtime.effective, "hash", "run")
                 journal.start_run(
-                    mode=str(self.mode.value if hasattr(self.mode, "value") else self.mode),
+                    mode=self.mode_name,
                     code_version="0.1.0",
                     config_hash=config_hash,
                     registry_hash="core",
@@ -159,25 +187,43 @@ class SessionRunner:
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     logger.info("Session interrupted gracefully; generating results.")
                     self._interrupted = True
+                except AlgoDeskError as exc:
+                    logger.error("Session stopped due to error: %s; writing results.", exc)
+                    self._run_error = str(exc)
+                    error_to_reraise = exc
                 except Exception as exc:
                     logger.error("Session encountered unhandled error: %s; writing results.", exc)
+                    self._run_error = f"Unhandled error: {exc}"
+                    error_to_reraise = exc
                 finally:
                     try:
-                        journal.end_run("aborted" if self._interrupted else "ok")
+                        end_st = "aborted" if (self._interrupted or self._run_error) else "ok"
+                        journal.end_run(end_st)
                     except Exception:
                         pass
+        except AlgoDeskError as exc:
+            logger.error("Session initialization failed: %s; writing results.", exc)
+            self._run_error = str(exc)
+            error_to_reraise = exc
+        except Exception as exc:
+            logger.error("Session startup unhandled error: %s; writing results.", exc)
+            self._run_error = f"Unhandled error: {exc}"
+            error_to_reraise = exc
         finally:
             results_path = self._finalize_session(components, clock, journal)
+
+        if error_to_reraise is not None:
+            raise error_to_reraise
 
         return results_path
 
     def _init_clock(self) -> Clock:
         if self._is_replay:
-            initial = datetime(2026, 10, 26, 9, 15, tzinfo=UTC)
+            initial = datetime(2026, 10, 26, 3, 45, tzinfo=UTC)
             if self.replay_dates:
                 d = self.replay_dates[0]
                 d_date = d if isinstance(d, date) else date.fromisoformat(str(d))
-                initial = datetime(d_date.year, d_date.month, d_date.day, 9, 15, tzinfo=UTC)
+                initial = datetime(d_date.year, d_date.month, d_date.day, 3, 45, tzinfo=UTC)
             return SimClock(initial_time=initial)
         return WallClock()
 
@@ -211,6 +257,36 @@ class SessionRunner:
             clock=self.clock.now,
         )
 
+    def _resolve_secrets(self) -> Any | None:
+        """Resolve active secrets provider for the session."""
+        if getattr(self, "_secrets_provider", None) is not None:
+            return self._secrets_provider
+
+        sec = getattr(self.runtime, "secrets", None)
+        if sec is not None:
+            self._secrets_provider = sec
+            return sec
+
+        rc = self.run_config or self.runtime.effective.run
+        p_name = None
+        sec_cfg: dict[str, Any] = {}
+        if rc is not None and getattr(rc, "secrets", None) is not None:
+            p_name = getattr(rc.secrets, "plugin", None)
+            if hasattr(rc.secrets, "model_dump"):
+                sec_cfg = {k: v for k, v in rc.secrets.model_dump().items() if k != "plugin"}
+
+        if not p_name:
+            p_name = "keychain" if sys.platform == "darwin" else "env"
+
+        p_ctx = build_context(Mode.RESEARCH, run_id=f"{self.run_id}_secrets")
+        try:
+            self._secrets_provider = self.runtime.plugins.create(
+                PluginKind.SECRETS, p_name, config=sec_cfg, ctx=p_ctx
+            )
+            return self._secrets_provider
+        except Exception:
+            return None
+
     def _build_components(self, clock: Clock, journal: Journal) -> dict[str, Any]:
         """Instantiate and wire engine, oms, venue, risk, and plugins."""
         assert self.run_config is not None
@@ -220,7 +296,7 @@ class SessionRunner:
             run_id=self.run_id,
             params=self.runtime.params,
             journal=journal,
-            secrets=getattr(self.runtime, "secrets", None),
+            secrets=self._resolve_secrets(),
             scrubber=getattr(self.runtime, "scrubber", None),
         )
 
@@ -261,6 +337,20 @@ class SessionRunner:
         bar_builder = self._init_bar_builder(session_mgr, bus, scheduler, ind_mgr, buf, strat_rt)
         recorder = self._init_recorder(bus, scheduler)
 
+        def _on_fill_event(fe: FillEvent) -> None:
+            fill = fe.fill
+            self._fills.append(fill)
+            ledger.apply_fill(fill)
+            notify.notify_fill(fill)
+            monitor.on_fill(fe)
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(strat_rt.dispatch_fill(fill))
+            except RuntimeError:
+                pass
+
+        bus.subscribe(FillEvent, _on_fill_event)
+
         return {
             "venue": venue,
             "instruments": instruments,
@@ -276,6 +366,7 @@ class SessionRunner:
             "scheduler": scheduler,
             "bar_builder": bar_builder,
             "recorder": recorder,
+            "fee_engine": fee_engine,
         }
 
     def _init_venue(self, p_ctx: PluginContext) -> Any:
@@ -486,18 +577,23 @@ class SessionRunner:
     def _init_recorder(self, bus: EventBus, scheduler: Scheduler) -> Recorder | None:
         if self.mode != Mode.PAPER or not getattr(self.run_config, "recording", True):
             return None
-        rec_dir = self.runtime.paths.data / "recorded" / "ticks"
-        rec_dir.mkdir(parents=True, exist_ok=True)
-        manifest_mock = None
+        data_dir = self.runtime.paths.data
+        data_dir.mkdir(parents=True, exist_ok=True)
+        manifest_db = data_dir / "state" / "data_manifest.db"
+        if not manifest_db.exists() and (data_dir / "manifest.db").exists():
+            manifest_db = data_dir / "manifest.db"
+        manifest_db.parent.mkdir(parents=True, exist_ok=True)
         try:
+            manifest = DataManifest(manifest_db)
             return Recorder(
-                data_dir=rec_dir,
-                manifest=manifest_mock,  # type: ignore[arg-type]
+                data_dir=data_dir,
+                manifest=manifest,
                 bus=bus,
                 scheduler=scheduler,
                 source="live",
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("Could not initialize Recorder: %s", exc)
             return None
 
     def _resolve_universe(self) -> dict[InstrumentId, Instrument]:
@@ -507,7 +603,9 @@ class SessionRunner:
         if u_cfg.symbols:
             symbols = list(u_cfg.symbols)
         elif u_cfg.group:
-            manifest_db = self.runtime.paths.data / "manifest.db"
+            manifest_db = self.runtime.paths.data / "state" / "data_manifest.db"
+            if not manifest_db.exists() and (self.runtime.paths.data / "manifest.db").exists():
+                manifest_db = self.runtime.paths.data / "manifest.db"
             manifest = DataManifest(manifest_db)
             groups_dir = self.runtime.root / "config" / "groups"
             symbols = list(resolve_selector(f"@{u_cfg.group}", manifest, groups_dir=groups_dir))
@@ -567,6 +665,18 @@ class SessionRunner:
                 self._tick_stats[str(ev.instrument)] = (
                     self._tick_stats.get(str(ev.instrument), 0) + 1
                 )
+                prev_q = self._latest_quotes.get(ev.instrument)
+                if prev_q is not None:
+                    self._latest_quotes[ev.instrument] = Quote(
+                        instrument=prev_q.instrument,
+                        exch_ts=ev.exch_ts,
+                        recv_ts=ev.recv_ts,
+                        bids=prev_q.bids,
+                        asks=prev_q.asks,
+                        ltp=ev.ltp,
+                        volume=ev.volume,
+                    )
+                await asyncio.sleep(0)
             elif isinstance(ev, FeedStatus):
                 notify.notify_feed_status(ev)
                 if ev.state in ("disconnected", "gap"):
@@ -582,6 +692,10 @@ class SessionRunner:
 
             # 5. Check OMS timeouts
             await c["oms"].check_timeouts()
+
+        # Drain pending bar tasks and venue events after stream ends
+        await asyncio.sleep(0)
+        await self._drain_venue_events(c)
 
     def _setup_timers(self, c: dict[str, Any], clock: Clock) -> None:
         assert self.run_config is not None
@@ -653,31 +767,41 @@ class SessionRunner:
     async def _drain_venue_events(self, c: dict[str, Any]) -> None:
         venue = c["venue"]
         oms: OrderManager = c["oms"]
-        ledger: PortfolioLedger = c["ledger"]
-        monitor: RiskMonitor = c["monitor"]
-        strat_rt: StrategyRuntime = c["strat_rt"]
-        notify: NotifyBridge = c["notify"]
 
-        if hasattr(venue, "events"):
-            async for vevent in venue.events():
-                oms.apply_venue_event(vevent)
-                if vevent.kind == "fill" and vevent.fill is not None:
-                    f: Any = vevent.fill
-                    actual_fill: Fill = f.fill if hasattr(f, "fill") else f
-                    self._fills.append(actual_fill)
-                    ledger.apply_fill(actual_fill)
-                    notify.notify_fill(actual_fill)
-                    ord_obj = oms.get_order(actual_fill.client_ref)
-                    monitor.on_fill(FillEvent(fill=actual_fill, order=ord_obj))
-                    await strat_rt.dispatch_fill(actual_fill)
+        # Extract queued events without blocking the execution loop
+        v_target = getattr(venue, "_venue", venue)
+        q = getattr(v_target, "_event_queue", None)
+        events: list[Any] = []
+        if q is not None:
+            while not q.empty():
+                try:
+                    events.append(q.get_nowait())
+                except Exception:
+                    break
+        elif hasattr(venue, "drain_events"):
+            events = list(venue.drain_events())
+
+        for vevent in events:
+            oms.apply_venue_event(vevent)
 
     def _build_event_stream(self, c: dict[str, Any], clock: Clock) -> AsyncIterator[MarketEvent]:
         if self._is_replay:
             files: list[Path] = []
-            rec_dir = self.runtime.paths.data / "recorded" / "ticks"
-            if rec_dir.is_dir():
+            seen: set[str] = set()
+            for rec_dir in (
+                self.runtime.paths.data / "recorded" / "ticks",
+                self.runtime.paths.data / "ticks",
+            ):
+                if not rec_dir.is_dir():
+                    continue
                 for p in sorted(rec_dir.glob("**/*.parquet")):
-                    files.append(p)
+                    if self.replay_dates:
+                        if not any(f"date={d}" in str(p) for d in self.replay_dates):
+                            continue
+                    key = str(p.resolve())
+                    if key not in seen:
+                        seen.add(key)
+                        files.append(p)
 
             feed = ReplayFeed(files=files, clock=clock)
 
@@ -693,15 +817,24 @@ class SessionRunner:
             if self.run_config and self.run_config.data_source
             else "upstox"
         )
+        ds_cfg: dict[str, Any] = {}
+        if self.run_config and self.run_config.data_source:
+            if hasattr(self.run_config.data_source, "model_dump"):
+                ds_cfg = {
+                    k: v
+                    for k, v in self.run_config.data_source.model_dump().items()
+                    if k != "plugin" and v is not None
+                }
+
         p_ctx = build_context(
             mode=self.mode,
             run_id=self.run_id,
             params=self.runtime.params,
             journal=None,
-            secrets=getattr(self.runtime, "secrets", None),
+            secrets=self._resolve_secrets(),
             scrubber=getattr(self.runtime, "scrubber", None),
         )
-        ds: Any = self.runtime.plugins.create(PluginKind.BROKER, ds_name, ctx=p_ctx)
+        ds: Any = self.runtime.plugins.create(PluginKind.BROKER, ds_name, config=ds_cfg, ctx=p_ctx)
         inst_ids = list(c["instruments"].keys())
         stream_res: AsyncIterator[MarketEvent] = ds.stream(inst_ids)
         return stream_res
@@ -713,27 +846,50 @@ class SessionRunner:
         journal: Journal,
     ) -> Path:
         """Cancel open orders, square off, mark-to-market, compact recorder, write results."""
-        oms: OrderManager = c["oms"]
-        ledger: PortfolioLedger = c["ledger"]
-        notify: NotifyBridge = c["notify"]
+        oms: OrderManager | None = c.get("oms")
+        ledger: PortfolioLedger | None = c.get("ledger")
+        notify: NotifyBridge | None = c.get("notify")
         recorder: Recorder | None = c.get("recorder")
 
         # 1. Cancel open orders
-        for ref, ord_obj in list(oms.orders.items()):
-            if hasattr(ord_obj, "state") and ord_obj.state in ("pending", "submitted", "open"):
-                asyncio.create_task(oms.cancel(ref))
+        if oms is not None:
+            for ref, ord_obj in list(oms.orders.items()):
+                if hasattr(ord_obj, "state") and ord_obj.state in ("pending", "submitted", "open"):
+                    asyncio.create_task(oms.cancel(ref))
 
         # 2. Final marks and equity point
-        for q in self._latest_quotes.values():
-            ledger.mark(q)
-        snap = ledger.snapshot()
+        if ledger is not None:
+            for q in self._latest_quotes.values():
+                ledger.mark(q)
+            snap = ledger.snapshot()
+            equity_val = float(snap.equity)
+            cash_val = float(snap.cash)
+            unrealized_val = float(ledger.unrealized)
+            realized_val = float(ledger.realized)
+            total_charges = float(ledger.total_charges)
+            gross_pnl = float(ledger.realized + ledger.unrealized)
+            net_pnl = float(ledger.net_realized_pnl + ledger.unrealized)
+        else:
+            starting_cash = (
+                float(self.run_config.allocated_capital)
+                if (self.run_config and hasattr(self.run_config, "allocated_capital"))
+                else 0.0
+            )
+            equity_val = starting_cash
+            cash_val = starting_cash
+            unrealized_val = 0.0
+            realized_val = 0.0
+            total_charges = 0.0
+            gross_pnl = 0.0
+            net_pnl = 0.0
+
         self._equity_curve.append(
             {
                 "ts": clock.now().isoformat(),
-                "equity": float(snap.equity),
-                "cash": float(snap.cash),
-                "unrealized": float(ledger.unrealized),
-                "realized": float(ledger.realized),
+                "equity": equity_val,
+                "cash": cash_val,
+                "unrealized": unrealized_val,
+                "realized": realized_val,
                 "drawdown": compute_max_drawdown([p["equity"] for p in self._equity_curve]),
             }
         )
@@ -765,15 +921,12 @@ class SessionRunner:
             for f in fills
         ]
 
-        total_charges = float(ledger.total_charges)
-        gross_pnl = float(ledger.realized + ledger.unrealized)
-        net_pnl = float(ledger.net_realized_pnl + ledger.unrealized)
         win_trades = sum(1 for f in fills if f.price > 0)
         win_rate = (win_trades / len(fills) * 100.0) if fills else 0.0
         max_dd = compute_max_drawdown([p["equity"] for p in self._equity_curve])
 
         date_str = clock.now().strftime("%Y-%m-%d")
-        mode_str = str(self.mode.value if hasattr(self.mode, "value") else self.mode)
+        mode_str = self.mode_name
         metrics = {
             "date": date_str,
             "mode": mode_str,
@@ -791,13 +944,13 @@ class SessionRunner:
         }
 
         # 5. Write results
-        writer = ResultsWriter(self.run_id, results_dir="results")
-        date_str = clock.now().strftime("%Y-%m-%d")
+        writer = ResultsWriter(self.run_id, results_dir=self.runtime.paths.results)
+        is_fail = self._interrupted or self._feed_halted or bool(self._run_error)
         summary_info = {
             "run_name": self.run_name,
-            "mode": str(self.mode.value if hasattr(self.mode, "value") else self.mode),
+            "mode": mode_str,
             "date": date_str,
-            "verdict": "FAIL" if self._interrupted or self._feed_halted else "PASS",
+            "verdict": "FAIL" if is_fail else "PASS",
         }
 
         effective_text = getattr(self.runtime.effective, "raw_text", str(self.run_config))
@@ -821,10 +974,12 @@ class SessionRunner:
         }
 
         session_md_text = (
-            f"Session {self.run_name} ({self.mode}) completed on {date_str}.\n"
+            f"Session {self.run_name} ({mode_str}) completed on {date_str}.\n"
             f"Net P&L: ₹{net_pnl:.2f} | Trades: {len(fills)} | Max Drawdown: {max_dd:.2f}%\n"
             f"Verdict: {summary_info['verdict']}\n"
         )
+        if self._run_error:
+            session_md_text += f"\nError: {self._run_error}\n"
 
         res_path = writer.write(
             summary_info=summary_info,
@@ -837,13 +992,28 @@ class SessionRunner:
             session_text=session_md_text,
         )
 
-        notify.notify_daily_summary(session_md_text)
-        if self._is_replay and self._journal_db is None:
-            r_db = self.runtime.state.journal_db.parent / f"journal_replay_{self.run_id}.db"
-            try:
-                r_db.unlink(missing_ok=True)
-                Path(f"{r_db}.lock").unlink(missing_ok=True)
-            except Exception:
-                pass
+        if notify is not None:
+            notify.notify_daily_summary(session_md_text)
 
+        self._export_run_events(res_path)
         return res_path
+
+    def _export_run_events(self, res_path: Path) -> None:
+        """Export session journal events to events.jsonl in results folder."""
+        try:
+            worker = getattr(self, "worker_id", getattr(self, "_worker_id", None))
+            worker_suffix = f"_{worker}" if worker else ""
+            db_file = self._journal_db or (
+                self.runtime.state.journal_db.parent / f"journal_replay{worker_suffix}.db"
+                if self._is_replay
+                else self.runtime.state.journal_db
+            )
+            if db_file.is_file():
+                reader = JournalReader(db_file)
+                evs = reader.events(run_id=self.run_id)
+                evs_path = res_path / "events.jsonl"
+                with open(evs_path, "w", encoding="utf-8") as f:
+                    for ev in evs:
+                        f.write(json.dumps(ev) + "\n")
+        except Exception as exc:
+            logger.warning("Failed to export events.jsonl for run %s: %s", self.run_id, exc)

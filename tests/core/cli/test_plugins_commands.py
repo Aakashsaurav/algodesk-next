@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -171,3 +172,33 @@ def test_order_capable_unit_tests_run_but_registry_never_creates_outside_live(
                 rt.plugins.create("venue", "live_trader", ctx=ctx)
             assert "cannot be loaded in mode" in exc_info.value.what
             assert "only permitted in 'live' mode" in exc_info.value.what
+
+
+def test_plugins_test_all_flag(runner: CliRunner, make_project: Any) -> None:
+    """plugins test --all discovers and tests all plugins in project."""
+    proj = make_project("p_test_all")
+    runner.invoke(app, ["--root", str(proj), "new", "plugin", "notifier", "slack"])
+    runner.invoke(app, ["--root", str(proj), "new", "plugin", "notifier", "discord"])
+
+    res = runner.invoke(app, ["--root", str(proj), "plugins", "test", "--all"])
+    assert res.exit_code == 0
+    assert "notifier/slack passed conformance suite" in res.output
+    assert "notifier/discord passed conformance suite" in res.output
+
+
+def test_plugins_test_all_run_flag(runner: CliRunner, tmp_project: Path) -> None:
+    """plugins test --all --run NAME runs conformance for all run config plugins."""
+    args = ["--root", str(tmp_project), "plugins", "test", "--all", "--run", "demo_paper"]
+    res = runner.invoke(app, args)
+    assert res.exit_code == 0
+    assert "broker/upstox passed conformance suite" in res.output
+    assert "venue/sim passed conformance suite" in res.output
+    assert "fees/zerodha_nse passed conformance suite" in res.output
+
+
+def test_plugins_test_missing_args_error(runner: CliRunner, make_project: Any) -> None:
+    """plugins test without args or --all prints error and exits 1."""
+    proj = make_project("p_missing_args")
+    res = runner.invoke(app, ["--root", str(proj), "plugins", "test"])
+    assert res.exit_code == 1
+    assert "specify plugin kind and name, or use '--all'" in res.output

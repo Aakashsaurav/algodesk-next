@@ -445,8 +445,9 @@ def test_venue_rejection_marks_order_rejected_and_ledger_immune() -> None:
 @pytest.mark.parametrize("seed", [42, 100, 2026])
 def test_replay_equivalence_same_seed_produces_identical_metrics(
     seed: int,
+    tmp_project: Path,
 ) -> None:
-    with open_runtime(run="demo_paper") as rt:
+    with open_runtime(tmp_project, run="demo_paper") as rt:
         dates = [date(2026, 10, 26)]
 
         runner1 = SessionRunner(

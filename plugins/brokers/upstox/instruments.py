@@ -38,11 +38,45 @@ class UpstoxInstrumentManager:
         self._transport = http_transport
         if cache_dir is not None:
             self._cache_dir = cache_dir
+        elif Path("local/cache/instruments").is_dir():
+            self._cache_dir = Path("local/cache/instruments")
         else:
             self._cache_dir = Path(".local/cache/instruments")
         self._instruments: dict[str, Instrument] = {}
         self._key_to_inst: dict[str, Instrument] = {}
         self._symbol_to_inst: dict[str, Instrument] = {}
+
+    def _cleanup_older_downloads(self, keep_path: Path) -> None:
+        """Remove older cached instrument master files so only the new download is kept."""
+        dirs_to_clean: list[Path] = [self._cache_dir]
+        for alt in (Path(".local/cache/instruments"), Path("local/cache/instruments")):
+            try:
+                if alt.is_dir() and alt.resolve() not in [d.resolve() for d in dirs_to_clean]:
+                    dirs_to_clean.append(alt)
+            except Exception:
+                pass
+
+        try:
+            keep_resolved = keep_path.resolve()
+        except Exception:
+            return
+
+        for d in dirs_to_clean:
+            if not d.is_dir():
+                continue
+            try:
+                for file_path in d.iterdir():
+                    if (
+                        file_path.is_file()
+                        and file_path.name.startswith("upstox_master_")
+                        and file_path.resolve() != keep_resolved
+                    ):
+                        try:
+                            file_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+            except Exception:
+                pass
 
     def _param(self, name: str, default: Any) -> Any:
         if self._ctx is not None and self._ctx.params is not None:
@@ -91,11 +125,14 @@ class UpstoxInstrumentManager:
         if raw_bytes is not None:
             content = raw_bytes
             p.write_bytes(content)
+            self._cleanup_older_downloads(p)
         elif self.is_cache_fresh(today):
             content = p.read_bytes()
+            self._cleanup_older_downloads(p)
         else:
             content = self.download_master()
             p.write_bytes(content)
+            self._cleanup_older_downloads(p)
 
         sha = hashlib.sha256(content).hexdigest()
         if self._ctx is not None and self._ctx.journal is not None:

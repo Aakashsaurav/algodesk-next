@@ -156,3 +156,22 @@ def test_recorder_disk_guard(tmp_path: Path) -> None:
         assert len(events) == 1
         assert events[0].kind == "recorder.disk_low"
         assert len(manifest.get_files()) == 0
+
+
+def test_recorder_without_manifest(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    recorder = Recorder(data_dir=data_dir, manifest=None, max_buffer_rows=2)
+
+    t0 = datetime(2026, 10, 26, 9, 15, 0, tzinfo=UTC)
+    inst = "NSE:EQ:INFY"
+    recorder.on_market_event(_make_tick(inst, t0, 100.0, 10))
+    recorder.on_market_event(_make_tick(inst, t0 + timedelta(seconds=1), 101.0, 20))
+
+    # Flushed part file exists on disk
+    pdir = recorder.partition_dir(inst, "2026-10-26")
+    assert len(list(pdir.glob("part-*.parquet"))) == 1
+
+    # Compaction succeeds without manifest
+    compacted = recorder.compact("2026-10-26")
+    assert len(compacted) == 1
+    assert (pdir / "day.parquet").exists()

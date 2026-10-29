@@ -15,9 +15,9 @@ from algodesk.cli.app import app
 runner = CliRunner()
 
 
-def test_cli_run_dry_run() -> None:
+def test_cli_run_dry_run(tmp_project: Path) -> None:
     """algodesk run demo_paper --dry-run prints execution plan and doctor status."""
-    res = runner.invoke(app, ["run", "demo_paper", "--dry-run"])
+    res = runner.invoke(app, ["--root", str(tmp_project), "run", "demo_paper", "--dry-run"])
     assert res.exit_code == 0
     assert "Dry-Run Execution Plan" in res.output
     assert "demo_paper" in res.output
@@ -25,57 +25,77 @@ def test_cli_run_dry_run() -> None:
     assert "No network connections opened" in res.output
 
 
-def test_cli_run_dry_run_unknown_config() -> None:
+def test_cli_run_dry_run_unknown_config(tmp_project: Path) -> None:
     """algodesk run non_existent --dry-run raises cleanly."""
-    res = runner.invoke(app, ["run", "non_existent_run", "--dry-run"])
+    res = runner.invoke(app, ["--root", str(tmp_project), "run", "non_existent_run", "--dry-run"])
     assert res.exit_code != 0
 
 
-def test_cli_replay_twice_command(tmp_path: Path) -> None:
+def test_cli_replay_twice_command(tmp_project: Path) -> None:
     """algodesk replay --dates 2026-10-26 --run demo_paper --twice asserts replay equal."""
-    res = runner.invoke(app, ["replay", "--dates", "2026-10-26", "--run", "demo_paper", "--twice"])
+    res = runner.invoke(
+        app,
+        [
+            "--root",
+            str(tmp_project),
+            "replay",
+            "--dates",
+            "2026-10-26",
+            "--run",
+            "demo_paper",
+            "--twice",
+        ],
+    )
     assert res.exit_code == 0
     assert "replay equal: True" in res.output
     assert "results folder:" in res.output
 
 
-def test_cli_replay_single_run() -> None:
+def test_cli_replay_single_run(tmp_project: Path) -> None:
     """algodesk replay --dates 2026-10-26 --run demo_paper executes single replay."""
-    res = runner.invoke(app, ["replay", "--dates", "2026-10-26", "--run", "demo_paper"])
+    res = runner.invoke(
+        app,
+        ["--root", str(tmp_project), "replay", "--dates", "2026-10-26", "--run", "demo_paper"],
+    )
     assert res.exit_code == 0
     assert "results folder:" in res.output
 
 
-def test_cli_results_list_and_show() -> None:
+def test_cli_results_list_and_show(tmp_project: Path) -> None:
     """algodesk results list and show commands inspect generated results."""
     # First ensure a run exists
-    replay_res = runner.invoke(app, ["replay", "--dates", "2026-10-26", "--run", "demo_paper"])
+    replay_res = runner.invoke(
+        app,
+        ["--root", str(tmp_project), "replay", "--dates", "2026-10-26", "--run", "demo_paper"],
+    )
     assert replay_res.exit_code == 0
     run_dir = replay_res.output.split("results folder:")[-1].strip().splitlines()[0]
     run_id = Path(run_dir).name
 
     # Test results list
-    list_res = runner.invoke(app, ["results", "list"])
+    list_res = runner.invoke(app, ["--root", str(tmp_project), "results", "list"])
     assert list_res.exit_code == 0
     assert "RUN ID" in list_res.output
     assert run_id in list_res.output
 
     # Test results show text
-    show_res = runner.invoke(app, ["results", "show", run_id])
+    show_res = runner.invoke(app, ["--root", str(tmp_project), "results", "show", run_id])
     assert show_res.exit_code == 0
     assert "Run Summary" in show_res.output
 
     # Test results show JSON
-    json_res = runner.invoke(app, ["results", "show", run_id, "--json"])
+    json_res = runner.invoke(app, ["--root", str(tmp_project), "results", "show", run_id, "--json"])
     assert json_res.exit_code == 0
     data = json.loads(json_res.output)
     assert "gross_pnl" in data
     assert "net_pnl" in data
 
 
-def test_cli_results_show_missing() -> None:
+def test_cli_results_show_missing(tmp_project: Path) -> None:
     """algodesk results show invalid_id raises ConfigError."""
-    res = runner.invoke(app, ["results", "show", "non_existent_bundle_12345"])
+    res = runner.invoke(
+        app, ["--root", str(tmp_project), "results", "show", "non_existent_bundle_12345"]
+    )
     assert res.exit_code != 0
 
 
@@ -131,3 +151,40 @@ def test_cli_telegram_test_failure_raises(monkeypatch: pytest.MonkeyPatch) -> No
 
     res = runner.invoke(app, ["telegram", "test"])
     assert res.exit_code != 0
+
+
+def test_cli_run_prepare(tmp_project: Path) -> None:
+    """algodesk run demo_paper --prepare runs tests, refresh master, and doctor."""
+    res = runner.invoke(app, ["--root", str(tmp_project), "run", "demo_paper", "--prepare"])
+    assert res.exit_code == 0
+    assert "all OK, doctor 0 critical" in res.output
+
+
+def test_cli_replay_twice_unique_run_ids(tmp_project: Path) -> None:
+    """algodesk replay --twice produces paired _a and _b run IDs with mode replay."""
+    args = ["--root", str(tmp_project), "replay", "--run", "demo_paper", "--twice"]
+    res = runner.invoke(app, args)
+    assert res.exit_code == 0
+    assert "replay equal: True" in res.output
+
+    list_res = runner.invoke(app, ["--root", str(tmp_project), "results", "list"])
+    assert list_res.exit_code == 0
+    assert "_a" in list_res.output
+    assert "_b" in list_res.output
+    assert "replay" in list_res.output
+
+
+def test_gate_error_conformance_fix_message(tmp_project: Path) -> None:
+    """Gate error prints plugin name, exact fix command, and writes results."""
+    # Corrupt or remove conformance record for upstox
+    conf_file = tmp_project / ".algodesk" / "conformance.json"
+    conf_file.write_text("{}")
+
+    res = runner.invoke(app, ["--root", str(tmp_project), "run", "demo_paper"])
+    assert res.exit_code == 1
+    assert "algodesk plugins test" in res.output
+    # Verify results folder was written despite gate failure
+    res_dir = tmp_project / "results"
+    assert res_dir.is_dir()
+    runs = list(res_dir.iterdir())
+    assert len(runs) > 0

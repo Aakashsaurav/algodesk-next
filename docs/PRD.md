@@ -1,11 +1,11 @@
-# AlgoDesk Next — Product Requirements Document v2.9 (Platform)
+# AlgoDesk Next — Product Requirements Document v2.10 (Platform)
 
-Owner: Aakash · Version: 2.9 · Date: 17 October 2026
+Owner: Aakash · Version: 2.10 · Date: 29 October 2026
 
 | Field | Value |
 |---|---|
 | **Status** | Draft for owner approval. Not an authorization to write code or place orders. |
-| **Version / date** | 2.9 (repository edition), 17 October 2026. Supersedes v2.8 and earlier. Card word limit raised for module-sized cards; no open decision blocks M0 or M1. |
+| **Version / date** | 2.10 (repository edition), 29 October 2026. Supersedes v2.9 and earlier. Complexity guidance aligned with ADR-017, ADR-020, and ADR-036; M1 complete. |
 | **Owner** | Aakash (sole human supervisor) |
 | **Author** | Claude, acting as Product Manager and lead architect. AI coding agents report to this role. |
 | **Documentation rule** | This document follows its own rule (§9): summary first, short sections, one home per fact. |
@@ -144,16 +144,16 @@ SaaS or multi-user features; REST API; browser UI (deferred to a later version, 
 
 ### 2.2 Complexity guidance (Approved 17 Oct; size numbers are advisory; values live in the parameter registry; checked by `algodesk budget`)
 
-**Size rule (17 Oct):** size numbers are guidance, not limits. Keep code minimal, but never at the cost of quality, documentation or speed; it may grow slightly when justified. `algodesk budget` reports size and warns; I review any large overshoot. Only the structural rules (CB-3 to CB-5, CB-9) and the dependency count (CB-7) fail a check.
+**Size rule (17 Oct, updated ADR-017, ADR-036):** size numbers are guidance, not limits. Keep code minimal, but never at the cost of quality, documentation or speed; it may grow slightly when justified. Size guidance is 20,000 core lines, 150 modules, 2,500 per plugin (ADR-017, ADR-036). `algodesk budget` reports size and warns; I review any large overshoot. Only the structural rules (CB-3 to CB-5, CB-9) and the dependency count (CB-7) fail a check.
 
 | ID | Rule | Limit |
 |---|---|---|
-| CB-1 | Core size (excluding tests) | Guidance: about 20,000 lines, about 100 modules (advisory) |
+| CB-1 | Core size (excluding tests) | Guidance: about 20,000 lines, about 150 modules (advisory) |
 | CB-2 | Plugin size | Guidance: about 2,500 lines each (advisory) |
 | CB-3 | One implementation per concern | One client per broker, one order path, one calendar service, one fee engine. Enforced by import rules. |
 | CB-4 | Feature admission | Needs a use case, an approved requirement ID, a test and a documentation summary line |
 | CB-5 | No success-returning stubs | Unimplemented capability raises `NotSupported`; its capability flag is false |
-| CB-6 | Public core API | ≤ 25 types, versioned (`api_version`) |
+| CB-6 | Public core API | Guidance: about 60 types, versioned (`api_version`) |
 | CB-7 | Dependencies | Core ≤ 8 runtime packages; total ≤ 15; each justified in a decision record |
 | CB-8 | Dead feature removal | A feature unused for two milestones is deleted unless you object |
 | CB-9 | Architecture tests | Core imports no plugin; plugins do not import each other; strategies import no venue or broker |
@@ -1097,7 +1097,15 @@ heartbeat_minutes = 15
 
 ---
 
-## Appendix F — Changes from v2.8
+## Appendix F — Changes from v2.9
+
+| Topic | v2.9 | v2.10 |
+|---|---|---|
+| Core size guidance (CB-1) | About 100 modules | About 150 modules (ADR-036; walking skeleton and domain components) |
+| Public core API (CB-6) | ≤ 25 types | About 60 types (ADR-020; domain types Instrument, Quote, Bar, Order, Fill, Position, Portfolio) |
+| Size guidance (CB-1, CB-2) | Earlier advisory guidance | Text matches ADR-017 (20,000 core lines, 2,500 per plugin, advisory) and ADR-036 (150 modules) |
+
+### Previous changes (from v2.8 to v2.9)
 
 | Topic | v2.8 | v2.9 |
 |---|---|---|

@@ -18,6 +18,7 @@ ALLOWED_NON_PARAM_NAMES = {
     "requires.packages": "Plugin manifest requirement specification attribute",
     "config.valid": "Doctor diagnostic check ID for configuration validity",
     "env.isolated": "Doctor diagnostic check ID for workspace isolation",
+    "plugins.conformance": "Doctor diagnostic check ID for plugin conformance",
     "check.sh": "Shell quality check script filename",
     "env.sh": "Environment setup script filename",
     "metrics.json": "Execution results metrics filename",

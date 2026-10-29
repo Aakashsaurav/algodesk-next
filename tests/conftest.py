@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import shutil
 import socket
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -89,3 +91,112 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
     global _CURRENT_TEST_IS_LIVE
     _CURRENT_TEST_IS_LIVE = False
+
+
+GUARDED_FOLDERS: tuple[str, ...] = ("data", "results", ".algodesk")
+_BEFORE_TEST_SESSION_SNAPSHOT: set[str] | None = None
+
+
+def snapshot_guarded_paths(root: Path) -> set[str]:
+    """Capture relative paths of all files in guarded directories."""
+    files: set[str] = set()
+    for folder in GUARDED_FOLDERS:
+        folder_path = root / folder
+        if folder_path.is_dir():
+            for p in folder_path.rglob("*"):
+                name = p.name
+                if name == ".DS_Store" or "__pycache__" in p.as_posix() or name.endswith(".pyc"):
+                    continue
+                files.add(f"{folder}/{p.relative_to(folder_path).as_posix()}")
+    return files
+
+
+def verify_repo_state_snapshot(before: set[str], after: set[str]) -> None:
+    """Compare before and after state snapshots and raise if files leaked."""
+    added = after - before
+    removed = before - after
+    if added or removed:
+        msg: list[str] = [
+            "Hermetic test violation: repository state changed during test execution!"
+        ]
+        if added:
+            msg.append(f"Added files ({len(added)}): " + ", ".join(sorted(added)[:10]))
+        if removed:
+            msg.append(f"Removed files ({len(removed)}): " + ", ".join(sorted(removed)[:10]))
+        raise RuntimeError("\n".join(msg))
+
+
+@pytest.fixture
+def tmp_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Create an isolated, temporary AlgoDesk workspace root for hermetic testing."""
+    proj = tmp_path / "project"
+    proj.mkdir(parents=True, exist_ok=True)
+    real_root = Path(__file__).resolve().parent.parent
+
+    # Copy pyproject.toml
+    shutil.copyfile(real_root / "pyproject.toml", proj / "pyproject.toml")
+
+    # Copy config directory
+    if (real_root / "config").is_dir():
+        shutil.copytree(real_root / "config", proj / "config")
+
+    # Copy plugins directory (copying required to satisfy NFR-14 workspace root constraint)
+    plugins_src = real_root / "plugins"
+    if plugins_src.is_dir():
+        shutil.copytree(plugins_src, proj / "plugins")
+
+    # Symlink or copy src directory
+    src_dir = real_root / "src"
+    if src_dir.is_dir():
+        try:
+            os.symlink(src_dir, proj / "src")
+        except OSError:
+            shutil.copytree(src_dir, proj / "src")
+
+    # Symlink or copy scripts directory
+    scripts_dir = real_root / "scripts"
+    if scripts_dir.is_dir():
+        try:
+            os.symlink(scripts_dir, proj / "scripts")
+        except OSError:
+            shutil.copytree(scripts_dir, proj / "scripts")
+
+    # Ensure empty isolated state directories exist
+    (proj / "data").mkdir(mode=0o700, parents=True, exist_ok=True)
+    (proj / "logs").mkdir(mode=0o700, parents=True, exist_ok=True)
+    (proj / "results").mkdir(mode=0o700, parents=True, exist_ok=True)
+    (proj / ".algodesk").mkdir(mode=0o700, parents=True, exist_ok=True)
+    (proj / ".local").mkdir(mode=0o700, parents=True, exist_ok=True)
+    (proj / "_workbench").mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    # Seed conformance records if available
+    real_conf = real_root / ".algodesk" / "conformance.json"
+    if real_conf.is_file():
+        shutil.copyfile(real_conf, proj / ".algodesk" / "conformance.json")
+
+    monkeypatch.chdir(proj)
+    return proj
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Snapshot repository state before tests begin (controller only)."""
+    global _BEFORE_TEST_SESSION_SNAPSHOT
+    if hasattr(session.config, "workerinput"):
+        return
+    real_root = Path(__file__).resolve().parent.parent
+    _BEFORE_TEST_SESSION_SNAPSHOT = snapshot_guarded_paths(real_root)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Verify repository state is unchanged after tests complete (controller only)."""
+    global _BEFORE_TEST_SESSION_SNAPSHOT
+    if hasattr(session.config, "workerinput"):
+        return
+    if _BEFORE_TEST_SESSION_SNAPSHOT is None:
+        return
+    real_root = Path(__file__).resolve().parent.parent
+    after_snapshot = snapshot_guarded_paths(real_root)
+    try:
+        verify_repo_state_snapshot(_BEFORE_TEST_SESSION_SNAPSHOT, after_snapshot)
+    except RuntimeError as exc:
+        pytest.exit(f"Session Guard Failed: {exc}", returncode=1)

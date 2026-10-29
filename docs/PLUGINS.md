@@ -1,6 +1,6 @@
 # Writing a plugin
 
-Owner: Aakash · Version: 1.0 · Date: 19 October 2026
+Owner: Aakash · Version: 1.0 · Date: 29 October 2026
 
 ## Summary
 
@@ -32,6 +32,9 @@ Plugins implement domain protocols defined in `algodesk.api.protocols` (re-expor
 | `secrets/env` | `secrets` | `get`, `names` | Environment variable provider (`ALGODESK_SECRET_<NAME>`); read-only, `set`/`delete` raise `NotSupported`. |
 | `brokers/yfinance` | `broker` | `history`, `actions`, `fundamentals`, `info`, `options` | Historical equity data from Yahoo Finance with NSE/BSE mappings, raw/adjusted OHLCV, and rate limits. |
 | `brokers/upstox` | `broker` | `auth`, `instruments`, `history`, `stream` | Official Upstox v2/v3 thin client for OAuth/analytics auth, daily instrument master, history, and Protobuf feed. |
+| `calendars/exchange` | `calendar` | `holidays`, `sessions`, `special_sessions` | Exchange trading calendar providing market session timing, holiday schedules, and special session handling for NSE, BSE, and MCX. |
+| `fees/zerodha_nse` | `fees` | `equity_delivery`, `equity_intraday`, `futures` | Verified dated fee and tax schedule for Zerodha trading on NSE across delivery, intraday, and equity futures. |
+| `indicators/builtin` | `indicator` | `sma`, `ema`, `rsi` | Built-in mathematical indicators (SMA, EMA, RSI - Wilder) supporting batch calculation and streaming updates. |
 | `risk_rules/builtin` | `risk_rule` | `pre_trade`, `limits`, `capital_checks` | Pre-trade risk rule plugin evaluating 9 safety controls (cash, exposure, orders/min, daily loss) from registry. |
 | `venues/sim` | `venue` | `market_orders`, `limit_orders`, `depth_matching`, `failure_injection` | Simulated execution venue with latency, seeded jitter, depth walking, trade-through limit fills, and failure drills. |
 | `strategies/sma_cross` | `strategy` | `signals`, `lifecycle`, `intraday_exit` | Demo dual moving-average crossover strategy exercising bar processing, warmup, signals, and exit timers. |

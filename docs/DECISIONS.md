@@ -1,6 +1,6 @@
 # Decisions
 
-Owner: Aakash · Version: 1.0 · Date: 19 October 2026
+Owner: Aakash · Version: 1.0 · Date: 29 October 2026
 
 ## Summary
 
@@ -73,6 +73,22 @@ Short decision records (context, decision, reason) in the order they were taken.
 **ADR-032 SNTP clock offset and pre-flight doctor checks.** Accurate order timestamps and boundary-aligned bar closing require synchronized clocks. Pre-flight doctor checks query SNTP for sub-second clock offset, verify 30-day calendar coverage, ensure Telegram reachability, and confirm zero order-capable credentials.
 
 **ADR-033 Isolated journal database per test worker and replay session.** Replay sessions and concurrent pytest-xdist workers use isolated journal paths to avoid SQLite flock contention on `journal.db.lock` while preserving strict write-ahead logging and deterministic replay equivalence.
+
+**ADR-034 Run preparation and plugin conformance gating.** `algodesk run --prepare` tests every plugin specified in the active run configuration, refreshes the broker instrument master, and executes pre-flight doctor checks before any orders or feeds start. Doctor check `plugins.conformance` fails closed on missing or stale conformance records with explicit fix instructions.
+
+**ADR-035 Results comparison and event sequence equivalence.** `algodesk results compare` validates replay determinism by comparing summary metrics and the exact ordered event sequence (signals, risk decisions, orders, fills) extracted from journal events. Replay `--twice` guarantees bit-identical reproduction across runs.
+
+**ADR-036 Core modules budget limit guidance raised to 150.** To accommodate the complete M1 walking skeleton implementation across OMS, portfolio accounting, pre-trade risk, results reporting, and engine runtime components, `budget.core_modules_guidance` is raised to 150 modules.
+
+**ADR-037 Base timeframes 1m and 1d only, others rebuilt.** The data layer stores only canonical 1m (intraday) and 1d (daily) base bars in Parquet partitions. All intermediate and higher timeframes (5m, 15m, 1h, 1w) are deterministically rebuilt on the fly from these base bars, eliminating redundant storage and timeframe synchronization skew.
+
+**ADR-038 Live-session bars separate from history and removed daily.** Intraday bars constructed during live or paper streaming sessions are held in separate live-session storage isolated from authoritative historical series. At session completion and compaction, live-session bars are reconciled and cleared daily to prevent duplicate writes or contamination of official historical Parquet datasets.
+
+**ADR-039 Warm-up from the run's live_suitable source (Upstox), other sources only by recorded override.** Strategy and indicator warm-up data must be fetched directly from the run's primary `live_suitable` broker source (Upstox) to ensure exact symbol, tick-size, and pricing continuity with live stream events. Alternative research sources (such as yfinance) are permitted for warm-up only via an explicit, journal-recorded configuration override.
+
+**ADR-040 Quarantine deleted after 3 days via central parameter.** Invalid, unparseable, or non-monotonic data files moved to quarantine are automatically deleted after 3 days. This retention window is governed by a central parameter in the registry, granting operators sufficient time to inspect data defects while preventing unbounded disk accumulation.
+
+**ADR-041 yfinance auto_adjust=True by default, raw optional, corporate actions stored.** The yfinance broker plugin requests historical bars with `auto_adjust=True` by default so strategies receive dividend- and split-adjusted OHLCV. Raw unadjusted prices remain selectable via explicit configuration, and corporate actions (dividends and stock splits) are extracted and persisted alongside price series in the catalog.
 
 
 

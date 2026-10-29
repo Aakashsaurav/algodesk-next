@@ -35,6 +35,9 @@ class KillSwitch:
         """Check file mtime on disk and reload if updated by another process."""
         if not self.state_file.exists():
             self._last_mtime = None
+            if self._cached_state.get("active"):
+                self._cached_state["reason"] = "Kill-switch file deleted while active (fail-closed)"
+                return
             self._cached_state = {"active": False, "reason": "", "by": "", "ts": None}
             return
 

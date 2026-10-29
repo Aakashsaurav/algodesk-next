@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock
 
 import httpx
-import pytest
 
-from algodesk.api import Message, PluginContext, PluginManifest, Severity
+from algodesk.api import Message, PluginContext, PluginManifest
 from algodesk.api.conformance import notifier_problems
+
 from ..client import TelegramClient
 from ..plugin import TelegramNotifierPlugin
 
@@ -100,3 +99,46 @@ def test_telegram_circuit_breaker() -> None:
     # Directly verify send failure
     assert client.send_direct("Fail 1") is False
     client.close()
+
+
+def test_telegram_no_retry_on_404_permanent_error() -> None:
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            404, json={"ok": False, "error_code": 404, "description": "Not Found"}
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = TelegramClient(
+        bot_token="invalid_tok",
+        chat_id="chat",
+        retry_max_attempts=3,
+        http_transport=transport,
+    )
+    # _send_with_retries should abort immediately on 404 without retrying 3 times
+    ok = client._send_with_retries("Hello")
+    assert ok is False
+    assert request_count == 1
+    client.close()
+
+
+def test_telegram_whitespace_token_ignored() -> None:
+    manifest = _make_manifest()
+    ctx = MagicMock(spec=PluginContext)
+    secrets_mock = MagicMock()
+    secrets_mock.get.side_effect = lambda k: "   " if "token" in k else "12345"
+    ctx.secrets = secrets_mock
+    ctx.params = None
+
+    plugin = TelegramNotifierPlugin(
+        manifest,
+        config={"bot_token": "secret:telegram_bot_token", "chat_id": "secret:telegram_chat_id"},
+        ctx=ctx,
+    )
+    assert plugin._client is None
+    # Send should safely ignore without errors
+    plugin.send(Message(text="test", severity="info", title="Info"))
+    assert plugin._client is None

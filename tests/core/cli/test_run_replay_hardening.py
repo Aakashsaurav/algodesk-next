@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -82,19 +83,21 @@ def test_cli_replay_invalid_run_config(bad_run: str) -> None:
         "2026-10-26,2026-10-26",
     ],
 )
-def test_cli_replay_dates_parameter_execution(dates_arg: str) -> None:
+def test_cli_replay_dates_parameter_execution(dates_arg: str, tmp_project: Path) -> None:
     res = runner.invoke(
         app,
-        ["replay", "--dates", dates_arg, "--run", "demo_paper"],
+        ["--root", str(tmp_project), "replay", "--dates", dates_arg, "--run", "demo_paper"],
     )
     assert res.exit_code == 0
     assert "results folder:" in res.output
 
 
-def test_cli_replay_twice_reproducibility() -> None:
+def test_cli_replay_twice_reproducibility(tmp_project: Path) -> None:
     res = runner.invoke(
         app,
         [
+            "--root",
+            str(tmp_project),
             "replay",
             "--dates",
             "2026-10-26",
@@ -121,13 +124,16 @@ def test_cli_replay_twice_reproducibility() -> None:
         "dummy_run_id_456",
     ],
 )
-def test_cli_results_show_missing_run_id(nonexistent_id: str) -> None:
-    res = runner.invoke(app, ["results", "show", nonexistent_id])
+def test_cli_results_show_missing_run_id(nonexistent_id: str, tmp_project: Path) -> None:
+    res = runner.invoke(app, ["--root", str(tmp_project), "results", "show", nonexistent_id])
     assert res.exit_code != 0
 
 
-def test_cli_results_list_contains_table_headers() -> None:
-    res = runner.invoke(app, ["results", "list"])
+def test_cli_results_list_contains_table_headers(tmp_project: Path) -> None:
+    sample_dir = tmp_project / "results" / "sample_run_id"
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    (sample_dir / "SUMMARY.md").write_text("Verdict: PASS\nDate: 2026-10-26\nMode: paper\n")
+    res = runner.invoke(app, ["--root", str(tmp_project), "results", "list"])
     assert res.exit_code == 0
     assert "RUN ID" in res.output
     assert "MODE" in res.output

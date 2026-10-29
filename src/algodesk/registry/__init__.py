@@ -16,7 +16,7 @@ from algodesk.registry.discovery import (
     PluginInfo,
     discover,
 )
-from algodesk.registry.registry import PluginRegistry
+from algodesk.registry.registry import PluginRegistry, get_run_config_plugins
 from algodesk.registry.scaffold import scaffold_plugin
 
 __all__ = [
@@ -27,6 +27,7 @@ __all__ = [
     "base_contract_problems",
     "code_hash",
     "discover",
+    "get_run_config_plugins",
     "plugin_contract_problems",
     "registry_doctor_checks",
     "scaffold_plugin",

@@ -126,3 +126,22 @@ def test_instruments_unmappable_symbol_raises_hard_error(tmp_path: Path) -> None
     with pytest.raises(ConfigError) as exc_info:
         mgr.resolve(InstrumentId("NSE:EQ:NONEXISTENT"))
     assert "Cannot map unknown symbol" in exc_info.value.what
+
+
+def test_instruments_new_download_replaces_older_downloads(tmp_path: Path) -> None:
+    """New instrument master download must replace older cached master files."""
+    old_file_1 = tmp_path / "upstox_master_2026-10-20.json.gz"
+    old_file_2 = tmp_path / "upstox_master_2026-10-21.json.gz"
+    old_file_1.write_bytes(b"old_data_1")
+    old_file_2.write_bytes(b"old_data_2")
+
+    ctx = build_context(Mode.RESEARCH)
+    mgr = UpstoxInstrumentManager(ctx, cache_dir=tmp_path)
+    mgr.load_or_fetch(raw_bytes=json.dumps(SAMPLE_INSTRUMENTS).encode("utf-8"))
+
+    today = datetime.now(UTC).date()
+    current_cache = tmp_path / f"upstox_master_{today.isoformat()}.json.gz"
+
+    assert current_cache.is_file()
+    assert not old_file_1.exists(), "Older download file 1 was not replaced/cleaned up"
+    assert not old_file_2.exists(), "Older download file 2 was not replaced/cleaned up"
