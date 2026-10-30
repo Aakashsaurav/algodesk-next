@@ -418,11 +418,83 @@ def _build_journal_and_disk_checks(runtime: Runtime) -> list[DoctorCheck]:
     ]
 
 
+def _check_data_verify_quick(runtime: Runtime) -> CheckResult:
+    data_dir = runtime.paths.data
+    manifest_db = data_dir / "state" / "data_manifest.db"
+    if not manifest_db.exists() and (data_dir / "manifest.db").exists():
+        manifest_db = data_dir / "manifest.db"
+    if not manifest_db.exists():
+        return CheckResult(ok=True, message="Data manifest absent (will be created on first write)")
+    try:
+        from algodesk.data.manifest import DataManifest
+
+        m = DataManifest(manifest_db)
+        files = m.get_files()
+        parts = m.get_parts()
+        m.close()
+        return CheckResult(
+            ok=True,
+            message=f"Data store ready ({len(files)} tick parts, {len(parts)} bar parts)",
+        )
+    except Exception as exc:
+        return CheckResult(
+            ok=False,
+            message=f"Data manifest check failed: {exc}",
+            fix="Inspect data_manifest.db or run 'algodesk data verify'",
+        )
+
+
+def _check_data_quarantine(runtime: Runtime) -> CheckResult:
+    data_dir = runtime.paths.data
+    manifest_db = data_dir / "state" / "data_manifest.db"
+    if not manifest_db.exists() and (data_dir / "manifest.db").exists():
+        manifest_db = data_dir / "manifest.db"
+    q_dir = data_dir / ".quarantine"
+    unpurged_count = 0
+    if manifest_db.exists():
+        try:
+            from algodesk.data.manifest import DataManifest
+
+            m = DataManifest(manifest_db)
+            q_items = m.get_quarantine(status="quarantined")
+            unpurged_count = len(q_items)
+            m.close()
+        except Exception:
+            pass
+    elif q_dir.exists():
+        unpurged_count = len([d for d in q_dir.iterdir() if d.is_dir()])
+
+    if unpurged_count > 0:
+        return CheckResult(
+            ok=False,
+            message=f"{unpurged_count} quarantined chunk(s) found in data store",
+            severity=Severity.WARNING,
+            fix="Inspect with 'algodesk data quarantine list' and purge or release",
+        )
+    return CheckResult(ok=True, message="Quarantine clean (0 items)")
+
+
+def _build_data_doctor_checks(runtime: Runtime) -> list[DoctorCheck]:
+    return [
+        DoctorCheck(
+            id="data.verify_quick",
+            severity=Severity.WARNING,
+            run=lambda: _check_data_verify_quick(runtime),
+        ),
+        DoctorCheck(
+            id="data.quarantine",
+            severity=Severity.WARNING,
+            run=lambda: _check_data_quarantine(runtime),
+        ),
+    ]
+
+
 def build_core_checks(runtime: Runtime) -> list[DoctorCheck]:
     """Build all diagnostic doctor checks for the platform runtime (read-only)."""
     checks = _build_env_checks(runtime)
     checks.extend(registry_doctor_checks(runtime.plugins))
     checks.extend(_build_journal_and_disk_checks(runtime))
+    checks.extend(_build_data_doctor_checks(runtime))
     return checks
 
 

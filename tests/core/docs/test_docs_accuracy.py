@@ -35,6 +35,7 @@ ALLOWED_NON_PARAM_NAMES = {
     "journal.db.lock": "Journal database lock filename",
     "manifest.json": "Execution run manifest filename",
     "registry.snapshot.json": "Parameter registry snapshot filename",
+    "report.json": "Quarantine validation report filename",
     "session.md": "Telegram session markdown summary filename",
     "trades.csv": "Executed trades CSV filename",
 }

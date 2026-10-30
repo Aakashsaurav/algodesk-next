@@ -131,6 +131,9 @@ def resolve_selector(
     all_inst_ids = [inst.id for inst in known_instruments]
     if not all_inst_ids:
         all_inst_ids = sorted({f.instrument for f in manifest.get_files()})
+    for ds in manifest.list_datasets():
+        if ds.instrument not in all_inst_ids:
+            all_inst_ids.append(ds.instrument)
 
     if sel in all_inst_ids:
         return [sel]
@@ -202,12 +205,46 @@ def coverage(
     filters: dict[str, Any] | None = None,
     groups_dir: Path | str | None = None,
 ) -> list[CoverageRow]:
-    """Calculate aggregated coverage summary over recorded files."""
-    files = manifest.get_files(
-        instrument=filters.get("instrument") if filters else None,
-        date_str=filters.get("date") if filters else None,
-        kind=filters.get("kind") if filters else None,
+    """Calculate aggregated coverage summary over recorded files and bar parts."""
+    files = list(
+        manifest.get_files(
+            instrument=filters.get("instrument") if filters else None,
+            date_str=filters.get("date") if filters else None,
+            kind=filters.get("kind") if filters else None,
+        )
     )
+
+    datasets = {d.dataset_id: d for d in manifest.list_datasets()}
+    for p in manifest.get_parts():
+        ds = datasets.get(p.dataset_id)
+        if ds is None:
+            continue
+        if filters:
+            if filters.get("instrument") and ds.instrument != filters["instrument"]:
+                continue
+            if filters.get("kind") and ds.kind != filters["kind"]:
+                continue
+            d_val = p.first_ts[:10] if p.first_ts else ""
+            if filters.get("date") and d_val != filters["date"]:
+                continue
+        files.append(
+            FileRecord(
+                path=p.path,
+                instrument=ds.instrument,
+                kind=ds.kind,
+                timeframe=ds.timeframe,
+                date=p.first_ts[:10] if p.first_ts else "",
+                rows=p.rows,
+                bytes=p.bytes,
+                first_ts=p.first_ts,
+                last_ts=p.last_ts,
+                sha256=p.sha256,
+                source=p.source,
+                state="bar",
+                created_ts=p.fetched_at,
+            )
+        )
+
     if not files:
         return []
 
@@ -269,6 +306,9 @@ def plan_delete(
 
     matching_files: list[FileRecord] = []
     insts_with_files: set[str] = set()
+    datasets = {d.dataset_id: d for d in manifest.list_datasets()}
+    all_parts = manifest.get_parts()
+
     for inst in sorted(resolved_insts):
         files = manifest.get_files(instrument=inst, kind=kind)
         for f in files:
@@ -277,6 +317,37 @@ def plan_delete(
             if to_date and f.date > to_date:
                 continue
             matching_files.append(f)
+            insts_with_files.add(inst)
+
+        # Also match bar parts for this instrument
+        for p in all_parts:
+            ds = datasets.get(p.dataset_id)
+            if ds is None or ds.instrument != inst:
+                continue
+            if kind and ds.kind != kind:
+                continue
+            p_date = p.first_ts[:10] if p.first_ts else ""
+            if from_date and p_date and p_date < from_date:
+                continue
+            if to_date and p_date and p_date > to_date:
+                continue
+            matching_files.append(
+                FileRecord(
+                    path=p.path,
+                    instrument=ds.instrument,
+                    kind=ds.kind,
+                    timeframe=ds.timeframe,
+                    date=p_date,
+                    rows=p.rows,
+                    bytes=p.bytes,
+                    first_ts=p.first_ts,
+                    last_ts=p.last_ts,
+                    sha256=p.sha256,
+                    source=p.source,
+                    state="bar",
+                    created_ts=p.fetched_at,
+                )
+            )
             insts_with_files.add(inst)
 
     no_data_insts = sorted(resolved_insts - insts_with_files)
@@ -354,6 +425,7 @@ def execute_delete(
     # Transactionally remove from manifest
     for f in plan.files:
         manifest.delete_file(f.path)
+        manifest.delete_part(f.path)
 
     # Purge expired trash if requested
     if trash_days is not None and trash_days > 0:

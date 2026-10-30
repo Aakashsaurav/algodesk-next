@@ -58,6 +58,26 @@ def run_cmd(
             )
 
         if prepare:
+            # 0. Purge expired quarantine and session bars
+            try:
+                from algodesk.data.manifest import DataManifest
+                from algodesk.data.quarantine import QuarantineManager
+                from algodesk.data.session_bars import SessionBarStore
+
+                m_db = rt.paths.data / "state" / "data_manifest.db"
+                if not m_db.exists() and (rt.paths.data / "manifest.db").exists():
+                    m_db = rt.paths.data / "manifest.db"
+                if m_db.exists():
+                    m_inst = DataManifest(m_db)
+                    qm = QuarantineManager(rt.paths.data, m_inst, params=rt.params)
+                    qm.purge_expired()
+                    m_inst.close()
+
+                sbs = SessionBarStore(rt.paths.data, params=rt.params)
+                sbs.purge_older_than()
+            except Exception:
+                pass
+
             # 1. plugins test --all for run config
             targets = get_run_config_plugins(eff.run)
             seen_p: set[tuple[str, str]] = set()

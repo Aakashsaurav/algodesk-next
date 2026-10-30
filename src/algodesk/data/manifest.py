@@ -40,6 +40,68 @@ class InstrumentRecord:
     expiry: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DatasetRecord:
+    dataset_id: str
+    instrument: str
+    kind: str
+    timeframe: str
+    adjustment: str
+    source: str
+    schema_version: int = 1
+    created_at: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PartRecord:
+    path: str
+    dataset_id: str
+    rows: int
+    bytes: int
+    first_ts: str
+    last_ts: str
+    sha256: str
+    source: str
+    source_version: str
+    fetched_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageDayRecord:
+    dataset_id: str
+    day: str
+    status: str
+    rows: int
+    expected_rows: int
+    part_path: str
+    fetched_at: str
+    note: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class FetchLogRecord:
+    id: int
+    chunk: str
+    source: str
+    started: str
+    finished: str
+    rows: int
+    outcome: str
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class QuarantineRecord:
+    id: str
+    chunk: str
+    reason: str
+    report_path: str
+    created: str
+    released_at: str | None = None
+    purged_at: str | None = None
+    status: str = "quarantined"
+
+
 class DataManifest:
     """SQLite-backed metadata catalog with ACID transaction safety."""
 
@@ -59,6 +121,27 @@ class DataManifest:
     def _init_db(self) -> None:
         cur = self._conn.cursor()
         cur.execute("PRAGMA journal_mode = WAL")
+
+        # Schema version migration tracking
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+        """)
+        v_row = cur.execute("SELECT MAX(version) FROM schema_version").fetchone()
+        current_v = v_row[0] if v_row and v_row[0] is not None else 0
+
+        if current_v == 0:
+            tbl_check = cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='files'"
+            ).fetchone()
+            if tbl_check:
+                cur.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (1, datetime('now'))"
+                )
+                current_v = 1
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS files (
                 path TEXT PRIMARY KEY,
@@ -90,7 +173,92 @@ class DataManifest:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_files_inst_date ON files(instrument, date)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_files_kind_state ON files(kind, state)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_inst_sym ON instruments(trading_symbol)")
+
+        # M2 migrations: datasets, parts, coverage_days, fetch_log, quarantine
+        if current_v < 2:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS datasets (
+                    dataset_id TEXT PRIMARY KEY,
+                    instrument TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    adjustment TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS parts (
+                    path TEXT PRIMARY KEY,
+                    dataset_id TEXT NOT NULL,
+                    rows INTEGER NOT NULL,
+                    bytes INTEGER NOT NULL,
+                    first_ts TEXT NOT NULL,
+                    last_ts TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    source_version TEXT NOT NULL,
+                    fetched_at TEXT NOT NULL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS coverage_days (
+                    dataset_id TEXT NOT NULL,
+                    day TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    rows INTEGER NOT NULL,
+                    expected_rows INTEGER NOT NULL,
+                    part_path TEXT,
+                    fetched_at TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (dataset_id, day)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS fetch_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chunk TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    started TEXT NOT NULL,
+                    finished TEXT NOT NULL,
+                    rows INTEGER NOT NULL,
+                    outcome TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS quarantine (
+                    id TEXT PRIMARY KEY,
+                    chunk TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    report_path TEXT NOT NULL,
+                    created TEXT NOT NULL,
+                    released_at TEXT,
+                    purged_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'quarantined'
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_parts_dataset ON parts(dataset_id)")
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_coverage_dataset_day
+                ON coverage_days(dataset_id, day)
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_coverage_status ON coverage_days(status)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_status ON quarantine(status)")
+            cur.execute("""
+                INSERT OR REPLACE INTO schema_version (version, applied_at)
+                VALUES (2, datetime('now'))
+            """)
+
         self._conn.commit()
+
+    @property
+    def schema_version(self) -> int:
+        """Current schema version of manifest database."""
+        cur = self._conn.execute("SELECT MAX(version) FROM schema_version")
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else 1
 
     def _begin_immediate(self) -> None:
         if not self._conn.in_transaction:
@@ -281,6 +449,368 @@ class DataManifest:
     def delete_file(self, path: str) -> None:
         """Delete single file record from manifest."""
         self.delete_files([path])
+
+    def record_dataset(self, record: DatasetRecord) -> None:
+        """Insert or replace dataset metadata row under transaction."""
+        try:
+            self._begin_immediate()
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO datasets
+                (dataset_id, instrument, kind, timeframe, adjustment,
+                 source, schema_version, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.dataset_id,
+                    record.instrument,
+                    record.kind,
+                    record.timeframe,
+                    record.adjustment,
+                    record.source,
+                    record.schema_version,
+                    record.created_at,
+                ),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
+    def get_dataset(self, dataset_id: str) -> DatasetRecord | None:
+        """Fetch dataset record by dataset_id."""
+        cur = self._conn.execute("SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return DatasetRecord(
+            dataset_id=row["dataset_id"],
+            instrument=row["instrument"],
+            kind=row["kind"],
+            timeframe=row["timeframe"],
+            adjustment=row["adjustment"],
+            source=row["source"],
+            schema_version=row["schema_version"],
+            created_at=row["created_at"],
+        )
+
+    def list_datasets(
+        self,
+        instrument: str | None = None,
+        kind: str | None = None,
+        timeframe: str | None = None,
+        source: str | None = None,
+    ) -> list[DatasetRecord]:
+        """Query datasets with optional filters."""
+        query = "SELECT * FROM datasets WHERE 1=1"
+        params: list[Any] = []
+        if instrument:
+            query += " AND instrument = ?"
+            params.append(instrument)
+        if kind:
+            query += " AND kind = ?"
+            params.append(kind)
+        if timeframe:
+            query += " AND timeframe = ?"
+            params.append(timeframe)
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+        query += " ORDER BY dataset_id"
+
+        cur = self._conn.execute(query, params)
+        return [
+            DatasetRecord(
+                dataset_id=r["dataset_id"],
+                instrument=r["instrument"],
+                kind=r["kind"],
+                timeframe=r["timeframe"],
+                adjustment=r["adjustment"],
+                source=r["source"],
+                schema_version=r["schema_version"],
+                created_at=r["created_at"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def record_part(self, record: PartRecord) -> None:
+        """Insert or replace part file metadata row under transaction."""
+        try:
+            self._begin_immediate()
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO parts
+                (path, dataset_id, rows, bytes, first_ts, last_ts,
+                 sha256, source, source_version, fetched_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.path,
+                    record.dataset_id,
+                    record.rows,
+                    record.bytes,
+                    record.first_ts,
+                    record.last_ts,
+                    record.sha256,
+                    record.source,
+                    record.source_version,
+                    record.fetched_at,
+                ),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
+    def get_parts(self, dataset_id: str | None = None) -> list[PartRecord]:
+        """Query parts with optional dataset_id filter."""
+        query = "SELECT * FROM parts WHERE 1=1"
+        params: list[Any] = []
+        if dataset_id:
+            query += " AND dataset_id = ?"
+            params.append(dataset_id)
+        query += " ORDER BY path"
+        cur = self._conn.execute(query, params)
+        return [
+            PartRecord(
+                path=r["path"],
+                dataset_id=r["dataset_id"],
+                rows=r["rows"],
+                bytes=r["bytes"],
+                first_ts=r["first_ts"],
+                last_ts=r["last_ts"],
+                sha256=r["sha256"],
+                source=r["source"],
+                source_version=r["source_version"],
+                fetched_at=r["fetched_at"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def get_part_by_path(self, path: str) -> PartRecord | None:
+        """Get single part record by file path."""
+        cur = self._conn.execute("SELECT * FROM parts WHERE path = ?", (path,))
+        r = cur.fetchone()
+        if not r:
+            return None
+        return PartRecord(
+            path=r["path"],
+            dataset_id=r["dataset_id"],
+            rows=r["rows"],
+            bytes=r["bytes"],
+            first_ts=r["first_ts"],
+            last_ts=r["last_ts"],
+            sha256=r["sha256"],
+            source=r["source"],
+            source_version=r["source_version"],
+            fetched_at=r["fetched_at"],
+        )
+
+    def delete_part(self, path: str) -> None:
+        """Delete part metadata row by path under transaction."""
+        try:
+            self._begin_immediate()
+            self._conn.execute("DELETE FROM parts WHERE path = ?", (path,))
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
+    def record_coverage_day(self, record: CoverageDayRecord) -> None:
+        """Insert or replace single day coverage record."""
+        self.record_coverage_days([record])
+
+    def record_coverage_days(self, records: Sequence[CoverageDayRecord]) -> None:
+        """Insert or replace coverage records in a single transaction."""
+        if not records:
+            return
+        try:
+            self._begin_immediate()
+            for r in records:
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO coverage_days
+                    (dataset_id, day, status, rows, expected_rows, part_path, fetched_at, note)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        r.dataset_id,
+                        r.day,
+                        r.status,
+                        r.rows,
+                        r.expected_rows,
+                        r.part_path,
+                        r.fetched_at,
+                        r.note,
+                    ),
+                )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
+    def get_coverage_days(
+        self,
+        dataset_id: str,
+        start_day: str | None = None,
+        end_day: str | None = None,
+    ) -> list[CoverageDayRecord]:
+        """Query coverage records for a dataset with optional date bounds."""
+        query = "SELECT * FROM coverage_days WHERE dataset_id = ?"
+        params: list[Any] = [dataset_id]
+        if start_day:
+            query += " AND day >= ?"
+            params.append(start_day)
+        if end_day:
+            query += " AND day <= ?"
+            params.append(end_day)
+        query += " ORDER BY day"
+        cur = self._conn.execute(query, params)
+        return [
+            CoverageDayRecord(
+                dataset_id=r["dataset_id"],
+                day=r["day"],
+                status=r["status"],
+                rows=r["rows"],
+                expected_rows=r["expected_rows"],
+                part_path=r["part_path"],
+                fetched_at=r["fetched_at"],
+                note=r["note"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def record_fetch_log(
+        self,
+        chunk: str,
+        source: str,
+        started: str,
+        finished: str,
+        rows: int,
+        outcome: str,
+        error: str = "",
+    ) -> int:
+        """Append fetch operation entry to fetch_log."""
+        try:
+            self._begin_immediate()
+            cur = self._conn.execute(
+                """
+                INSERT INTO fetch_log
+                (chunk, source, started, finished, rows, outcome, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (chunk, source, started, finished, rows, outcome, error),
+            )
+            log_id = int(cur.lastrowid or 0)
+            self._commit()
+            return log_id
+        except Exception:
+            self._rollback()
+            raise
+
+    def get_fetch_logs(self, limit: int | None = None) -> list[FetchLogRecord]:
+        """Fetch recent fetch_log entries in descending order."""
+        if limit is not None:
+            cur = self._conn.execute(
+                "SELECT * FROM fetch_log ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+        else:
+            cur = self._conn.execute("SELECT * FROM fetch_log ORDER BY id DESC")
+        return [
+            FetchLogRecord(
+                id=r["id"],
+                chunk=r["chunk"],
+                source=r["source"],
+                started=r["started"],
+                finished=r["finished"],
+                rows=r["rows"],
+                outcome=r["outcome"],
+                error=r["error"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def record_quarantine(self, record: QuarantineRecord) -> None:
+        """Record quarantined chunk entry under transaction."""
+        try:
+            self._begin_immediate()
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO quarantine
+                (id, chunk, reason, report_path, created, released_at, purged_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.id,
+                    record.chunk,
+                    record.reason,
+                    record.report_path,
+                    record.created,
+                    record.released_at,
+                    record.purged_at,
+                    record.status,
+                ),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
+    def update_quarantine(
+        self,
+        id: str,
+        status: str,
+        released_at: str | None = None,
+        purged_at: str | None = None,
+    ) -> None:
+        """Update quarantine record status, release timestamp, or purge timestamp."""
+        try:
+            self._begin_immediate()
+            self._conn.execute(
+                """
+                UPDATE quarantine
+                SET status = ?,
+                    released_at = COALESCE(?, released_at),
+                    purged_at = COALESCE(?, purged_at)
+                WHERE id = ?
+                """,
+                (status, released_at, purged_at, id),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
+    def get_quarantine(
+        self,
+        id: str | None = None,
+        status: str | None = None,
+    ) -> list[QuarantineRecord]:
+        """Query quarantine records with optional id and status filters."""
+        query = "SELECT * FROM quarantine WHERE 1=1"
+        params: list[Any] = []
+        if id:
+            query += " AND id = ?"
+            params.append(id)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created DESC"
+        cur = self._conn.execute(query, params)
+        return [
+            QuarantineRecord(
+                id=r["id"],
+                chunk=r["chunk"],
+                reason=r["reason"],
+                report_path=r["report_path"],
+                created=r["created"],
+                released_at=r["released_at"],
+                purged_at=r["purged_at"],
+                status=r["status"],
+            )
+            for r in cur.fetchall()
+        ]
 
     def close(self) -> None:
         """Close SQLite database connection."""

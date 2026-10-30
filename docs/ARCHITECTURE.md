@@ -30,7 +30,7 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 | `registry` | Plugin discovery, validation, gating, loading | `PluginRegistry`, `discover`, `code_hash`, `ConformanceStore`, `scaffold_plugin`, `base_contract_problems` |
 | `journal` | Append-only hash-chained event log (SQLite) | `Journal`, `JournalSettings`, `verify_journal` |
 | `logs` | JSON logging with secret scrubbing | `setup_logging`, `get_logger` |
-| `data` | Tick recording, compaction, replay, catalog, and groups | `Recorder`, `ReplayFeed`, `DataManifest`, `DataCatalog`, `DataService`, `synth_market_data` |
+| `data` | Bar & tick store, day coverage, validation, quarantine, resampler, catalog, groups | `BarStore`, `BarValidator`, `CoverageIndex`, `QuarantineManager`, `SessionBarStore`, `resample`, `DataManifest`, `DataCatalog` |
 | `engine` | Deterministic event bus, clocks, scheduler, bars, runner, and strategy runtime | `EventBus`, `WallClock`, `SimClock`, `Scheduler`, `BarBuilder`, `SessionManager`, `SessionRunner`, `StrategyRuntime`, `IndicatorManager`, `NotifyBridge` |
 | `oms` | Order lifecycle, state machine, write-ahead journaling | `OrderManager` |
 | `portfolio` | Realized/unrealized accounting, mark-to-market, snapshots | `PortfolioLedger` |
@@ -55,8 +55,12 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 | `config/` | `platform.toml`, `profiles/`, `runs/`, `params/*.toml` defaults, `groups/*.toml`, lint and scan rules |
 | `data/state/params.db`, `data/state/journal.db` | Parameter overrides and history; journal (git-ignored) |
 | `data/state/killswitch.json` | Persistent emergency trading kill-switch state (git-ignored) |
-| `data/state/data_manifest.db` | Market data manifest SQLite DB (files and instruments metadata) |
+| `data/state/data_manifest.db` | Market data manifest SQLite DB (schema v2: datasets, parts, coverage_days, quarantine) |
+| `data/bars/source=S/timeframe=1m/exchange=E/segment=G/symbol=X/adj=A/year=YYYY/YYYY-MM.parquet` | 1-minute historical bars partitioned by year and month (Zstandard compressed) |
+| `data/bars/source=S/timeframe=1d/exchange=E/segment=G/symbol=X/adj=A/daily.parquet` | Daily bars stored in a single consolidated file per instrument/adjustment |
+| `data/session_bars/date=YYYY-MM-DD/` | Ephemeral live intraday session bars separated from history and purged automatically |
 | `data/ticks/exchange=E/segment=S/symbol=X/date=D/` | Hive-partitioned parquet part and compacted day files |
+| `data/.quarantine/<timestamp>/` | Quarantined invalid data chunks with validation `report.json` and raw payload |
 | `data/.trash/<timestamp>/` | Two-stage soft deletion safety trash awaiting purge |
 | `results/<run_id>/` | Session execution artifacts (`SUMMARY.md`, `metrics.json`, `trades.csv`, `equity.csv`, configs) |
 | `logs/algodesk.log` | JSON log lines, rotated daily (git-ignored) |
@@ -98,7 +102,7 @@ Run preparation (`algodesk run --prepare`) runs conformance suites for all run p
 
 ## 11. Not built yet
 
-- **M2 Data layer**: Cache, gap-fill, validation, quarantine, instrument mapping and diffs, accumulation job, data verify, BSE and MCX calendars.
+- **M2 Data layer (remaining)**: Broker history fetchers, instrument mapping, accumulation jobs, BSE and MCX full holiday tables.
 - **M3 Indicators and screens**: Full built-in set, custom-indicator scaffold, TOML and Python screens, saved screen runs.
 - **M4 Backtester and reports**: Backtest mode (bar and tick level), models, portfolio mode, results store, compare.
 - **M5 Risk and control**: Risk profiles in the parameter registry, monitors, health guards, Telegram commands, outage policies.

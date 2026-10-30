@@ -129,10 +129,16 @@ def test_cli_telegram_setup_and_test(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "OK: sent test message to chat 987654321" in test_res.output
 
 
-def test_cli_telegram_setup_empty_token() -> None:
-    """Empty bot token raises validation error."""
+def test_cli_telegram_setup_empty_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty bot token raises validation error and never touches secrets."""
+    mock_prov = MagicMock()
+    monkeypatch.setattr(
+        "algodesk.cli.telegram._resolve_secrets_provider",
+        lambda rt, **kw: mock_prov,
+    )
     res = runner.invoke(app, ["telegram", "setup", "--token", "   "])
     assert res.exit_code != 0
+    assert not mock_prov.set.called
 
 
 def test_cli_telegram_test_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from enum import StrEnum
 from typing import NewType
 
 InstrumentId = NewType("InstrumentId", str)
@@ -142,10 +143,59 @@ class SeriesKey:
     def __post_init__(self) -> None:
         if not self.instrument or str(self.instrument) != str(self.instrument).upper():
             raise ValueError(f"Instrument id must be uppercase: {self.instrument!r}")
-        if self.kind not in ("bars", "ticks", "depth"):
-            raise ValueError(f"Invalid series kind '{self.kind}'. Expected bars, ticks, or depth")
+        if self.kind not in ("bars", "ticks", "depth", "actions", "snapshot"):
+            msg = (
+                f"Invalid series kind '{self.kind}'. "
+                "Expected bars, ticks, depth, actions, or snapshot"
+            )
+            raise ValueError(msg)
         if self.adjustment not in ("raw", "adjusted"):
             raise ValueError(f"Invalid adjustment '{self.adjustment}'. Expected raw or adjusted")
+
+
+class CoverageStatus(StrEnum):
+    """Trading day coverage status."""
+
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    CLOSED = "CLOSED"
+    EMPTY = "EMPTY"
+    QUARANTINED = "QUARANTINED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+@dataclass(frozen=True, slots=True)
+class DataGap:
+    """Gap record indicating a missing or incomplete day."""
+
+    day: date
+    status: CoverageStatus | str
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DataSlice:
+    """Historical data slice with provenance and gap records."""
+
+    key: SeriesKey
+    start: datetime
+    end: datetime
+    bars: tuple[Bar, ...]
+    gaps: tuple[DataGap, ...] = ()
+    dataset_ids: tuple[str, ...] = ()
+    checksums: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_utc_ts(self.start, "start")
+        _validate_utc_ts(self.end, "end")
+
+    @property
+    def has_gaps(self) -> bool:
+        return bool(self.gaps)
+
+    @property
+    def total_bars(self) -> int:
+        return len(self.bars)
 
 
 @dataclass(frozen=True, slots=True)

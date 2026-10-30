@@ -25,24 +25,24 @@ def telegram_setup_cmd(
     run: str | None = typer.Option(None, "--run", help="Run configuration name"),
 ) -> None:
     """Interactively configure Telegram bot token and chat ID in secrets."""
-    bot_token = token
-    if not bot_token:
+    if token is not None:
+        bot_token = token.strip()
+        if not bot_token:
+            raise typer.BadParameter("Bot token cannot be empty")
+    else:
         bot_token = getpass.getpass("Enter Telegram Bot Token: ").strip()
-
-    if not bot_token:
-        raise typer.BadParameter("Bot token cannot be empty")
+        if not bot_token:
+            raise typer.BadParameter("Bot token cannot be empty")
 
     req_timeout: float | None = None
     with _open_rt(ctx, ensure=False) as rt:
-        prov = _resolve_secrets_provider(rt, run=run)
-        prov.set("telegram_bot_token", bot_token)
         if rt.params is not None:
             try:
                 req_timeout = float(rt.params.get("telegram.timeout_seconds"))
             except Exception:
                 pass
 
-    resolved_chat_id = chat_id
+    resolved_chat_id = chat_id.strip() if chat_id is not None else None
     if not resolved_chat_id:
         typer.echo("Polling for /start message from your Telegram client...")
         typer.echo("Please open your bot in Telegram and send '/start'.")
@@ -77,6 +77,7 @@ def telegram_setup_cmd(
 
     with _open_rt(ctx, ensure=False) as rt:
         prov = _resolve_secrets_provider(rt, run=run)
+        prov.set("telegram_bot_token", bot_token)
         prov.set("telegram_chat_id", resolved_chat_id)
 
     # Send test confirmation
@@ -120,6 +121,8 @@ def telegram_test_cmd(
                 fix="Run 'algodesk telegram setup' first",
             ) from exc
 
+    bot_token = bot_token.strip() if bot_token else ""
+    target_chat_id = target_chat_id.strip() if target_chat_id else ""
     if not bot_token or not target_chat_id:
         raise ConfigError(
             what="Telegram bot token or chat ID not found in secrets",

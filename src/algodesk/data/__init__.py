@@ -2,26 +2,62 @@
 
 from __future__ import annotations
 
-from algodesk.data.manifest import DataManifest, FileRecord, InstrumentRecord
+from algodesk.data.layout import (
+    bar_file_path,
+    dataset_id_for_key,
+    parse_bar_file_path,
+)
+from algodesk.data.manifest import (
+    CoverageDayRecord,
+    DataManifest,
+    DatasetRecord,
+    FetchLogRecord,
+    FileRecord,
+    InstrumentRecord,
+    PartRecord,
+    QuarantineRecord,
+)
 from algodesk.data.recorder import Recorder
 from algodesk.data.replay import ReplayFeed
 from algodesk.data.schema import (
+    BAR_SCHEMA,
     MARKET_EVENT_SCHEMA,
+    bar_to_dict,
+    bars_to_table,
     events_to_table,
     market_event_to_dict,
+    read_bars_parquet,
+    row_to_bar,
     row_to_market_event,
+    table_to_bars,
+    write_bars_parquet,
 )
 from algodesk.data.service import DataService
 
 __all__ = [
-    "MARKET_EVENT_SCHEMA",
+    "BAR_SCHEMA",
+    "CoverageDayRecord",
     "DataManifest",
     "DataService",
+    "DatasetRecord",
+    "FetchLogRecord",
     "FileRecord",
     "InstrumentRecord",
+    "MARKET_EVENT_SCHEMA",
+    "PartRecord",
+    "QuarantineRecord",
     "Recorder",
     "ReplayFeed",
+    "bar_file_path",
+    "bar_to_dict",
+    "bars_to_table",
+    "dataset_id_for_key",
     "events_to_table",
     "market_event_to_dict",
+    "parse_bar_file_path",
+    "read_bars_parquet",
+    "row_to_bar",
     "row_to_market_event",
+    "table_to_bars",
+    "write_bars_parquet",
 ]

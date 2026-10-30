@@ -57,3 +57,61 @@ tighten = "down"
 description = "Minimum free disk space in gigabytes required before halting recording"
 owner = "data"
 
+[[param]]
+name = "data.base_timeframes"
+type = "str"
+default = "1m,1d"
+scope = "global"
+tighten = "none"
+description = "Base candlestick bar timeframes permitted in historical bar store (comma-separated)"
+owner = "data"
+
+[[param]]
+name = "data.settle_minutes"
+type = "int"
+default = 15
+min = 0
+max = 1440
+unit = "min"
+scope = "global"
+tighten = "down"
+description = "Settlement minutes margin after session close before marking day COMPLETE"
+owner = "data"
+
+[[param]]
+name = "data.quarantine_days"
+type = "int"
+default = 3
+min = 1
+max = 365
+unit = "days"
+scope = "global"
+tighten = "down"
+description = "Retention period in days for quarantined market data before purge"
+owner = "data"
+
+[[param]]
+name = "data.session_bars_keep_days"
+type = "int"
+default = 1
+min = 1
+max = 365
+unit = "days"
+scope = "global"
+tighten = "down"
+description = "Retention period in days for intraday live session bars before purge"
+owner = "data"
+
+[[param]]
+name = "data.price_jump_pct"
+type = "float"
+default = 20.0
+min = 0.1
+max = 1000.0
+unit = "%"
+scope = "global"
+tighten = "down"
+description = "Price jump threshold percentage between consecutive bars for warning flag"
+owner = "data"
+
+

@@ -33,6 +33,9 @@ from algodesk.api.kinds import API_VERSION, Mode, PluginKind
 from algodesk.api.manifest import PluginManifest, parse_manifest
 from algodesk.api.market import (
     Bar,
+    CoverageStatus,
+    DataGap,
+    DataSlice,
     FeedStatus,
     IdParts,
     Instrument,
@@ -143,6 +146,9 @@ __all__ = [
     "resolve_secret_ref",
     # market
     "Bar",
+    "CoverageStatus",
+    "DataGap",
+    "DataSlice",
     "FeedStatus",
     "IdParts",
     "Instrument",

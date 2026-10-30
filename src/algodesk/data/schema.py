@@ -6,12 +6,23 @@ Supports ticks and 5-level order book quotes with nullable depth fields.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
+from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 
-from algodesk.api.market import FeedStatus, InstrumentId, Level, MarketEvent, Quote, Tick
+from algodesk.api.market import (
+    Bar,
+    FeedStatus,
+    InstrumentId,
+    Level,
+    MarketEvent,
+    Quote,
+    Tick,
+)
 
 # Define PyArrow schema for ticks and 5-level quotes
 _FIELDS: list[pa.Field] = [
@@ -140,3 +151,123 @@ def events_to_table(events: Sequence[MarketEvent]) -> pa.Table:
             columns[k].append(v)
 
     return pa.Table.from_pydict(columns, schema=MARKET_EVENT_SCHEMA)
+
+
+_DEFAULT_EXCH_TZ = ZoneInfo("Asia/Kolkata")
+
+BAR_FIELDS: list[pa.Field] = [
+    pa.field("start_ts", pa.timestamp("us", tz="UTC"), nullable=False),
+    pa.field("end_ts", pa.timestamp("us", tz="UTC"), nullable=False),
+    pa.field("exch_ts", pa.timestamp("us", tz="UTC"), nullable=False),
+    pa.field("exch_time", pa.string(), nullable=False),
+    pa.field("open", pa.float64(), nullable=False),
+    pa.field("high", pa.float64(), nullable=False),
+    pa.field("low", pa.float64(), nullable=False),
+    pa.field("close", pa.float64(), nullable=False),
+    pa.field("volume", pa.int64(), nullable=False),
+    pa.field("complete", pa.bool_(), nullable=False),
+    pa.field("synthetic", pa.bool_(), nullable=False),
+]
+
+BAR_SCHEMA = pa.schema(BAR_FIELDS)
+
+
+def bar_to_dict(bar: Bar, exchange_tz: tzinfo | None = None) -> dict[str, Any]:
+    """Convert Bar to dictionary matching BAR_SCHEMA with UTC and exchange-time column."""
+    tz = exchange_tz or _DEFAULT_EXCH_TZ
+    exch_dt = bar.start_ts.astimezone(tz)
+    return {
+        "start_ts": bar.start_ts,
+        "end_ts": bar.end_ts,
+        "exch_ts": bar.start_ts,
+        "exch_time": exch_dt.isoformat(),
+        "open": float(bar.open),
+        "high": float(bar.high),
+        "low": float(bar.low),
+        "close": float(bar.close),
+        "volume": int(bar.volume),
+        "complete": bool(getattr(bar, "complete", False)),
+        "synthetic": bool(getattr(bar, "synthetic", False)),
+    }
+
+
+def row_to_bar(instrument: InstrumentId, timeframe: str, row: dict[str, Any]) -> Bar:
+    """Reconstruct Bar from dictionary row."""
+    start_ts = row["start_ts"]
+    if isinstance(start_ts, datetime) and start_ts.tzinfo is None:
+        start_ts = start_ts.replace(tzinfo=UTC)
+    end_ts = row["end_ts"]
+    if isinstance(end_ts, datetime) and end_ts.tzinfo is None:
+        end_ts = end_ts.replace(tzinfo=UTC)
+
+    return Bar(
+        instrument=instrument,
+        timeframe=timeframe,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        open=float(row["open"]),
+        high=float(row["high"]),
+        low=float(row["low"]),
+        close=float(row["close"]),
+        volume=int(row["volume"]),
+        complete=bool(row.get("complete", False)),
+        synthetic=bool(row.get("synthetic", False)),
+    )
+
+
+def bars_to_table(
+    bars: Sequence[Bar],
+    exchange_tz: tzinfo | None = None,
+) -> pa.Table:
+    """Convert sequence of Bar objects to sorted PyArrow Table."""
+    if not bars:
+        return pa.Table.from_batches([], schema=BAR_SCHEMA)
+
+    # Sort strictly by start_ts ascending
+    sorted_bars = sorted(bars, key=lambda b: b.start_ts)
+    cols: dict[str, list[Any]] = {field.name: [] for field in BAR_SCHEMA}
+    for b in sorted_bars:
+        d = bar_to_dict(b, exchange_tz=exchange_tz)
+        for k, v in d.items():
+            cols[k].append(v)
+
+    return pa.Table.from_pydict(cols, schema=BAR_SCHEMA)
+
+
+def table_to_bars(
+    table: pa.Table,
+    instrument: InstrumentId,
+    timeframe: str,
+) -> list[Bar]:
+    """Convert PyArrow Table to list of Bar objects."""
+    pydict = table.to_pydict()
+    if not pydict or "start_ts" not in pydict:
+        return []
+    n = len(pydict["start_ts"])
+    rows = [{k: pydict[k][i] for k in pydict} for i in range(n)]
+    return [row_to_bar(instrument, timeframe, r) for r in rows]
+
+
+def write_bars_parquet(
+    path: Path | str,
+    bars: Sequence[Bar],
+    exchange_tz: tzinfo | None = None,
+) -> None:
+    """Write bars to Parquet file compressed with zstd and sorted by timestamp."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    table = bars_to_table(bars, exchange_tz=exchange_tz)
+    pq.write_table(table, p, compression="zstd")
+
+
+def read_bars_parquet(
+    path: Path | str,
+    instrument: InstrumentId,
+    timeframe: str,
+) -> list[Bar]:
+    """Read Parquet file and parse rows into Bar objects."""
+    p = Path(path)
+    if not p.exists():
+        return []
+    table = pq.read_table(p)
+    return table_to_bars(table, instrument, timeframe)
