@@ -198,14 +198,14 @@ def test_vector_7_futures_buy(zerodha_schedule: Schedule) -> None:
     assert chg.total == Decimal("44.40")
 
 
-def test_vector_8_futures_sell(zerodha_schedule: Schedule) -> None:
-    """Vector 8: Futures SELL (250 @ 2,000 = 500,000 turnover)."""
+def test_vector_8_futures_sell_pre_2026_stt(zerodha_schedule: Schedule) -> None:
+    """Vector 8: Futures SELL pre-2026-04-01 (250 @ 2,000 = 500,000 turnover)."""
     chg = FeeEngine.calculate_trade_charges(
         turnover=Decimal("500000.00"),
         side=Side.SELL,
         segment="fno",
         product=Product.NRML,
-        trade_date=date(2026, 10, 26),
+        trade_date=date(2026, 3, 26),
         schedule=zerodha_schedule,
     )
     assert chg.brokerage == Decimal("20.00")
@@ -215,6 +215,25 @@ def test_vector_8_futures_sell(zerodha_schedule: Schedule) -> None:
     assert chg.sebi == Decimal("0.50")
     assert chg.gst == Decimal("5.25")
     assert chg.total == Decimal("134.40")
+
+
+def test_vector_8_futures_sell_post_2026_stt(zerodha_schedule: Schedule) -> None:
+    """Vector 8b: Futures SELL post-2026-04-01 (250 @ 2,000 = 500,000 turnover)."""
+    chg = FeeEngine.calculate_trade_charges(
+        turnover=Decimal("500000.00"),
+        side=Side.SELL,
+        segment="fno",
+        product=Product.NRML,
+        trade_date=date(2026, 10, 26),
+        schedule=zerodha_schedule,
+    )
+    assert chg.brokerage == Decimal("20.00")
+    assert chg.stt == Decimal("250.00")  # 0.05% of 500,000 = 250.00
+    assert chg.stamp == Decimal("0.00")
+    assert chg.exchange_txn == Decimal("8.65")
+    assert chg.sebi == Decimal("0.50")
+    assert chg.gst == Decimal("5.25")
+    assert chg.total == Decimal("284.40")
 
 
 # ------------------------------------------------------------------------------
@@ -336,3 +355,92 @@ def test_fees_conformance_checks() -> None:
             self.manifest = manifest
 
     assert any("must define callable schedule()" in p for p in fees_problems(BadFees()))
+
+
+def test_options_buy_and_sell_nse(zerodha_schedule: Schedule) -> None:
+    """Verify options buy and sell charges on premium turnover for NSE."""
+    # Options Buy: 50,000 turnover
+    buy_chg = FeeEngine.calculate_trade_charges(
+        turnover=Decimal("50000.00"),
+        side=Side.BUY,
+        segment="fno",
+        product=Product.NRML,
+        trade_date=date(2026, 10, 30),
+        schedule=zerodha_schedule,
+        exchange="nse",
+        instrument_type="opt",
+    )
+    assert buy_chg.brokerage == Decimal("20.00")
+    assert buy_chg.stt == Decimal("0.00")
+    assert buy_chg.exchange_txn == Decimal("17.77")
+    assert buy_chg.stamp == Decimal("1.50")
+    assert buy_chg.sebi == Decimal("0.05")
+    assert buy_chg.gst == Decimal("6.81")
+    assert buy_chg.total == Decimal("46.13")
+
+    # Options Sell: 50,000 turnover
+    sell_chg = FeeEngine.calculate_trade_charges(
+        turnover=Decimal("50000.00"),
+        side=Side.SELL,
+        segment="fno",
+        product=Product.NRML,
+        trade_date=date(2026, 10, 30),
+        schedule=zerodha_schedule,
+        exchange="nse",
+        instrument_type="opt",
+    )
+    assert sell_chg.brokerage == Decimal("20.00")
+    assert sell_chg.stt == Decimal("75.00")  # 0.15% of 50,000
+    assert sell_chg.exchange_txn == Decimal("17.77")
+    assert sell_chg.stamp == Decimal("0.00")
+    assert sell_chg.sebi == Decimal("0.05")
+    assert sell_chg.gst == Decimal("6.81")
+    assert sell_chg.total == Decimal("119.63")
+
+
+def test_options_exercise_raises_not_supported(zerodha_schedule: Schedule) -> None:
+    """Verify that options exercise pricing raises NotSupported."""
+    from algodesk.api.errors import NotSupported
+
+    with pytest.raises(NotSupported, match="Options exercise pricing is not supported"):
+        FeeEngine.calculate_trade_charges(
+            turnover=Decimal("50000.00"),
+            side=Side.SELL,
+            segment="fno",
+            product=Product.NRML,
+            trade_date=date(2026, 10, 30),
+            schedule=zerodha_schedule,
+            exchange="nse",
+            instrument_type="opt",
+            is_exercise=True,
+        )
+
+
+def test_bse_charges(zerodha_schedule: Schedule) -> None:
+    """Verify BSE equity delivery, futures, and options charges."""
+    # BSE Delivery Buy: 50,000 turnover
+    chg = FeeEngine.calculate_trade_charges(
+        turnover=Decimal("50000.00"),
+        side=Side.BUY,
+        segment="eq",
+        product=Product.CNC,
+        trade_date=date(2026, 10, 30),
+        schedule=zerodha_schedule,
+        exchange="bse",
+    )
+    assert chg.exchange_txn == Decimal("1.88")  # 0.00375%
+    assert chg.total == Decimal("59.78")
+
+    # BSE Futures Buy: 500,000 turnover
+    fut_chg = FeeEngine.calculate_trade_charges(
+        turnover=Decimal("500000.00"),
+        side=Side.BUY,
+        segment="fno",
+        product=Product.NRML,
+        trade_date=date(2026, 10, 30),
+        schedule=zerodha_schedule,
+        exchange="bse",
+        instrument_type="fut",
+    )
+    assert fut_chg.exchange_txn == Decimal("0.00")  # BSE futures txn 0
+    assert fut_chg.total == Decimal("34.19")

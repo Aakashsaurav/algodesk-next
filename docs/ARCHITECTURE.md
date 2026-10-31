@@ -100,7 +100,15 @@ Secrets providers (`keychain`, `env`) expose name-based lookup through `SecretRe
 
 Run preparation (`algodesk run --prepare`) runs conformance suites for all run plugins, refreshes the instrument master, and runs pre-start doctor checks before execution. Historical replay uses `SimClock` and `ReplayFeed` to replay recorded ticks through the exact production engine wiring. `compare_runs` validates bit-for-bit replay equivalence by checking performance metrics and the ordered journal event sequences (signals, risk decisions, orders, fills). Hermetic test isolation fixture (`tmp_project`) and conftest session guards guarantee tests never mutate repository data or results state.
 
-## 11. Not built yet
+## 11. Structured Logging & Observability
+
+AlgoDesk Next enforces strict session observability across file logging, write-ahead journaling, console feedback, and post-session audits:
+- **File Logging (`logs/algodesk.log`)**: `run`, `replay`, and `feed probe` initialize daily-rotating structured JSON logs via `setup_logging`. All log records pass through `Scrubber` to guarantee credential and token redaction. Log retention is governed by `logs.retention_days`.
+- **Session Lifecycle Journal Events (M1 Design 8.1)**: Paper and replay runs record comprehensive execution events into SQLite journal storage: `run.start`, `config.effective`, `registry.snapshot`, `instruments.loaded`, `feed.connected`, per-minute `tick.stats`, `bar.stats`, and `proc.stats` (peak RSS via `resource`, journal bytes, recorder rows and bytes), `signal`, `intent`, `risk.decision`, `order.created`, `order.event`, `fill`, `portfolio.snapshot`, `error`, end-of-run `latency.stats` (tick-to-intent p50 and p95), and `run.end`.
+- **Console Status Line**: Periodic status updates emit every `run.status_seconds` (default 30s; silenced with `--quiet`) displaying IST time, state, total ticks, oldest tick age, closed bars, signals, orders, fills, kill-switch status, and RSS.
+- **Session Observability Report**: `algodesk session report [RUN_ID]` prints first/last tick in IST, session coverage % against the NSE calendar session, feed gaps, bars per timeframe, signals, orders, fills, rule rejects, p95 latency, peak RSS, recorder rows/bytes, journal growth, and failure reasons. Runs starting after session open are tagged `partial`.
+
+## 12. Not built yet
 
 - **M2 Data layer (remaining)**: Broker history fetchers, instrument mapping, accumulation jobs, BSE and MCX full holiday tables.
 - **M3 Indicators and screens**: Full built-in set, custom-indicator scaffold, TOML and Python screens, saved screen runs.

@@ -105,7 +105,13 @@ def snapshot_guarded_paths(root: Path) -> set[str]:
         if folder_path.is_dir():
             for p in folder_path.rglob("*"):
                 name = p.name
-                if name == ".DS_Store" or "__pycache__" in p.as_posix() or name.endswith(".pyc"):
+                if (
+                    name == ".DS_Store"
+                    or "__pycache__" in p.as_posix()
+                    or name.endswith(".pyc")
+                    or name.endswith(".db-shm")
+                    or name.endswith(".db-wal")
+                ):
                     continue
                 files.add(f"{folder}/{p.relative_to(folder_path).as_posix()}")
     return files

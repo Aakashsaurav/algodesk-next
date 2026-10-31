@@ -59,6 +59,8 @@ class Recorder:
         "_part_seq",
         "_scheduler",
         "_source",
+        "_total_bytes",
+        "_total_rows",
     )
 
     def __init__(
@@ -87,6 +89,8 @@ class Recorder:
         self._buffers: dict[InstrumentId, list[Tick | Quote]] = {}
         self._part_seq: dict[tuple[InstrumentId, str], int] = {}
         self._disk_halted = False
+        self._total_rows = 0
+        self._total_bytes = 0
 
         if self._bus is not None:
             self._bus.subscribe(MarketEvent, self.on_market_event, critical=False)
@@ -100,6 +104,16 @@ class Recorder:
                 # pyrefly: ignore[implicit-any-lambda]
                 lambda *_: self.flush(),
             )
+
+    @property
+    def total_rows(self) -> int:
+        """Return total rows written and buffered."""
+        return self._total_rows + sum(len(b) for b in self._buffers.values())
+
+    @property
+    def total_bytes(self) -> int:
+        """Return total bytes written to disk."""
+        return self._total_bytes
 
     def on_market_event(self, event: MarketEvent) -> None:
         """Buffer incoming market event with isolated error handling and disk guard."""
@@ -189,6 +203,8 @@ class Recorder:
         pq.write_table(table, file_path, compression="zstd")
 
         size_bytes = file_path.stat().st_size
+        self._total_rows += len(buf)
+        self._total_bytes += size_bytes
         sha256 = _compute_sha256(file_path)
         first_ts = buf[0].exch_ts.isoformat()
         last_ts = buf[-1].exch_ts.isoformat()

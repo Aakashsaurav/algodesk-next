@@ -48,6 +48,9 @@ class ScheduleComponent(BaseModel):
     side: ComponentSide = "both"
     effective_from: date
     effective_to: date | None = None
+    exchange: str | None = None
+    instrument_type: str | None = None
+    note: str | None = None
     verified: bool = True
 
     @field_validator("rate", "amount", "cap", "minimum", mode="before")

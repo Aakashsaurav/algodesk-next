@@ -1,10 +1,10 @@
 # Status
 
-Owner: Aakash · Version: 1.0 · Date: 29 October 2026
+Owner: Aakash · Version: 1.0 · Date: 30 October 2026
 
 ## Summary
 
-Milestone M0 and all M1 tasks (M1-1 through M1-6) are complete. The workbench features deterministic order state machine transitions, write-ahead journaling, pre-trade risk evaluation without short-circuiting, atomic kill-switch controls, conservative paper execution with trade-through limit fills, and bit-for-bit replay equivalence. M1-6 delivers hermetic test isolation, run preparation, results comparison, safety-module property tests, and replay proof with trades. No live trading exists and none is planned before PRD gates are met.
+Milestone M0 and all M1 tasks (M1-1 through M1-8) are complete. The workbench features deterministic order state machine transitions, write-ahead journaling, pre-trade risk evaluation without short-circuiting, atomic kill-switch controls, conservative paper execution with trade-through limit fills, bit-for-bit replay equivalence, and end-to-end session observability. M1-8 delivers JSON file logging, M1 design 8.1 journal lifecycle events (`proc.stats`, `latency.stats`, `run.start/end`), console status lines, `algodesk session report`, dated Zerodha NSE/BSE fee schedules (2026-04-01 STT notice, options pricing with exercise guard), verified NSE 2026 calendar data, and 16 reference fee vectors. No live trading exists and none is planned before PRD gates are met.
 
 ## Milestones
 

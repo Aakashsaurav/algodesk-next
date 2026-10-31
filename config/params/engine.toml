@@ -32,3 +32,28 @@ scope = "global"
 tighten = "down"
 description = "Tolerance in milliseconds for scheduler timer dispatch"
 owner = "engine"
+
+[[param]]
+name = "run.status_seconds"
+type = "int"
+default = 30
+min = 1
+max = 3600
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Interval in seconds between console status line updates during session execution"
+owner = "engine"
+
+[[param]]
+name = "run.stats_seconds"
+type = "int"
+default = 60
+min = 1
+max = 3600
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Interval in seconds between periodic tick, bar and proc stats emission"
+owner = "engine"
+

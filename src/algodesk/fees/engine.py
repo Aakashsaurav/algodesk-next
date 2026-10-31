@@ -76,6 +76,121 @@ def _coerce_schedule(schedule: Any) -> Schedule:
     raise TypeError(f"Cannot coerce {type(schedule).__name__} to Schedule")
 
 
+def _component_matches(
+    c: Any,
+    seg: str,
+    prod: str,
+    dt: date,
+    exch: str,
+    itype: str | None,
+) -> bool:
+    if c.segment.lower() != seg or c.product.upper() != prod:
+        return False
+    if c.effective_from > dt or (c.effective_to is not None and c.effective_to < dt):
+        return False
+    c_exch = getattr(c, "exchange", None)
+    if c_exch is not None and c_exch.lower() != exch:
+        return False
+    c_itype = getattr(c, "instrument_type", None)
+    if itype is None:
+        if c_itype is not None:
+            return False
+    elif itype == "fut":
+        if c_itype not in (None, "fut"):
+            return False
+    elif itype == "opt":
+        if c_itype != "opt":
+            return False
+    return True
+
+
+def _compute_component_raw(c: Any, turnover: Decimal, is_first: bool) -> Decimal:
+    if c.kind == "flat":
+        return c.amount or Decimal("0.00")
+    if c.kind == "pct":
+        return turnover * (c.rate or Decimal("0.00"))
+    if c.kind == "pct_capped":
+        raw = turnover * (c.rate or Decimal("0.00"))
+        if c.cap is not None:
+            raw = min(raw, c.cap)
+        if c.minimum is not None:
+            raw = max(raw, c.minimum)
+        return raw
+    if c.kind == "per_crore":
+        crores = turnover / Decimal("10000000")
+        return crores * (c.rate or c.amount or Decimal("0.00"))
+    if c.kind == "per_scrip_day":
+        return (c.amount or Decimal("0.00")) if is_first else Decimal("0.00")
+    return Decimal("0.00")
+
+
+def _calculate_taxes(
+    taxes: Iterable[Any],
+    components: Mapping[str, Decimal],
+    trade_date: date,
+) -> dict[str, Decimal]:
+    tax_items: dict[str, Decimal] = {}
+    for tax in taxes:
+        if tax.effective_from and trade_date < tax.effective_from:
+            continue
+        if tax.effective_to and trade_date > tax.effective_to:
+            continue
+        taxable_base = sum(components.get(k, Decimal("0.00")) for k in tax.applies_to)
+        tax_items[tax.name] = tax_items.get(tax.name, Decimal("0.00")) + _round_half_up(
+            taxable_base * tax.rate
+        )
+    return tax_items
+
+
+def _resolve_fill_attributes(
+    fill: Fill,
+    orders: Mapping[str, Any] | None,
+) -> tuple[Side, Product, str, str, str, str | None]:
+    """Resolve side, product, segment, symbol, exchange, instrument_type for a fill."""
+    side = fill.side
+    product = fill.product
+    segment = "eq"
+    symbol = "DEFAULT"
+    exchange = "nse"
+    itype: str | None = None
+
+    if fill.instrument:
+        try:
+            parts = parse_id(fill.instrument)
+            exchange = parts.exchange.lower()
+            segment = parts.segment.lower()
+            symbol = parts.symbol.upper()
+            if segment == "fno":
+                if "FUT" in symbol:
+                    itype = "fut"
+                elif "CE" in symbol or "PE" in symbol:
+                    itype = "opt"
+                else:
+                    itype = "fut"
+        except Exception:
+            symbol = str(fill.instrument).upper()
+
+    if orders and fill.client_ref in orders:
+        ord_info = orders[fill.client_ref]
+        if side is None and hasattr(ord_info, "side"):
+            side = ord_info.side
+        elif side is None and hasattr(ord_info, "spec"):
+            side = ord_info.spec.side
+        if product is None and hasattr(ord_info, "product"):
+            product = ord_info.product
+        elif product is None and hasattr(ord_info, "spec"):
+            product = ord_info.spec.product
+
+    return (
+        side if side is not None else Side.BUY,
+        product if product is not None else Product.CNC,
+        segment,
+        symbol,
+        exchange,
+        itype,
+    )
+
+
 class FeeEngine:
     """Pure fee calculation engine driving schedules against trades and fills."""
 
@@ -89,25 +204,39 @@ class FeeEngine:
         trade_date: date,
         schedule: Schedule | Any,
         *,
+        exchange: str = "nse",
+        instrument_type: str | None = None,
+        is_exercise: bool = False,
         is_first_scrip_day: bool = True,
     ) -> Charges:
         """Calculate itemised charges and total for a single trade execution."""
+        if is_exercise:
+            from algodesk.api.errors import NotSupported
+
+            raise NotSupported(
+                what="Options exercise pricing is not supported",
+                where="FeeEngine.calculate_trade_charges",
+                fix=(
+                    "Exercise settlement pricing requires option intrinsic pricing "
+                    "which is not implemented"
+                ),
+            )
+
         sch = _coerce_schedule(schedule)
         side_str = (side.value if hasattr(side, "value") else str(side)).lower()
         prod_str = (product.value if hasattr(product, "value") else str(product)).upper()
         seg_str = segment.lower()
+        exch_str = exchange.lower()
+        itype = (
+            instrument_type.lower() if instrument_type else ("fut" if seg_str == "fno" else None)
+        )
 
-        # Check if schedule defines components for this segment, product and date
-        matching_components = [
+        matching = [
             c
             for c in sch.components
-            if c.segment.lower() == seg_str
-            and c.product.upper() == prod_str
-            and c.effective_from <= trade_date
-            and (c.effective_to is None or c.effective_to >= trade_date)
+            if _component_matches(c, seg_str, prod_str, trade_date, exch_str, itype)
         ]
-
-        if not matching_components:
+        if not matching:
             raise ConfigError(
                 f"No fee schedule components found for segment={segment!r}, "
                 f"product={product!r}, date={trade_date.isoformat()}",
@@ -118,52 +247,16 @@ class FeeEngine:
                 ),
             )
 
-        component_items: dict[str, Decimal] = {}
-
-        for c in matching_components:
+        items: dict[str, Decimal] = {}
+        for c in matching:
             if c.side != "both" and c.side.lower() != side_str:
                 continue
+            raw = _compute_component_raw(c, turnover, is_first_scrip_day)
+            items[c.name] = items.get(c.name, Decimal("0.00")) + _round_half_up(raw)
 
-            raw: Decimal = Decimal("0.00")
-            if c.kind == "flat":
-                raw = c.amount or Decimal("0.00")
-            elif c.kind == "pct":
-                raw = turnover * (c.rate or Decimal("0.00"))
-            elif c.kind == "pct_capped":
-                raw = turnover * (c.rate or Decimal("0.00"))
-                if c.cap is not None:
-                    raw = min(raw, c.cap)
-                if c.minimum is not None:
-                    raw = max(raw, c.minimum)
-            elif c.kind == "per_crore":
-                crores = turnover / Decimal("10000000")
-                raw = crores * (c.rate or c.amount or Decimal("0.00"))
-            elif c.kind == "per_scrip_day":
-                if is_first_scrip_day:
-                    raw = c.amount or Decimal("0.00")
-                else:
-                    raw = Decimal("0.00")
-
-            rounded = _round_half_up(raw)
-            component_items[c.name] = component_items.get(c.name, Decimal("0.00")) + rounded
-
-        # Calculate taxes
-        tax_items: dict[str, Decimal] = {}
-        for tax in sch.taxes:
-            if tax.effective_from and trade_date < tax.effective_from:
-                continue
-            if tax.effective_to and trade_date > tax.effective_to:
-                continue
-
-            taxable_base = sum(
-                component_items.get(c_name, Decimal("0.00")) for c_name in tax.applies_to
-            )
-            tax_raw = taxable_base * tax.rate
-            tax_items[tax.name] = tax_items.get(tax.name, Decimal("0.00")) + _round_half_up(tax_raw)
-
-        all_items: dict[str, Decimal] = {**component_items, **tax_items}
-        total = sum(all_items.values(), Decimal("0.00"))
-        return Charges(items=all_items, total=total)
+        tax_items = _calculate_taxes(sch.taxes, items, trade_date)
+        all_items: dict[str, Decimal] = {**items, **tax_items}
+        return Charges(items=all_items, total=sum(all_items.values(), Decimal("0.00")))
 
     @classmethod
     def charges_for_fills(
@@ -181,36 +274,7 @@ class FeeEngine:
         for fill in fills:
             turnover = Decimal(fill.qty) * fill.price
             trade_date = fill.ts.date()
-
-            # Resolve side, product, segment, and symbol
-            side = fill.side
-            product = fill.product
-            segment: str = "eq"
-            symbol: str = "DEFAULT"
-
-            if fill.instrument:
-                try:
-                    parts = parse_id(fill.instrument)
-                    segment = parts.segment.lower()
-                    symbol = parts.symbol.upper()
-                except Exception:
-                    symbol = str(fill.instrument).upper()
-
-            if orders and fill.client_ref in orders:
-                ord_info = orders[fill.client_ref]
-                if side is None and hasattr(ord_info, "side"):
-                    side = ord_info.side
-                elif side is None and hasattr(ord_info, "spec"):
-                    side = ord_info.spec.side
-                if product is None and hasattr(ord_info, "product"):
-                    product = ord_info.product
-                elif product is None and hasattr(ord_info, "spec"):
-                    product = ord_info.spec.product
-
-            if side is None:
-                side = Side.BUY
-            if product is None:
-                product = Product.CNC
+            side, product, segment, symbol, exch, itype = _resolve_fill_attributes(fill, orders)
 
             scrip_key = (trade_date, symbol)
             is_first = scrip_key not in seen_scrip_days
@@ -224,6 +288,8 @@ class FeeEngine:
                 product=product,
                 trade_date=trade_date,
                 schedule=sch,
+                exchange=exch,
+                instrument_type=itype,
                 is_first_scrip_day=is_first,
             )
             results.append(chg)

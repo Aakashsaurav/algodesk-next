@@ -16,3 +16,7 @@ Upstox broker plugin for AlgoDesk Next providing market data streaming via WebSo
   - Feed authorize: `https://api.upstox.com/v3/feed/market-data-feed/authorize` (verified 2026-10-23)
   - Instruments: `https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz` (verified 2026-10-23)
   - History: `https://api.upstox.com/v3/historical-candle/...` (verified 2026-10-23)
+
+## Changes after M1-6 (2026-10-30)
+- **auth.py & plugin.py**: Added `open_browser` toggle to `begin_auto()` and guarded `webbrowser.open()` to prevent popping host browsers during automated test runs.
+- **instruments.py**: Added `_cleanup_older_downloads()` to prune stale instrument master downloads in `.local/cache/instruments/`, enforcing disk hygiene and test hermeticity.

@@ -9,3 +9,7 @@ Secrets are referenced by standard reference identifiers and never stored in pla
 - `chat_id`: `secret:telegram_chat_id`
 
 Runtime behavior (queue capacity, dispatch rate limit, retry count, back-off parameters, and circuit breaker limits) is centrally managed in `config/params/runtime.toml`.
+
+## Changes after M1-6 (2026-10-30)
+- **client.py**: Refactored retry mechanism to abort immediately on permanent HTTP client errors (400, 401, 403, 404) rather than retrying futile requests.
+- **plugin.py**: Guarded client initialization and added whitespace/empty token validation to cleanly disable notifier dispatch when secrets are absent.

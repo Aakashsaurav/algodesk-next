@@ -1,7 +1,7 @@
 [meta]
 name = "zerodha_nse"
-source = "support.zerodha.com / PRD Appendix D.2"
-verified_on = "2026-10-21"
+source = "zerodha.com/charges (checked 30 Oct 2026) and 1 Apr 2026 STT notice"
+verified_on = "2026-10-30"
 verified = true
 
 # ==============================================================================
@@ -38,6 +38,7 @@ side = "buy"
 effective_from = 2020-01-01
 verified = true
 
+# Prior equity delivery txn charge (pre-2026-10-30)
 [[component]]
 name = "exchange_txn"
 kind = "pct"
@@ -46,7 +47,34 @@ segment = "eq"
 product = "CNC"
 side = "both"
 effective_from = 2020-01-01
+effective_to = 2026-10-29
 verified = true
+
+# NSE equity delivery txn charge (from 2026-10-30)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000307
+segment = "eq"
+product = "CNC"
+side = "both"
+exchange = "nse"
+effective_from = 2026-10-30
+note = "change date not verified"
+verified = false
+
+# BSE equity delivery txn charge (from 2026-10-30)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000375
+segment = "eq"
+product = "CNC"
+side = "both"
+exchange = "bse"
+effective_from = 2026-10-30
+note = "change date not verified"
+verified = false
 
 [[component]]
 name = "sebi"
@@ -103,6 +131,7 @@ side = "buy"
 effective_from = 2020-01-01
 verified = true
 
+# Prior equity intraday txn charge (pre-2026-10-30)
 [[component]]
 name = "exchange_txn"
 kind = "pct"
@@ -111,7 +140,34 @@ segment = "eq"
 product = "MIS"
 side = "both"
 effective_from = 2020-01-01
+effective_to = 2026-10-29
 verified = true
+
+# NSE equity intraday txn charge (from 2026-10-30)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000307
+segment = "eq"
+product = "MIS"
+side = "both"
+exchange = "nse"
+effective_from = 2026-10-30
+note = "change date not verified"
+verified = false
+
+# BSE equity intraday txn charge (from 2026-10-30)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000375
+segment = "eq"
+product = "MIS"
+side = "both"
+exchange = "bse"
+effective_from = 2026-10-30
+note = "change date not verified"
+verified = false
 
 [[component]]
 name = "sebi"
@@ -124,7 +180,7 @@ effective_from = 2020-01-01
 verified = true
 
 # ==============================================================================
-# Equity Futures (segment: fno, product: NRML & MIS)
+# Equity Futures (segment: fno, product: NRML & MIS, instrument_type: fut)
 # ==============================================================================
 
 [[component]]
@@ -134,6 +190,7 @@ rate = 0.0003
 cap = 20.00
 segment = "fno"
 product = "NRML"
+instrument_type = "fut"
 side = "both"
 effective_from = 2020-01-01
 verified = true
@@ -145,18 +202,22 @@ rate = 0.0003
 cap = 20.00
 segment = "fno"
 product = "MIS"
+instrument_type = "fut"
 side = "both"
 effective_from = 2020-01-01
 verified = true
 
+# Prior futures STT (pre-2026-04-01: 0.02% sell side)
 [[component]]
 name = "stt"
 kind = "pct"
 rate = 0.0002
 segment = "fno"
 product = "NRML"
+instrument_type = "fut"
 side = "sell"
 effective_from = 2020-01-01
+effective_to = 2026-03-31
 verified = true
 
 [[component]]
@@ -165,8 +226,33 @@ kind = "pct"
 rate = 0.0002
 segment = "fno"
 product = "MIS"
+instrument_type = "fut"
 side = "sell"
 effective_from = 2020-01-01
+effective_to = 2026-03-31
+verified = true
+
+# Post-hike futures STT (from 2026-04-01: 0.05% sell side only, Zerodha 1 Apr 2026 notice)
+[[component]]
+name = "stt"
+kind = "pct"
+rate = 0.0005
+segment = "fno"
+product = "NRML"
+instrument_type = "fut"
+side = "sell"
+effective_from = 2026-04-01
+verified = true
+
+[[component]]
+name = "stt"
+kind = "pct"
+rate = 0.0005
+segment = "fno"
+product = "MIS"
+instrument_type = "fut"
+side = "sell"
+effective_from = 2026-04-01
 verified = true
 
 [[component]]
@@ -175,6 +261,7 @@ kind = "pct"
 rate = 0.00002
 segment = "fno"
 product = "NRML"
+instrument_type = "fut"
 side = "buy"
 effective_from = 2020-01-01
 verified = false
@@ -185,29 +272,89 @@ kind = "pct"
 rate = 0.00002
 segment = "fno"
 product = "MIS"
+instrument_type = "fut"
 side = "buy"
 effective_from = 2020-01-01
+verified = false
+
+# Prior futures txn charge (pre-2026-10-30)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000173
+segment = "fno"
+product = "NRML"
+instrument_type = "fut"
+side = "both"
+effective_from = 2020-01-01
+effective_to = 2026-10-29
+verified = true
+
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000173
+segment = "fno"
+product = "MIS"
+instrument_type = "fut"
+side = "both"
+effective_from = 2020-01-01
+effective_to = 2026-10-29
+verified = true
+
+# NSE futures txn charge (from 2026-10-30: 0.00183%)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000183
+segment = "fno"
+product = "NRML"
+instrument_type = "fut"
+side = "both"
+exchange = "nse"
+effective_from = 2026-10-30
+note = "change date not verified"
 verified = false
 
 [[component]]
 name = "exchange_txn"
 kind = "pct"
-rate = 0.0000173
+rate = 0.0000183
+segment = "fno"
+product = "MIS"
+instrument_type = "fut"
+side = "both"
+exchange = "nse"
+effective_from = 2026-10-30
+note = "change date not verified"
+verified = false
+
+# BSE futures txn charge (from 2026-10-30: 0.0%)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0
 segment = "fno"
 product = "NRML"
+instrument_type = "fut"
 side = "both"
-effective_from = 2020-01-01
-verified = true
+exchange = "bse"
+effective_from = 2026-10-30
+note = "change date not verified"
+verified = false
 
 [[component]]
 name = "exchange_txn"
 kind = "pct"
-rate = 0.0000173
+rate = 0.0
 segment = "fno"
 product = "MIS"
+instrument_type = "fut"
 side = "both"
-effective_from = 2020-01-01
-verified = true
+exchange = "bse"
+effective_from = 2026-10-30
+note = "change date not verified"
+verified = false
 
 [[component]]
 name = "sebi"
@@ -215,6 +362,7 @@ kind = "per_crore"
 rate = 10.0
 segment = "fno"
 product = "NRML"
+instrument_type = "fut"
 side = "both"
 effective_from = 2020-01-01
 verified = true
@@ -225,6 +373,186 @@ kind = "per_crore"
 rate = 10.0
 segment = "fno"
 product = "MIS"
+instrument_type = "fut"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+# ==============================================================================
+# Equity Options (segment: fno, product: NRML & MIS, instrument_type: opt)
+# ==============================================================================
+
+# Brokerage flat 20 per order
+[[component]]
+name = "brokerage"
+kind = "flat"
+amount = 20.00
+segment = "fno"
+product = "NRML"
+instrument_type = "opt"
+side = "both"
+effective_from = 2020-01-01
+note = "change date not verified"
+verified = false
+
+[[component]]
+name = "brokerage"
+kind = "flat"
+amount = 20.00
+segment = "fno"
+product = "MIS"
+instrument_type = "opt"
+side = "both"
+effective_from = 2020-01-01
+note = "change date not verified"
+verified = false
+
+# Prior options STT (pre-2026-04-01: 0.0625% sell on premium)
+[[component]]
+name = "stt"
+kind = "pct"
+rate = 0.000625
+segment = "fno"
+product = "NRML"
+instrument_type = "opt"
+side = "sell"
+effective_from = 2020-01-01
+effective_to = 2026-03-31
+verified = true
+
+[[component]]
+name = "stt"
+kind = "pct"
+rate = 0.000625
+segment = "fno"
+product = "MIS"
+instrument_type = "opt"
+side = "sell"
+effective_from = 2020-01-01
+effective_to = 2026-03-31
+verified = true
+
+# Options STT (from 2026-04-01: 0.15% on sell of premium)
+[[component]]
+name = "stt"
+kind = "pct"
+rate = 0.0015
+segment = "fno"
+product = "NRML"
+instrument_type = "opt"
+side = "sell"
+effective_from = 2026-04-01
+verified = true
+
+[[component]]
+name = "stt"
+kind = "pct"
+rate = 0.0015
+segment = "fno"
+product = "MIS"
+instrument_type = "opt"
+side = "sell"
+effective_from = 2026-04-01
+verified = true
+
+# Options stamp duty 0.003% on buy
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00003
+segment = "fno"
+product = "NRML"
+instrument_type = "opt"
+side = "buy"
+effective_from = 2020-01-01
+note = "change date not verified"
+verified = false
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00003
+segment = "fno"
+product = "MIS"
+instrument_type = "opt"
+side = "buy"
+effective_from = 2020-01-01
+note = "change date not verified"
+verified = false
+
+# NSE options txn charge (from 2026-10-30: 0.03553% of premium)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0003553
+segment = "fno"
+product = "NRML"
+instrument_type = "opt"
+side = "both"
+exchange = "nse"
+effective_from = 2026-10-30
+note = "change date not verified"
+verified = false
+
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0003553
+segment = "fno"
+product = "MIS"
+instrument_type = "opt"
+side = "both"
+exchange = "nse"
+effective_from = 2026-10-30
+note = "change date not verified"
+verified = false
+
+# BSE options txn charge (from 2026-10-30: 0.0325% of premium)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.000325
+segment = "fno"
+product = "NRML"
+instrument_type = "opt"
+side = "both"
+exchange = "bse"
+effective_from = 2026-10-30
+note = "change date not verified"
+verified = false
+
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.000325
+segment = "fno"
+product = "MIS"
+instrument_type = "opt"
+side = "both"
+exchange = "bse"
+effective_from = 2026-10-30
+note = "change date not verified"
+verified = false
+
+# Options SEBI 10 per crore
+[[component]]
+name = "sebi"
+kind = "per_crore"
+rate = 10.0
+segment = "fno"
+product = "NRML"
+instrument_type = "opt"
+side = "both"
+effective_from = 2020-01-01
+verified = true
+
+[[component]]
+name = "sebi"
+kind = "per_crore"
+rate = 10.0
+segment = "fno"
+product = "MIS"
+instrument_type = "opt"
 side = "both"
 effective_from = 2020-01-01
 verified = true

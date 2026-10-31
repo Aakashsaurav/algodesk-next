@@ -46,6 +46,9 @@ def run_cmd(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Verify configuration and plan without execution"
     ),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q", help="Disable periodic console status lines"
+    ),
 ) -> None:
     """Execute a paper trading or live session with full engine wiring."""
     with _open_rt(ctx, ensure=True) as rt:
@@ -144,6 +147,7 @@ def run_cmd(
             observe=observe,
             dry_run=dry_run,
             secrets=sec_prov,
+            quiet=quiet,
         )
 
         if dry_run:
@@ -190,6 +194,9 @@ def replay_cmd(
     twice: bool = typer.Option(
         False, "--twice", help="Execute twice and verify bit-identical replay determinism"
     ),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q", help="Disable periodic console status lines"
+    ),
 ) -> None:
     """Replay historical market data deterministically through the engine."""
     state = _get_cli_state(ctx)
@@ -209,6 +216,7 @@ def replay_cmd(
                 mode="replay",
                 replay_dates=parsed_dates,
                 run_id=run_id_a,
+                quiet=quiet,
             )
             asyncio.run(runner1.run())
 
@@ -218,6 +226,7 @@ def replay_cmd(
                 mode="replay",
                 replay_dates=parsed_dates,
                 run_id=run_id_b,
+                quiet=quiet,
             )
             p2 = asyncio.run(runner2.run())
 
@@ -232,6 +241,7 @@ def replay_cmd(
                 run_config=eff.run,
                 mode="replay",
                 replay_dates=parsed_dates,
+                quiet=quiet,
             )
             p = asyncio.run(runner.run())
             typer.echo(f"results folder: {p}")

@@ -9,13 +9,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import resource
 import sys
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
+
+import typer
 
 from algodesk.api import (
     AlgoDeskError,
@@ -25,6 +30,7 @@ from algodesk.api import (
     Instrument,
     InstrumentId,
     Mode,
+    OrderEventMsg,
     PluginContext,
     PluginKind,
     Product,
@@ -84,9 +90,11 @@ class SessionRunner:
         journal_db: Path | None = None,
         run_id: str | None = None,
         secrets: Any | None = None,
+        quiet: bool = False,
     ) -> None:
         self.runtime = runtime
         self._secrets_provider = secrets
+        self.quiet = quiet
         self.run_config = run_config or runtime.effective.run
         if isinstance(mode, str):
             self.mode = Mode.BACKTEST if mode.lower() == "replay" else Mode(mode.lower())
@@ -123,6 +131,25 @@ class SessionRunner:
         self._rejects_by_rule: dict[str, int] = {}
         self._equity_curve: list[dict[str, Any]] = []
         self._latest_quotes: dict[InstrumentId, Quote] = {}
+
+        self._tick_to_intent_latencies: list[float] = []
+        self._latest_tick_ts: dict[Any, datetime] = {}
+        self._latest_tick_recv_time: dict[Any, datetime] = {}
+        self._first_tick_ts: datetime | None = None
+        self._last_tick_ts: datetime | None = None
+        self._bars_closed: int = 0
+        self._bars_by_tf: dict[str, int] = {}
+        self._signals_count: int = 0
+        self._orders_count: int = 0
+        self._last_status_wall_time: float = 0.0
+        self._p50_latency_ms: float = 0.0
+        self._p95_latency_ms: float = 0.0
+        self._peak_rss_mb: float = 0.0
+        self._journal_initial_bytes: int = 0
+        self._journal_final_bytes: int = 0
+        self._journal_growth_bytes: int = 0
+        self._journal_events_count: int = 0
+        self._is_partial: bool = False
 
     @property
     def mode_name(self) -> str:
@@ -163,6 +190,30 @@ class SessionRunner:
             logger.info("Dry-run mode: components inspected, skipping execution.")
             return self.runtime.paths.results / self.run_id
 
+        log_handle = None
+        results_path: Path | None = None
+        try:
+            from algodesk.api.scrub import Scrubber
+            from algodesk.logs.setup import setup_logging
+
+            paths = self.runtime.paths
+            log_dir = getattr(paths, "logs", getattr(paths, "logs_dir", None))
+            if log_dir is not None:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_handle = setup_logging(
+                    level="INFO",
+                    fmt="json",
+                    log_dir=log_dir,
+                    run_id=self.run_id,
+                    scrubber=getattr(self.runtime, "scrubber", None) or Scrubber(),
+                    retention_days=int(self.runtime.params.get("logs.retention_days"))
+                    if self.runtime.params
+                    else 30,
+                )
+                logger.info("Session '%s' starting in mode '%s'", self.run_name, self.mode_name)
+        except Exception as log_err:
+            logger.debug("Logging setup skipped: %s", log_err)
+
         clock = self.clock
         journal = self._init_journal()
         components: dict[str, Any] = {}
@@ -183,6 +234,68 @@ class SessionRunner:
                     registry_hash="core",
                 )
                 try:
+                    self._journal_initial_bytes = (
+                        journal.db_path.stat().st_size if journal.db_path.exists() else 0
+                    )
+                except Exception:
+                    self._journal_initial_bytes = 0
+
+                journal.append(
+                    "run.start",
+                    {"run_id": self.run_id, "mode": self.mode_name, "run_name": self.run_name},
+                )
+                raw_cfg = getattr(self.runtime.effective, "raw_text", str(self.run_config))
+                cap = (
+                    float(self.run_config.allocated_capital)
+                    if (self.run_config and hasattr(self.run_config, "allocated_capital"))
+                    else 0.0
+                )
+                journal.append(
+                    "config.effective",
+                    {
+                        "run_name": self.run_name,
+                        "allocated_capital": cap,
+                        "raw_text": raw_cfg,
+                    },
+                )
+                p_hash, p_dict = (
+                    self.runtime.params.snapshot()
+                    if self.runtime.params and hasattr(self.runtime.params, "snapshot")
+                    else ("core", {})
+                )
+                journal.append("registry.snapshot", {"hash": p_hash, "params": p_dict})
+                journal.append(
+                    "instruments.loaded",
+                    {
+                        "count": len(components.get("instruments", {})),
+                        "symbols": list(components.get("instruments", {}).keys()),
+                    },
+                )
+                ds_name = (
+                    getattr(getattr(self.run_config, "data_source", None), "plugin", "unknown")
+                    if self.run_config
+                    else "unknown"
+                )
+                journal.append(
+                    "feed.connected",
+                    {
+                        "data_source": ds_name,
+                        "symbols": list(components.get("instruments", {}).keys()),
+                    },
+                )
+                if "ledger" in components:
+                    snap0 = components["ledger"].snapshot()
+                    journal.append(
+                        "portfolio.snapshot",
+                        {
+                            "equity": float(snap0.equity),
+                            "cash": float(snap0.cash),
+                            "realized": 0.0,
+                            "unrealized": 0.0,
+                        },
+                    )
+
+                try:
                     await self._execute_session(components, clock, journal)
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     logger.info("Session interrupted gracefully; generating results.")
@@ -196,6 +309,7 @@ class SessionRunner:
                     self._run_error = f"Unhandled error: {exc}"
                     error_to_reraise = exc
                 finally:
+                    results_path = self._finalize_session(components, clock, journal)
                     try:
                         end_st = "aborted" if (self._interrupted or self._run_error) else "ok"
                         journal.end_run(end_st)
@@ -210,7 +324,10 @@ class SessionRunner:
             self._run_error = f"Unhandled error: {exc}"
             error_to_reraise = exc
         finally:
-            results_path = self._finalize_session(components, clock, journal)
+            if results_path is None:
+                results_path = self._finalize_session(components, clock, journal)
+            if log_handle is not None:
+                log_handle.close()
 
         if error_to_reraise is not None:
             raise error_to_reraise
@@ -351,6 +468,11 @@ class SessionRunner:
 
         bus.subscribe(FillEvent, _on_fill_event)
 
+        def _on_order_event(oem: OrderEventMsg) -> None:
+            self._orders_count = len(oms.orders)
+
+        bus.subscribe(OrderEventMsg, _on_order_event)
+
         return {
             "venue": venue,
             "instruments": instruments,
@@ -443,6 +565,8 @@ class SessionRunner:
 
     def _init_notifiers(self, p_ctx: PluginContext) -> list[Any]:
         assert self.run_config is not None
+        if self._is_replay:
+            return []
         notifiers: list[Any] = []
         for n_ref in self.run_config.notifiers:
             try:
@@ -507,6 +631,7 @@ class SessionRunner:
             clock=clock,
             bus=bus,
             notifier=notify,
+            on_intent=self._on_strategy_intent,
         )
 
         inst_map: Mapping[InstrumentId | str, Instrument] = {k: v for k, v in instruments.items()}
@@ -563,6 +688,9 @@ class SessionRunner:
                 await strat_rt.dispatch_bar(bar)
 
         def _on_bar_sync(bar: Bar) -> None:
+            self._bars_closed += 1
+            tf = str(getattr(bar, "timeframe", "1m"))
+            self._bars_by_tf[tf] = self._bars_by_tf.get(tf, 0) + 1
             asyncio.create_task(_on_bar_closed(bar))
 
         tfs = [s.params.get("timeframe", "5m") for s in self.run_config.strategies]
@@ -573,6 +701,13 @@ class SessionRunner:
             scheduler=scheduler,
             on_bar_closed=_on_bar_sync,
         )
+
+    def _on_strategy_intent(self, inst: Any, now_dt: datetime) -> None:
+        self._signals_count += 1
+        tick_ts = self._latest_tick_ts.get(inst) or self._last_tick_ts
+        if tick_ts is not None:
+            lat = max(0.1, (now_dt - tick_ts).total_seconds() * 1000.0)
+            self._tick_to_intent_latencies.append(lat)
 
     def _init_recorder(self, bus: EventBus, scheduler: Scheduler) -> Recorder | None:
         if self.mode != Mode.PAPER or not getattr(self.run_config, "recording", True):
@@ -640,7 +775,7 @@ class SessionRunner:
         notify.notify_session_start(self.run_name, str(self.mode), len(c["instruments"]))
 
         # Schedule timers
-        self._setup_timers(c, clock)
+        self._setup_timers(c, clock, journal)
 
         # Build feed stream
         stream = self._build_event_stream(c, clock)
@@ -661,6 +796,11 @@ class SessionRunner:
                 c["venue"].on_quote(ev)
                 self._latest_quotes[ev.instrument] = ev
             elif isinstance(ev, Tick):
+                if self._first_tick_ts is None:
+                    self._first_tick_ts = ev.exch_ts
+                self._last_tick_ts = ev.exch_ts
+                self._latest_tick_ts[ev.instrument] = ev.exch_ts
+                self._latest_tick_recv_time[ev.instrument] = clock.now()
                 c["bar_builder"].on_tick(ev)
                 self._tick_stats[str(ev.instrument)] = (
                     self._tick_stats.get(str(ev.instrument), 0) + 1
@@ -679,9 +819,13 @@ class SessionRunner:
                 await asyncio.sleep(0)
             elif isinstance(ev, FeedStatus):
                 notify.notify_feed_status(ev)
-                if ev.state in ("disconnected", "gap"):
+                if ev.state == "connected":
+                    journal.append("feed.connected", {"state": ev.state, "details": ev.details})
+                elif ev.state in ("disconnected", "gap"):
                     self._feed_halted = True
                     self._feed_gaps += 1
+                    kind = "feed.gap" if ev.state == "gap" else "feed.disconnected"
+                    journal.append(kind, {"state": ev.state, "details": ev.details})
 
             # 3. Process venue execution events
             await self._drain_venue_events(c)
@@ -697,7 +841,7 @@ class SessionRunner:
         await asyncio.sleep(0)
         await self._drain_venue_events(c)
 
-    def _setup_timers(self, c: dict[str, Any], clock: Clock) -> None:
+    def _setup_timers(self, c: dict[str, Any], clock: Clock, journal: Journal) -> None:
         assert self.run_config is not None
         scheduler: Scheduler = c["scheduler"]
         notify: NotifyBridge = c["notify"]
@@ -721,17 +865,26 @@ class SessionRunner:
 
         def _snapshot_portfolio() -> None:
             snap = ledger.snapshot()
-            self._equity_curve.append(
+            eq_val = float(snap.equity)
+            pt_dict = {
+                "ts": clock.now().isoformat(),
+                "equity": eq_val,
+                "cash": float(snap.cash),
+                "unrealized": float(ledger.unrealized),
+                "realized": float(ledger.realized),
+                "drawdown": compute_max_drawdown(
+                    [p["equity"] for p in self._equity_curve] + [eq_val]
+                ),
+            }
+            self._equity_curve.append(pt_dict)
+            journal.append(
+                "portfolio.snapshot",
                 {
-                    "ts": clock.now().isoformat(),
-                    "equity": float(snap.equity),
-                    "cash": float(snap.cash),
-                    "unrealized": float(ledger.unrealized),
-                    "realized": float(ledger.realized),
-                    "drawdown": compute_max_drawdown(
-                        [p["equity"] for p in self._equity_curve] + [float(snap.equity)]
-                    ),
-                }
+                    "equity": pt_dict["equity"],
+                    "cash": pt_dict["cash"],
+                    "unrealized": pt_dict["unrealized"],
+                    "realized": pt_dict["realized"],
+                },
             )
 
         snap_val = (
@@ -745,6 +898,123 @@ class SessionRunner:
             start=now_dt + timedelta(seconds=snap_sec),
             interval_seconds=snap_sec,
             callback=_snapshot_portfolio,
+        )
+
+        def _emit_proc_stats() -> None:
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            peak_rss = usage.ru_maxrss
+            peak_rss_mb = peak_rss / (1024 * 1024) if sys.platform == "darwin" else peak_rss / 1024
+            self._peak_rss_mb = max(self._peak_rss_mb, round(peak_rss_mb, 2))
+
+            j_bytes = 0
+            try:
+                if journal and hasattr(journal, "db_path") and journal.db_path.exists():
+                    j_bytes = journal.db_path.stat().st_size
+            except Exception:
+                pass
+
+            rec = c.get("recorder")
+            r_rows = getattr(rec, "total_rows", 0) if rec is not None else 0
+            r_bytes = getattr(rec, "total_bytes", 0) if rec is not None else 0
+
+            journal.append(
+                "proc.stats",
+                {
+                    "peak_rss_mb": self._peak_rss_mb,
+                    "journal_bytes": j_bytes,
+                    "recorder_rows": r_rows,
+                    "recorder_bytes": r_bytes,
+                },
+            )
+
+        def _emit_stats() -> None:
+            journal.append(
+                "tick.stats",
+                {
+                    "total_ticks": sum(self._tick_stats.values()),
+                    "by_instrument": dict(self._tick_stats),
+                },
+            )
+            journal.append(
+                "bar.stats",
+                {
+                    "closed_bars": self._bars_closed,
+                    "by_timeframe": dict(self._bars_by_tf),
+                },
+            )
+
+        stats_val = (
+            self.runtime.params.get("run.stats_seconds")
+            if self.runtime.params is not None
+            else None
+        )
+        stats_sec = float(stats_val or 60.0)
+
+        scheduler.schedule_repeating(
+            "proc_stats",
+            start=now_dt + timedelta(seconds=stats_sec),
+            interval_seconds=stats_sec,
+            callback=_emit_proc_stats,
+        )
+
+        scheduler.schedule_repeating(
+            "tick_bar_stats",
+            start=now_dt + timedelta(seconds=stats_sec),
+            interval_seconds=stats_sec,
+            callback=_emit_stats,
+        )
+
+        # Periodic console status line
+        status_val = (
+            self.runtime.params.get("run.status_seconds")
+            if self.runtime.params is not None
+            else None
+        )
+        status_sec = float(status_val or 30.0)
+
+        def _print_status_line() -> None:
+            if self.quiet:
+                return
+            if self._is_replay:
+                now_wall = time.monotonic()
+                if now_wall - self._last_status_wall_time < status_sec:
+                    return
+                self._last_status_wall_time = now_wall
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            peak_rss = usage.ru_maxrss
+            peak_rss_mb = peak_rss / (1024 * 1024) if sys.platform == "darwin" else peak_rss / 1024
+            self._peak_rss_mb = max(self._peak_rss_mb, round(peak_rss_mb, 2))
+
+            ist_tz = ZoneInfo("Asia/Kolkata")
+            ist_time_str = clock.now().astimezone(ist_tz).strftime("%H:%M:%S")
+            state_str = getattr(self.mode, "value", str(self.mode))
+            total_ticks = sum(self._tick_stats.values())
+            if self._latest_tick_recv_time:
+                oldest_recv = min(self._latest_tick_recv_time.values())
+                age_sec = max(0.0, (clock.now() - oldest_recv).total_seconds())
+                oldest_age_str = f"{age_sec:.1f}s"
+            else:
+                oldest_age_str = "0s"
+            bars_str = str(self._bars_closed)
+            sigs_str = str(self._signals_count)
+            ords_str = str(len(c["oms"].orders) if "oms" in c else 0)
+            fills_str = str(len(self._fills))
+            ks_active = c["killswitch"].is_active() if "killswitch" in c else False
+            ks_str = "TRIPPED" if ks_active else "ARMED"
+            rss_str = f"{self._peak_rss_mb:.1f}MB"
+
+            status_line = (
+                f"[{ist_time_str} IST] state={state_str} ticks={total_ticks} "
+                f"tick_age={oldest_age_str} bars={bars_str} signals={sigs_str} "
+                f"orders={ords_str} fills={fills_str} killswitch={ks_str} rss={rss_str}"
+            )
+            typer.echo(status_line)
+
+        scheduler.schedule_repeating(
+            "console_status_line",
+            start=now_dt + timedelta(seconds=status_sec),
+            interval_seconds=status_sec,
+            callback=_print_status_line,
         )
 
         # Strategy exit timer
@@ -927,6 +1197,113 @@ class SessionRunner:
 
         date_str = clock.now().strftime("%Y-%m-%d")
         mode_str = self.mode_name
+
+        ist_tz = ZoneInfo("Asia/Kolkata")
+        first_tick_ist_str = (
+            self._first_tick_ts.astimezone(ist_tz).strftime("%Y-%m-%d %H:%M:%S IST")
+            if self._first_tick_ts
+            else "N/A"
+        )
+        last_tick_ist_str = (
+            self._last_tick_ts.astimezone(ist_tz).strftime("%Y-%m-%d %H:%M:%S IST")
+            if self._last_tick_ts
+            else "N/A"
+        )
+        coverage_pct = 0.0
+        is_partial = False
+        if self._first_tick_ts and self._last_tick_ts:
+            f_ist = self._first_tick_ts.astimezone(ist_tz)
+            l_ist = self._last_tick_ts.astimezone(ist_tz)
+            session_open = f_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+            session_close = f_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+            if f_ist > session_open:
+                is_partial = True
+            session_start = max(session_open, f_ist)
+            session_end = min(session_close, l_ist)
+            covered_sec = max(0.0, (session_end - session_start).total_seconds())
+            coverage_pct = min(100.0, max(0.0, (covered_sec / 22500.0) * 100.0))
+        elif self.mode == Mode.PAPER:
+            now_ist = clock.now().astimezone(ist_tz)
+            session_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+            if now_ist > session_open:
+                is_partial = True
+
+        if self._tick_to_intent_latencies:
+            sorted_lats = sorted(self._tick_to_intent_latencies)
+            n_lats = len(sorted_lats)
+            p50 = float(sorted_lats[int(n_lats * 0.50)])
+            p95 = float(sorted_lats[min(n_lats - 1, int(n_lats * 0.95))])
+        else:
+            p50 = 0.0
+            p95 = 0.0
+
+        peak_rss_raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if sys.platform == "darwin":
+            peak_rss_mb = peak_rss_raw / (1024.0 * 1024.0)
+        else:
+            peak_rss_mb = peak_rss_raw / 1024.0
+        peak_rss_mb = round(peak_rss_mb, 2)
+
+        rec_rows = recorder.total_rows if recorder is not None else 0
+        rec_bytes = recorder.total_bytes if recorder is not None else 0
+
+        worker = getattr(self, "worker_id", getattr(self, "_worker_id", None))
+        worker_suffix = f"_{worker}" if worker else ""
+        db_file = self._journal_db or (
+            self.runtime.state.journal_db.parent / f"journal_replay{worker_suffix}.db"
+            if self._is_replay
+            else self.runtime.state.journal_db
+        )
+        final_journal_bytes = db_file.stat().st_size if db_file.is_file() else 0
+        journal_growth = max(0, final_journal_bytes - getattr(self, "_initial_journal_bytes", 0))
+
+        if self._is_replay:
+            peak_rss_mb = 0.0
+            p50 = 0.0
+            p95 = 0.0
+            journal_growth = 0
+
+        is_fail = self._interrupted or self._feed_halted or bool(self._run_error)
+        verdict_base = "FAIL" if is_fail else "PASS"
+        verdict = f"{verdict_base} (partial)" if is_partial else verdict_base
+
+        if getattr(journal, "_current_run_id", None) is not None:
+            if self._run_error:
+                err_payload = {"error": str(self._run_error), "ts": clock.now().isoformat()}
+                journal.append("error", err_payload)
+            journal.append(
+                "latency.stats",
+                {
+                    "p50_ms": round(p50, 2),
+                    "p95_ms": round(p95, 2),
+                    "samples": len(self._tick_to_intent_latencies),
+                },
+            )
+            journal.append(
+                "proc.stats",
+                {
+                    "peak_rss_mb": peak_rss_mb,
+                    "journal_bytes": final_journal_bytes,
+                    "recorder_rows": rec_rows,
+                    "recorder_bytes": rec_bytes,
+                },
+            )
+            journal.append(
+                "run.end",
+                {
+                    "run_id": self.run_id,
+                    "verdict": verdict,
+                    "is_fail": is_fail,
+                    "is_partial": is_partial,
+                    "trades": len(fills),
+                },
+            )
+
+        fail_reason_str = (
+            str(self._run_error)
+            if is_fail and self._run_error
+            else ("Feed halted / interrupted" if is_fail else None)
+        )
         metrics = {
             "date": date_str,
             "mode": mode_str,
@@ -941,16 +1318,32 @@ class SessionRunner:
             "ticks_per_instrument": self._tick_stats,
             "feed_gaps": self._feed_gaps,
             "killswitch_events": self._killswitch_events,
+            "first_tick_ist": first_tick_ist_str,
+            "last_tick_ist": last_tick_ist_str,
+            "session_coverage_pct": round(coverage_pct, 2),
+            "bars_by_timeframe": self._bars_by_tf,
+            "signals": self._signals_count,
+            "orders": self._orders_count,
+            "fills": len(fills),
+            "p50_latency_ms": round(p50, 2),
+            "p95_latency_ms": round(p95, 2),
+            "peak_rss_mb": peak_rss_mb,
+            "recorder_rows": rec_rows,
+            "recorder_bytes": rec_bytes,
+            "journal_growth_bytes": journal_growth,
+            "is_partial": is_partial,
+            "fail_reason": fail_reason_str,
         }
 
         # 5. Write results
         writer = ResultsWriter(self.run_id, results_dir=self.runtime.paths.results)
-        is_fail = self._interrupted or self._feed_halted or bool(self._run_error)
         summary_info = {
             "run_name": self.run_name,
             "mode": mode_str,
             "date": date_str,
-            "verdict": "FAIL" if is_fail else "PASS",
+            "verdict": verdict,
+            "is_partial": is_partial,
+            "fail_reason": fail_reason_str,
         }
 
         effective_text = getattr(self.runtime.effective, "raw_text", str(self.run_config))
@@ -978,8 +1371,10 @@ class SessionRunner:
             f"Net P&L: ₹{net_pnl:.2f} | Trades: {len(fills)} | Max Drawdown: {max_dd:.2f}%\n"
             f"Verdict: {summary_info['verdict']}\n"
         )
-        if self._run_error:
-            session_md_text += f"\nError: {self._run_error}\n"
+        if is_partial:
+            session_md_text += "Run Type: partial (started after session open)\n"
+        if fail_reason_str:
+            session_md_text += f"\nError: {fail_reason_str}\n"
 
         res_path = writer.write(
             summary_info=summary_info,

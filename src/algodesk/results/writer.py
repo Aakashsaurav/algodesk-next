@@ -81,6 +81,8 @@ class ResultsWriter:
         win_rate = float(metrics.get("win_rate", 0.0))
         max_dd = float(metrics.get("max_drawdown", 0.0))
         verdict = summary_info.get("verdict", "PASS")
+        fail_reason = summary_info.get("fail_reason")
+        fail_clause = f"Reason: {fail_reason}. " if fail_reason else ""
 
         content = (
             f"# Run Summary: {self.run_id}\n\n"
@@ -88,7 +90,7 @@ class ResultsWriter:
             f"AlgoDesk Next {mode} session '{run_name}' executed on {date_str}. "
             f"Net P&L: ₹{net_pnl:.2f} (Gross: ₹{gross_pnl:.2f}, Charges: ₹{charges:.2f}) "
             f"across {trade_count} trades with {win_rate:.1f}% win rate and max DD of "
-            f"{max_dd:.2f}%. Verdict: {verdict}. "
+            f"{max_dd:.2f}%. Verdict: {verdict}. {fail_clause}"
             "Note: Simulated paper fills assume zero impact.\n"
         )
         self._write_text_file("SUMMARY.md", content)

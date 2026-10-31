@@ -1,5 +1,10 @@
 """Append-only journal with integrity hash chain."""
 
+from algodesk.journal.kinds import (
+    REGISTERED_EVENT_KINDS,
+    is_registered_kind,
+    register_event_kind,
+)
 from algodesk.journal.store import (
     GENESIS_HASH,
     JournalReader,
@@ -20,8 +25,11 @@ __all__ = [
     "Journal",
     "JournalReader",
     "JournalSettings",
+    "REGISTERED_EVENT_KINDS",
     "VerifyResult",
     "events",
+    "is_registered_kind",
+    "register_event_kind",
     "stats",
     "tail",
     "unclosed_runs",

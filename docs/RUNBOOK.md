@@ -152,6 +152,28 @@ To inspect execution plan beforehand:
 ```bash
 algodesk run demo_paper --dry-run
 ```
+To run quietly without periodic console status lines:
+```bash
+algodesk run demo_paper --quiet
+```
+
+#### Live-session second terminal monitoring routine
+During an active paper trading session, open a second terminal (`source scripts/env.sh`):
+1. **Live JSON structured logs**:
+   ```bash
+   tail -f logs/algodesk.log
+   ```
+   (Daily rotating, structured JSON with all secrets scrubbed).
+2. **Real-time audit journal tail**:
+   ```bash
+   algodesk journal tail -n 20
+   ```
+   Follows state transitions, lifecycle events (`tick.stats`, `bar.stats`, `proc.stats`), signals, risk decisions, orders, and fills.
+3. **Session observability report**:
+   ```bash
+   algodesk session report [RUN_ID]
+   ```
+   Inspects first and last tick (IST), session coverage % against calendar session, feed gaps, closed bars by timeframe, signals, orders, fills, p95 latency, peak RSS, recorder rows and bytes, journal growth, and failure reasons. Runs started after 09:15 IST are labelled `partial`.
 
 #### Step 4: Post-session replay & results comparison
 Replay recorded ticks deterministically through the exact engine wiring:

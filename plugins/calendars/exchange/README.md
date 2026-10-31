@@ -17,3 +17,6 @@ Configure the exchange via the `exchange` option in `RunConfig` or plugin config
 - `data/nse.toml`: NSE equity, F&O, and currency holiday data for 2026.
 - `data/bse.toml`: BSE holiday data for 2026.
 - `data/mcx.toml`: MCX commodity holiday and session closure data for 2026 (including morning and evening sessions).
+
+## Changes after M1-6 (2026-10-30)
+- **data/nse.toml**: Verified holiday data against the official NSE holiday circular (`verified = true`, `verified_on = 2026-10-30`, `source = "owner cross-check against the NSE circular"`).

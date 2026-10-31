@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import traceback
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from typing import Any
 
 from algodesk.api.errors import ConfigError, PluginError
@@ -36,6 +37,7 @@ class StrategyRuntime:
         clock: Clock | Any | None = None,
         bus: Any | None = None,
         notifier: Any | None = None,
+        on_intent: Callable[[Any, datetime], None] | None = None,
     ) -> None:
         self._registry = registry
         self._order_manager = order_manager
@@ -45,6 +47,7 @@ class StrategyRuntime:
         self._clock: Clock = clock if clock is not None else SystemClock()
         self._bus = bus
         self._notifier = notifier
+        self._on_intent = on_intent
 
         self._strategies: dict[str, Strategy] = {}
         self._contexts: dict[str, StrategyContext] = {}
@@ -175,6 +178,13 @@ class StrategyRuntime:
         now_ts = self._clock.now()
 
         for intent in intents:
+            if self._on_intent is not None:
+                try:
+                    target_inst = getattr(getattr(intent, "spec", None), "instrument", None)
+                    self._on_intent(target_inst, now_ts)
+                except Exception:
+                    pass
+
             # 1. Journal signal
             intent_id = getattr(intent, "intent_id", "")
             spec = getattr(intent, "spec", None)

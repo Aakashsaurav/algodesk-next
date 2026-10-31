@@ -37,7 +37,7 @@ symbols = [
 [[strategies]]
 plugin = "sma_cross"
 risk_profile = "conservative"
-params = { timeframe = "5m", fast = 20, slow = 50, qty = 10, exit_time = "15:15" }
+params = { timeframe = "1m", fast = 5, slow = 10, qty = 1, exit_time = "21:10" }
 
 [[notifiers]]
 plugin = "telegram"

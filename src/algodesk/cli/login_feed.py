@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -259,14 +260,45 @@ def feed_probe_cmd(
     with _open_rt(ctx, ensure=False) as rt:
         sec_prov = _resolve_secrets_provider(rt, run=run)
         p_ctx = build_context(Mode.RESEARCH, run_id="feed_probe", secrets=sec_prov)
+
+        log_handle = None
+        probe_run_id = f"feed_probe_{int(time.time())}"
+        try:
+            from algodesk.api.scrub import Scrubber
+            from algodesk.logs.setup import get_logger, setup_logging
+
+            log_dir = getattr(rt.paths, "logs", getattr(rt.paths, "logs_dir", None))
+            if log_dir is not None:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_handle = setup_logging(
+                    level="INFO",
+                    fmt="json",
+                    log_dir=log_dir,
+                    run_id=probe_run_id,
+                    scrubber=getattr(rt, "scrubber", None) or Scrubber(),
+                    retention_days=int(rt.params.get("logs.retention_days")) if rt.params else 30,
+                )
+                probe_logger = get_logger("feed_probe")
+                probe_logger.info("Feed probe started for symbols: %s", raw_syms)
+        except Exception:
+            pass
+
         broker: Any = rt.plugins.create("broker", source, config={}, ctx=p_ctx)
         try:
             lats, gaps, samples, rec_count = asyncio.run(
                 _run_feed_probe(broker, inst_ids, seconds, record, live=live, depth=depth)
             )
+            try:
+                probe_logger = get_logger("feed_probe")
+                probe_logger.info("Feed probe completed successfully for symbols: %s", raw_syms)
+            except Exception:
+                pass
         except KeyboardInterrupt:
             typer.echo("\nInterrupted by user.")
             return
+        finally:
+            if log_handle is not None:
+                log_handle.close()
 
     headers = ["INSTRUMENT", "TICKS", "MIN_LAT_MS", "MED_LAT_MS", "MAX_LAT_MS", "GAPS"]
     typer.echo(format_table(headers, _build_probe_summary(inst_ids, lats, gaps)))

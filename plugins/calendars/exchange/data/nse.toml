@@ -3,9 +3,9 @@
 exchange = "nse"
 coverage_start = 2026-01-01
 coverage_end = 2026-12-31
-source = "Zerodha market holiday calendar (secondary source); official NSE circular to be cross-checked"
-verified_on = 2026-10-21
-verified = false
+source = "owner cross-check against the NSE circular"
+verified_on = 2026-10-30
+verified = true
 
 [segments.eq]
 sessions = ["preopen", "regular"]

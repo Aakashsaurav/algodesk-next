@@ -199,7 +199,7 @@ def fees_vectors_cmd(ctx: typer.Context) -> None:
 
         headers = ["#", "SEGMENT", "PRODUCT", "SIDE", "QTY", "PRICE", "TURNOVER", "TOTAL", "STATUS"]
         rows: list[list[str]] = []
-        d = date(2026, 10, 26)
+        d = date(2026, 3, 26)
 
         for num, seg, prod, s, q, p, is_first in vectors:
             turnover = Decimal(q) * p
