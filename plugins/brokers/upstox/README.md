@@ -17,6 +17,23 @@ Upstox broker plugin for AlgoDesk Next providing market data streaming via WebSo
   - Instruments: `https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz` (verified 2026-10-23)
   - History: `https://api.upstox.com/v3/historical-candle/...` (verified 2026-10-23)
 
+## Verified Endpoints & Rate Limits (Official Documentation 31 Oct 2026)
+- **Rate Limits**:
+  - Standard APIs: 50 requests/sec, 500 requests/min, 2,000 requests/30min enforced per API and per user (`upstox.com/developer/api-documentation/rate-limiting`).
+  - Core rate limiter starts Upstox at 80% of published limits (40/s, 400/m, 1,600/30m).
+- **History V3 Endpoint**:
+  - `GET https://api.upstox.com/v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}` (`upstox.com/developer/api-documentation/v3/get-historical-candle-data`).
+  - Instrument key must be URL-encoded (e.g. `NSE_EQ%7CINE002A01018`), dates in `YYYY-MM-DD`.
+  - Intraday minutes (`1m` to `15m`): Available from Jan 2022, max 1 month per request span. Over the limit raises an upstream error.
+  - Daily (`1d`): Available from Jan 2000, max 1 decade (10 years) per request span.
+  - Candle format: `[timestamp IST ISO, open, high, low, close, volume, open interest]`.
+  - Adjustments: Upstox candles are stored with `adj=adjusted` and manifest field `candles_adjusted = "unknown"` with a provenance warning until verified post-spike.
+
+## Changes in M2-2 (2026-10-31)
+- **history.py**: Added URL-encoding of instrument keys, mapping 4xx HTTP responses to typed errors (`RateLimitError` for 429, `AuthError` for 401/403, `DataError` for 400/404).
+- **plugin.toml**: Declared rate limits, retention, and max span chunk boundaries.
+- **plugin.py**: Added `actions()` corporate actions probing endpoint.
+
 ## Changes after M1-6 (2026-10-30)
 - **auth.py & plugin.py**: Added `open_browser` toggle to `begin_auto()` and guarded `webbrowser.open()` to prevent popping host browsers during automated test runs.
 - **instruments.py**: Added `_cleanup_older_downloads()` to prune stale instrument master downloads in `.local/cache/instruments/`, enforcing disk hygiene and test hermeticity.

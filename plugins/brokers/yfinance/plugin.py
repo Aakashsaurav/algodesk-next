@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import random
-import threading
-import time
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+import random
+import time
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -26,30 +25,6 @@ from algodesk.api import (
 )
 
 from .config_schema import YFinanceConfig
-
-
-class TokenBucket:
-    """Thread-safe token bucket rate limiter."""
-
-    def __init__(self, rate: float, capacity: float) -> None:
-        self._rate = rate
-        self._capacity = capacity
-        self._tokens = capacity
-        self._last_time = time.monotonic()
-        self._lock = threading.Lock()
-
-    def acquire(self) -> None:
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                elapsed = now - self._last_time
-                self._last_time = now
-                self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
-                if self._tokens >= 1.0:
-                    self._tokens -= 1.0
-                    return
-                needed = (1.0 - self._tokens) / self._rate
-            time.sleep(max(0.01, needed))
 
 
 class YFinanceBrokerPlugin(PluginBase, DataSource):
@@ -75,9 +50,6 @@ class YFinanceBrokerPlugin(PluginBase, DataSource):
 
         super().__init__(manifest, raw_config, cast(PluginContext, ctx))
         self._yf = _yf_module if _yf_module is not None else yf
-        rate = float(self._param("yfinance.rate_limit_per_second", 2.0))
-        burst = float(self._param("yfinance.rate_limit_burst", 5))
-        self._bucket = TokenBucket(rate=rate, capacity=burst)
 
     def _param(self, name: str, default: Any) -> Any:
         if hasattr(self, "ctx") and self.ctx and self.ctx.params:
@@ -145,7 +117,6 @@ class YFinanceBrokerPlugin(PluginBase, DataSource):
         jitter_s = float(self._param("yfinance.backoff_jitter_s", 0.5))
 
         for attempt in range(max_retries + 1):
-            self._bucket.acquire()
             try:
                 return fn(*args, **kwargs)
             except Exception as exc:

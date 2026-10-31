@@ -35,6 +35,7 @@ from algodesk.cli.risk import killswitch_app
 from algodesk.cli.run_replay import replay_cmd, results_app, run_cmd
 from algodesk.cli.secrets import secrets_app
 from algodesk.cli.session import session_app
+from algodesk.cli.spike import spike_app
 from algodesk.cli.telegram import telegram_app
 from algodesk.ops.checks import build_core_checks
 from algodesk.ops.runtime import Runtime
@@ -69,6 +70,7 @@ app.add_typer(killswitch_app, name="killswitch")
 app.add_typer(results_app, name="results")
 app.add_typer(session_app, name="session")
 app.add_typer(telegram_app, name="telegram")
+app.add_typer(spike_app, name="spike")
 
 # Register top-level commands
 app.command("doctor")(doctor_cmd)

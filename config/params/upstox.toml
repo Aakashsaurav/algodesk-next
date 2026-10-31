@@ -116,3 +116,39 @@ scope = "global"
 tighten = "down"
 description = "HTTP request timeout in seconds for Upstox REST calls"
 owner = "upstox"
+
+[[param]]
+name = "source.upstox.history.requests_per_second"
+type = "float"
+default = 40.0
+min = 1.0
+max = 100.0
+unit = "req/s"
+scope = "global"
+tighten = "down"
+description = "Upstox history rate limit per second (80% of published 50/s)"
+owner = "upstox"
+
+[[param]]
+name = "source.upstox.history.requests_per_minute"
+type = "float"
+default = 400.0
+min = 1.0
+max = 1000.0
+unit = "req/min"
+scope = "global"
+tighten = "down"
+description = "Upstox history rate limit per minute (80% of published 500/min)"
+owner = "upstox"
+
+[[param]]
+name = "source.upstox.history.requests_per_30min"
+type = "float"
+default = 1600.0
+min = 1.0
+max = 5000.0
+unit = "req/30min"
+scope = "global"
+tighten = "down"
+description = "Upstox history rate limit per 30 minutes (80% of published 2000/30min)"
+owner = "upstox"

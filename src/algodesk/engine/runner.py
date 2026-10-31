@@ -91,10 +91,13 @@ class SessionRunner:
         run_id: str | None = None,
         secrets: Any | None = None,
         quiet: bool = False,
+        warmup_source: str | None = None,
     ) -> None:
         self.runtime = runtime
         self._secrets_provider = secrets
         self.quiet = quiet
+        self.warmup_source = warmup_source
+        self._data_service: Any = None
         self.run_config = run_config or runtime.effective.run
         if isinstance(mode, str):
             self.mode = Mode.BACKTEST if mode.lower() == "replay" else Mode(mode.lower())
@@ -264,6 +267,8 @@ class SessionRunner:
                     else ("core", {})
                 )
                 journal.append("registry.snapshot", {"hash": p_hash, "params": p_dict})
+                if self.warmup_source is not None:
+                    journal.append("run.warmup_override", {"source": self.warmup_source})
                 journal.append(
                     "instruments.loaded",
                     {
@@ -473,6 +478,8 @@ class SessionRunner:
 
         bus.subscribe(OrderEventMsg, _on_order_event)
 
+        self._data_service = self._init_data_service(p_ctx, journal)
+
         return {
             "venue": venue,
             "instruments": instruments,
@@ -490,6 +497,71 @@ class SessionRunner:
             "recorder": recorder,
             "fee_engine": fee_engine,
         }
+
+    def _init_data_service(self, p_ctx: PluginContext, journal: Journal) -> Any:
+        try:
+            from algodesk.data.manifest import DataManifest
+            from algodesk.data.service import DataService
+            from algodesk.data.store import BarStore
+
+            reg_src = None
+            if self.runtime.params is not None:
+                try:
+                    reg_src = self.runtime.params.get("data.warmup_source")
+                except Exception:
+                    reg_src = None
+            default_src = str(reg_src or "upstox")
+            effective_src = self.warmup_source or default_src
+
+            sources: dict[str, Any] = {}
+            for p_desc in self.runtime.plugins.list(PluginKind.BROKER):
+                try:
+                    b_inst = self.runtime.plugins.create(
+                        PluginKind.BROKER, p_desc.name, config={}, ctx=p_ctx
+                    )
+                    sources[p_desc.name] = b_inst
+                except Exception:
+                    pass
+
+            manifests = {
+                p.manifest.name: p.manifest
+                for p in self.runtime.plugins.list()
+                if hasattr(p, "manifest")
+            }
+            data_dir = getattr(self.runtime.paths, "data", Path("data"))
+            manifest_db = data_dir / "state" / "data_manifest.db"
+            if not manifest_db.exists() and (data_dir / "manifest.db").exists():
+                manifest_db = data_dir / "manifest.db"
+            manifest_db.parent.mkdir(parents=True, exist_ok=True)
+            manifest = DataManifest(manifest_db)
+
+            store = BarStore(
+                data_dir=data_dir,
+                manifest=manifest,
+                params=self.runtime.params,
+                journal=journal,
+            )
+
+            cal: Any = None
+            try:
+                cal = self.runtime.plugins.create(
+                    PluginKind.CALENDAR, "nse", config={"exchange": "nse"}, ctx=p_ctx
+                )
+            except Exception:
+                pass
+
+            return DataService(
+                sources=sources,
+                default_source=effective_src,
+                store=store,
+                manifests=manifests,
+                calendar=cal,
+                params=self.runtime.params,
+                journal=journal,
+            )
+        except Exception as exc:
+            logger.debug("DataService initialization skipped: %s", exc)
+            return None
 
     def _init_venue(self, p_ctx: PluginContext) -> Any:
         assert self.run_config is not None
@@ -776,6 +848,15 @@ class SessionRunner:
 
         # Schedule timers
         self._setup_timers(c, clock, journal)
+
+        # Warm-up registered indicators using DataService
+        ind_mgr: IndicatorManager | None = c.get("ind_mgr")
+        if ind_mgr is not None and self._data_service is not None:
+            try:
+                eff_src = self.warmup_source or "upstox"
+                ind_mgr.warmup(self._data_service, session_start=clock.now(), source=eff_src)
+            except Exception as exc:
+                logger.warning("Indicator warmup error: %s", exc)
 
         # Build feed stream
         stream = self._build_event_stream(c, clock)
@@ -1355,16 +1436,28 @@ class SessionRunner:
             reg_snap = {}
         sim_venue = getattr(self.run_config, "execution_venue", None) if self.run_config else None
         venue_seed = getattr(sim_venue, "seed", 7) if sim_venue else 7
+        prov: dict[str, list[str]] = {"datasets": [], "checksums": []}
+        if hasattr(self, "_data_service") and self._data_service is not None:
+            try:
+                prov = self._data_service.recorded_provenance()
+            except Exception:
+                pass
+
         manifest_info: dict[str, Any] = {
             "code_version": "0.1.0",
             "plugin_versions": {
                 p.name: {"version": p.manifest.version, "hash": p.code_hash}
                 for p in self.runtime.plugins.list()
             },
-            "data_files": [],
+            "data_files": prov.get("datasets", []),
+            "datasets": prov.get("datasets", []),
+            "checksums": prov.get("checksums", []),
             "seed": self.seed or venue_seed,
             "instrument_master_checksum": "verified",
         }
+        if self.warmup_source is not None:
+            manifest_info["warmup_override"] = self.warmup_source
+            summary_info["warmup_override"] = self.warmup_source
 
         session_md_text = (
             f"Session {self.run_name} ({mode_str}) completed on {date_str}.\n"

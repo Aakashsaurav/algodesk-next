@@ -64,3 +64,11 @@ class CalendarCoverageError(AlgoDeskError):
 
 class DataError(AlgoDeskError):
     """A data operation, selector, or catalog query failed."""
+
+
+class RateLimitError(DataError):
+    """An API endpoint rate limit was exceeded or HTTP 429 received."""
+
+
+class AuthError(PluginError):
+    """Authentication or token resolution for a service or broker failed."""

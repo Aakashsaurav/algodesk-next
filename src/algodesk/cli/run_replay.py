@@ -49,6 +49,9 @@ def run_cmd(
     quiet: bool = typer.Option(
         False, "--quiet", "-q", help="Disable periodic console status lines"
     ),
+    warmup_source: str | None = typer.Option(
+        None, "--warmup-source", help="Override warm-up data source (e.g. upstox, yfinance)"
+    ),
 ) -> None:
     """Execute a paper trading or live session with full engine wiring."""
     with _open_rt(ctx, ensure=True) as rt:
@@ -114,6 +117,8 @@ def run_cmd(
 
                 rt.plugins.record_conformance(p_info.kind, p_info.name, suite="base+plugin-tests")
 
+            typer.echo("All required plugins passed conformance")
+
             # 2. instrument master refresh
             ds_cfg = getattr(eff.run, "data_source", None)
             if ds_cfg is not None:
@@ -137,6 +142,7 @@ def run_cmd(
                         typer.echo(f"  CRITICAL: {r.message} (Fix: {r.fix})")
                 raise typer.Exit(code=1)
 
+            typer.echo("Doctor pre-start check: 0 critical")
             typer.echo(f"Preparation complete for run '{run_name}': all OK, doctor 0 critical")
             return
 
@@ -148,6 +154,7 @@ def run_cmd(
             dry_run=dry_run,
             secrets=sec_prov,
             quiet=quiet,
+            warmup_source=warmup_source,
         )
 
         if dry_run:
@@ -196,6 +203,9 @@ def replay_cmd(
     ),
     quiet: bool = typer.Option(
         False, "--quiet", "-q", help="Disable periodic console status lines"
+    ),
+    warmup_source: str | None = typer.Option(
+        None, "--warmup-source", help="Override warm-up data source (e.g. upstox, yfinance)"
     ),
 ) -> None:
     """Replay historical market data deterministically through the engine."""

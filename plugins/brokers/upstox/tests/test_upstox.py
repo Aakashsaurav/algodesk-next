@@ -206,7 +206,9 @@ def test_history_client(tmp_path: Path, fake_context: MagicMock) -> None:
     candles_json = json.loads((FIXTURES_DIR / "candles_1d_response.json").read_text())
 
     def mock_handler(request: httpx.Request) -> httpx.Response:
-        assert "NSE_EQ|INE002A01018" in str(request.url)
+        assert "NSE_EQ%7CINE002A01018" in str(request.url) or "NSE_EQ|INE002A01018" in str(
+            request.url
+        )
         return httpx.Response(200, json=candles_json)
 
     transport = httpx.MockTransport(mock_handler)
@@ -226,6 +228,60 @@ def test_history_client(tmp_path: Path, fake_context: MagicMock) -> None:
     assert bars[0].start_ts < bars[1].start_ts  # Sorted ascending
     assert bars[0].open == 2460.0
     assert bars[1].close == 2500.5
+
+
+def test_history_client_1m_and_errors(tmp_path: Path, fake_context: MagicMock) -> None:
+    from algodesk.api import (
+        AuthError,
+        DataError,
+        RateLimitError,
+        bar_sequence_conformance_problems,
+    )
+
+    mgr = UpstoxInstrumentManager(fake_context, cache_dir=tmp_path)
+    mgr.load_or_fetch(raw_bytes=(FIXTURES_DIR / "instruments_sample.json").read_bytes())
+
+    candles_1m = json.loads((FIXTURES_DIR / "candles_1m_response.json").read_text())
+
+    # 1. 1m success
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        assert "/minutes/1/" in str(request.url)
+        assert request.headers.get("Authorization") == "Bearer my_test_tok"
+        return httpx.Response(200, json=candles_1m)
+
+    transport = httpx.MockTransport(mock_handler)
+    client = UpstoxHistoryClient(mgr, fake_context, http_transport=transport)
+    key_1m = SeriesKey(
+        instrument=InstrumentId("NSE:EQ:RELIANCE"),
+        kind="bars",
+        timeframe="1m",
+        adjustment="raw",
+        source="upstox",
+    )
+    s_dt = datetime(2026, 10, 22, 3, 45, tzinfo=UTC)
+    e_dt = datetime(2026, 10, 22, 4, 0, tzinfo=UTC)
+    bars_1m = list(client.history(key_1m, s_dt, e_dt, token="my_test_tok"))
+    assert len(bars_1m) == 2
+    assert bars_1m[0].start_ts < bars_1m[1].start_ts
+    assert bar_sequence_conformance_problems(bars_1m, s_dt, e_dt, timeframe="1m") == []
+
+    # 2. 429 RateLimitError
+    t_429 = httpx.MockTransport(lambda r: httpx.Response(429, text="Too Many Requests"))
+    c_429 = UpstoxHistoryClient(mgr, fake_context, http_transport=t_429)
+    with pytest.raises(RateLimitError, match="rate limit exceeded"):
+        list(c_429.history(key_1m, s_dt, e_dt))
+
+    # 3. 401 AuthError
+    t_401 = httpx.MockTransport(lambda r: httpx.Response(401, text="Unauthorized"))
+    c_401 = UpstoxHistoryClient(mgr, fake_context, http_transport=t_401)
+    with pytest.raises(AuthError, match="authentication/authorization failed"):
+        list(c_401.history(key_1m, s_dt, e_dt))
+
+    # 4. 400 DataError
+    t_400 = httpx.MockTransport(lambda r: httpx.Response(400, text="Bad Request"))
+    c_400 = UpstoxHistoryClient(mgr, fake_context, http_transport=t_400)
+    with pytest.raises(DataError, match="query rejected"):
+        list(c_400.history(key_1m, s_dt, e_dt))
 
 
 def test_feed_decode_frames(tmp_path: Path, fake_context: MagicMock) -> None:

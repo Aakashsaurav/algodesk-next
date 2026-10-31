@@ -474,6 +474,47 @@ def _check_data_quarantine(runtime: Runtime) -> CheckResult:
     return CheckResult(ok=True, message="Quarantine clean (0 items)")
 
 
+def _check_data_warmup_source(runtime: Runtime) -> CheckResult:
+    try:
+        brokers = runtime.plugins.list("broker")
+    except Exception:
+        brokers = []
+    src: str | None = None
+    if runtime.params is not None:
+        try:
+            val = runtime.params.get("data.warmup_source")
+            if val:
+                src = str(val)
+        except Exception:
+            pass
+    if src is None and not brokers:
+        return CheckResult(
+            ok=True,
+            message="No broker plugins configured; warmup source check skipped",
+        )
+    src_to_check = src or "upstox"
+    try:
+        p_info = runtime.plugins.info("broker", src_to_check)
+        if p_info:
+            return CheckResult(
+                ok=True,
+                message=f"Warm-up data source '{src_to_check}' is valid and registered",
+            )
+    except Exception:
+        pass
+    return CheckResult(
+        ok=False,
+        severity=Severity.CRITICAL,
+        message=(
+            f"Configured warm-up data source '{src_to_check}' is not registered as a broker plugin"
+        ),
+        fix=(
+            f"Ensure broker plugin '{src_to_check}' exists or configure 'data.warmup_source' "
+            "in config/params/data.toml"
+        ),
+    )
+
+
 def _build_data_doctor_checks(runtime: Runtime) -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -485,6 +526,11 @@ def _build_data_doctor_checks(runtime: Runtime) -> list[DoctorCheck]:
             id="data.quarantine",
             severity=Severity.WARNING,
             run=lambda: _check_data_quarantine(runtime),
+        ),
+        DoctorCheck(
+            id="data.warmup_source",
+            severity=Severity.CRITICAL,
+            run=lambda: _check_data_warmup_source(runtime),
         ),
     ]
 

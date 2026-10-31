@@ -6,8 +6,9 @@ entry = "plugin:UpstoxBrokerPlugin"
 config_schema = "config_schema:UpstoxConfig"
 modes_allowed = ["research", "backtest", "paper", "live"]
 order_capable = false
-verified_on = "2026-10-23"
-sources = ["Upstox Developer API V2 and V3, WebSocket V3 with Protobuf"]
+verified_on = "2026-10-31"
+sources = ["Upstox Developer API V2 and V3, WebSocket V3 with Protobuf", "upstox.com/developer/api-documentation/rate-limiting (31 Oct 2026)", "upstox.com/developer/api-documentation/v3/get-historical-candle-data (31 Oct 2026)"]
+candles_adjusted = "unknown"
 
 [capabilities]
 history = true
@@ -16,6 +17,19 @@ realtime = true
 live_suitable = true
 official_api = true
 delay_seconds = 0
+
+[limits.history]
+requests_per_second = 50
+requests_per_minute = 500
+requests_per_30min = 2000
+
+[max_span]
+"1m" = 30
+"1d" = 3650
+
+[retention]
+"1m" = "2022-01-01"
+"1d" = "2000-01-01"
 
 [requires]
 packages = ["httpx", "websockets", "protobuf", "pydantic", "pytest"]

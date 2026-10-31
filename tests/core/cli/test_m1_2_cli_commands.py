@@ -26,7 +26,7 @@ class FakeBroker:
 
     def validate(self, session: Any) -> bool:
         # pyrefly: ignore[no-any-return-implicit]
-        return session.token == "valid_token"
+        return bool(session.token == "valid_token")
 
     def expires_at(self, session: Any) -> datetime | None:
         return datetime(2027, 10, 23, tzinfo=UTC)
@@ -63,7 +63,7 @@ def test_cli_secrets_flow(runner: CliRunner, tmp_path: Path, monkeypatch: Any) -
     assert "my_secret_val" not in res_list.output
 
 
-def test_cli_data_get(runner: CliRunner, monkeypatch: Any) -> None:
+def test_cli_data_get(runner: CliRunner, monkeypatch: Any, tmp_project: Path) -> None:
     from datetime import timedelta
 
     from algodesk.api import Bar
@@ -72,11 +72,15 @@ def test_cli_data_get(runner: CliRunner, monkeypatch: Any) -> None:
     class FakeYFinanceBroker:
         def history(self, key: Any, start: Any, end: Any) -> list[Bar]:
             # Generate fake daily bars between start and end, skipping Oct 2 and Oct 20
+            from zoneinfo import ZoneInfo
+
+            ist = ZoneInfo("Asia/Kolkata")
             bars: list[Bar] = []
             cur = start
             while cur <= end:
-                d_str = cur.strftime("%Y-%m-%d")
-                if d_str not in ("2026-10-02", "2026-10-20") and cur.weekday() < 5:
+                cur_dt = cur.astimezone(ist) if cur.tzinfo else cur
+                d_str = cur_dt.strftime("%Y-%m-%d")
+                if d_str not in ("2026-10-02", "2026-10-20") and cur_dt.weekday() < 5:
                     bars.append(
                         Bar(
                             instrument=key.instrument,
@@ -104,7 +108,10 @@ def test_cli_data_get(runner: CliRunner, monkeypatch: Any) -> None:
     monkeypatch.setattr(PluginRegistry, "create", fake_create)
 
     # Test data get command with fake yfinance broker
-    res = runner.invoke(app, ["data", "get", "RELIANCE", "1d", "2026-10-01", "2026-10-20"])
+    res = runner.invoke(
+        app,
+        ["--root", str(tmp_project), "data", "get", "RELIANCE", "1d", "2026-10-01", "2026-10-20"],
+    )
     assert res.exit_code == 0
     assert "OPEN" in res.output
     assert "CLOSE" in res.output

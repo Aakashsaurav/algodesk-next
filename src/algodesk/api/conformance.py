@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from algodesk.api.errors import CalendarCoverageError, ConfigError
@@ -296,3 +296,54 @@ def kind_problems(plugin: Any) -> list[str]:
         return clock_problems(plugin)
 
     return []
+
+
+def bar_sequence_conformance_problems(
+    bars: Sequence[Any],
+    start: datetime,
+    end: datetime,
+    timeframe: str = "1d",
+) -> list[str]:
+    """Verify that a sequence of bars is timezone-aware UTC, strictly monotonic,
+    and within range.
+    """
+    problems: list[str] = []
+    prev_ts: datetime | None = None
+    for i, b in enumerate(bars):
+        st = getattr(b, "start_ts", None)
+        et = getattr(b, "end_ts", None)
+        if st is None or getattr(st, "tzinfo", None) is None:
+            problems.append(f"Bar {i} start_ts is missing or not timezone-aware")
+            continue
+        if et is None or getattr(et, "tzinfo", None) is None:
+            problems.append(f"Bar {i} end_ts is missing or not timezone-aware")
+            continue
+        if st.utcoffset() != timedelta(0):
+            problems.append(f"Bar {i} start_ts is not UTC")
+        if et.utcoffset() != timedelta(0):
+            problems.append(f"Bar {i} end_ts is not UTC")
+        if prev_ts is not None and st <= prev_ts:
+            problems.append(
+                f"Bar {i} timestamp {st.isoformat()} is not strictly monotonic "
+                f"after {prev_ts.isoformat()}"
+            )
+        prev_ts = st
+        if timeframe == "1d":
+            from zoneinfo import ZoneInfo
+
+            ist = ZoneInfo("Asia/Kolkata")
+            bd = st.astimezone(ist).date()
+            sd = start.astimezone(ist).date() if start.tzinfo else start.date()
+            ed = end.astimezone(ist).date() if end.tzinfo else end.date()
+            if bd < sd or bd > ed:
+                problems.append(
+                    f"Bar {i} date {bd.isoformat()} is outside range "
+                    f"[{sd.isoformat()}, {ed.isoformat()}]"
+                )
+        else:
+            if st < start or st > end:
+                problems.append(
+                    f"Bar {i} timestamp {st.isoformat()} is outside range "
+                    f"[{start.isoformat()}, {end.isoformat()}]"
+                )
+    return problems

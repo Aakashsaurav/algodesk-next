@@ -35,6 +35,9 @@ class PluginManifest(BaseModel):
     modes_allowed: list[Mode] = [Mode.RESEARCH, Mode.BACKTEST, Mode.PAPER]
     order_capable: bool = False
     limits: dict[str, Any] = {}
+    max_span: dict[str, Any] = {}
+    retention: dict[str, Any] = {}
+    candles_adjusted: str | None = None
     requires: dict[str, Any] = {}
     config_schema: str | None = None
     verified_on: date | None = None

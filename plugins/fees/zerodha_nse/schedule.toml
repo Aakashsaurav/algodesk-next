@@ -2,7 +2,7 @@
 name = "zerodha_nse"
 source = "zerodha.com/charges (checked 30 Oct 2026) and 1 Apr 2026 STT notice"
 verified_on = "2026-10-30"
-verified = true
+verified = false
 
 # ==============================================================================
 # Equity Delivery (segment: eq, product: CNC)

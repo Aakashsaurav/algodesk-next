@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -13,7 +14,7 @@ from algodesk.cli.app import app
 runner = CliRunner()
 
 
-def test_data_get_command_mocked() -> None:
+def test_data_get_command_mocked(tmp_project: Path) -> None:
     """Test data get formats table without network calls."""
     fake_bar = Bar(
         instrument=InstrumentId("NSE:EQ:RELIANCE"),
@@ -32,7 +33,19 @@ def test_data_get_command_mocked() -> None:
     mock_broker.history.return_value = [fake_bar]
 
     with patch("algodesk.registry.registry.PluginRegistry.create", return_value=mock_broker):
-        res = runner.invoke(app, ["data", "get", "RELIANCE", "1d", "2026-10-01", "2026-10-02"])
+        res = runner.invoke(
+            app,
+            [
+                "--root",
+                str(tmp_project),
+                "data",
+                "get",
+                "RELIANCE",
+                "1d",
+                "2026-10-01",
+                "2026-10-02",
+            ],
+        )
         assert res.exit_code == 0, res.output
         assert "DATE" in res.output
         assert "100.00" in res.output
@@ -40,12 +53,24 @@ def test_data_get_command_mocked() -> None:
         assert "1000" in res.output
 
 
-def test_data_get_empty_results() -> None:
+def test_data_get_empty_results(tmp_project: Path) -> None:
     """Test data get handles empty bar results gracefully."""
     mock_broker = MagicMock()
     mock_broker.history.return_value = []
 
     with patch("algodesk.registry.registry.PluginRegistry.create", return_value=mock_broker):
-        res = runner.invoke(app, ["data", "get", "RELIANCE", "1d", "2026-10-01", "2026-10-02"])
+        res = runner.invoke(
+            app,
+            [
+                "--root",
+                str(tmp_project),
+                "data",
+                "get",
+                "RELIANCE",
+                "1d",
+                "2026-10-01",
+                "2026-10-02",
+            ],
+        )
         assert res.exit_code == 0, res.output
         assert "No bars returned" in res.output

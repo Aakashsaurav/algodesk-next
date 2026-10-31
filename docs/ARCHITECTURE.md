@@ -30,7 +30,7 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 | `registry` | Plugin discovery, validation, gating, loading | `PluginRegistry`, `discover`, `code_hash`, `ConformanceStore`, `scaffold_plugin`, `base_contract_problems` |
 | `journal` | Append-only hash-chained event log (SQLite) | `Journal`, `JournalSettings`, `verify_journal` |
 | `logs` | JSON logging with secret scrubbing | `setup_logging`, `get_logger` |
-| `data` | Bar & tick store, day coverage, validation, quarantine, resampler, catalog, groups | `BarStore`, `BarValidator`, `CoverageIndex`, `QuarantineManager`, `SessionBarStore`, `resample`, `DataManifest`, `DataCatalog` |
+| `data` | Bar & tick store, day coverage, validation, quarantine, resampler, catalog, groups, rate limiter, gap planner, parallel fetcher, data service | `BarStore`, `BarValidator`, `RateLimiter`, `GapPlanner`, `Fetcher`, `DataService`, `CoverageIndex`, `QuarantineManager`, `SessionBarStore`, `resample`, `DataManifest`, `DataCatalog` |
 | `engine` | Deterministic event bus, clocks, scheduler, bars, runner, and strategy runtime | `EventBus`, `WallClock`, `SimClock`, `Scheduler`, `BarBuilder`, `SessionManager`, `SessionRunner`, `StrategyRuntime`, `IndicatorManager`, `NotifyBridge` |
 | `oms` | Order lifecycle, state machine, write-ahead journaling | `OrderManager` |
 | `portfolio` | Realized/unrealized accounting, mark-to-market, snapshots | `PortfolioLedger` |
@@ -86,21 +86,30 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 
 isolation, ruff check, ruff format check, mypy (strict), pytest, import-linter contracts, budget (size advisory, dependencies hard), docs check, architecture lint, secret scan. The last line is `CHECK: PASS` or `CHECK: FAIL (n)`.
 
-## 8. Market Sessions & Calendars
+## 8. Data Architecture (Limiter, Gap Planner, Parallel Fetcher & DataService)
+
+Historical market data flows through a pure planner, central rate limiter, worker fetcher, and transactional bar store:
+- **Central Rate Limiter (`RateLimiter`)**: Centralized multi-window sliding limiter enforcing requests-per-second, per-minute, and per-30-minute caps keyed to `(source, endpoint)`. Thresholds are initialized from plugin manifests and can be overridden dynamically in the parameter registry. HTTP 429 or upstream rate errors trigger synchronized backoff across all worker threads with exponential backoff and jitter, logged directly to the journal.
+- **Pure Gap Planner (`GapPlanner`)**: Deterministically maps arbitrary requested timeframes to base series `1m` or `1d`. Consults `Calendar` to identify expected trading sessions not marked `COMPLETE`, `CLOSED`, or `UNAVAILABLE`. Requests are chunked within plugin `max_span` and `data.fetch_chunk_days`. Sessions older than plugin retention limits are marked `UNAVAILABLE`.
+- **Worker Fetcher (`Fetcher`)**: Thread pool executing chunk fetch plans. For each chunk, the worker acquires the rate limiter, invokes the broker plugin's `history()`, validates candlestick monotonicity and integrity with `BarValidator`, and commits validated bars to `BarStore` or quarantines corrupt records via `QuarantineManager`. Retries up to `data.fetch_retries` before recording `EMPTY` with error details in `fetch_log`. Interrupted fetches cleanly resume from already committed chunks.
+- **Unified Query Service (`DataService.get`)**: Unified entrypoint orchestrating planning, rate-limited fetching, Parquet storage retrieval, and on-the-fly resampling to the requested timeframe. Returns `DataSlice` with complete provenance (`dataset_ids`, SHA-256 `checksums`, `source`, `adjustment`, `fetched_at`). Supports `download=raw` or `download=adjusted` (`adjust` other than `none` raises `NotSupported`). `--fill-only` mode fetches and stores data without materializing memory slices. Strategy indicator warm-up is pinned to the run's primary `live_suitable` broker (Upstox), recording explicit overrides to the journal and results manifest.
+- **Spike Inspection Tools (`algodesk spike`)**: Read-only diagnostic commands (`upstox-history`, `yfinance-history`, `upstox-actions`) probing first/last candle availability, sampled monthly row densities, request counts, and price discontinuity across stock splits without ever exposing tokens.
+
+## 9. Market Sessions & Calendars
 
 Market sessions (open, close, square-off, weekdays) are centralized as parameters under `market.<exchange>.<segment>` in the parameter registry (`config/params/markets.toml`). Calendar plugins read registry parameters for timing while supplying exchange-specific trading days, holidays, per-session closures (closed = all, morning, evening; MCX has two sessions), and special session timings from data files.
 
-## 9. Secrets & Broker Ingestion
+## 10. Secrets & Broker Ingestion
 
 Secrets providers (`keychain`, `env`) expose name-based lookup through `SecretReader`. In `build_context`, all retrieved secret values are registered with `Scrubber` to guarantee redaction in logs and journals. Broker plugins implement `DataSource` (historical bars, real-time tick/quote feeds) and `AuthFlow` (interactive browser login or analytics tokens).
 
-## 10. Strategy Runtime, Runner, Replay & Reporting
+## 11. Strategy Runtime, Runner, Replay & Reporting
 
 `SessionRunner` coordinates event streaming, bar building, strategy execution, order routing, risk evaluation, simulated matching, and portfolio ledgering. `StrategyRuntime` provides strategies with a read-only `StrategyContext` (completed bars, incremental indicators, position and portfolio snapshots), dispatches lifecycle hooks (`on_start`, `on_bar`, `on_fill`, `on_timer`, `on_stop`), and isolates strategy exceptions so failed strategies are halted without interrupting the session. `ResultsWriter` produces an 8-file artifact bundle in `results/<run_id>/` (`SUMMARY.md`, `metrics.json`, `trades.csv`, `equity.csv`, `config.effective.txt`, `registry.snapshot.json`, `manifest.json`, and `session.md`). Telegram alerts are delivered out-of-band via `NotifyBridge`.
 
 Run preparation (`algodesk run --prepare`) runs conformance suites for all run plugins, refreshes the instrument master, and runs pre-start doctor checks before execution. Historical replay uses `SimClock` and `ReplayFeed` to replay recorded ticks through the exact production engine wiring. `compare_runs` validates bit-for-bit replay equivalence by checking performance metrics and the ordered journal event sequences (signals, risk decisions, orders, fills). Hermetic test isolation fixture (`tmp_project`) and conftest session guards guarantee tests never mutate repository data or results state.
 
-## 11. Structured Logging & Observability
+## 12. Structured Logging & Observability
 
 AlgoDesk Next enforces strict session observability across file logging, write-ahead journaling, console feedback, and post-session audits:
 - **File Logging (`logs/algodesk.log`)**: `run`, `replay`, and `feed probe` initialize daily-rotating structured JSON logs via `setup_logging`. All log records pass through `Scrubber` to guarantee credential and token redaction. Log retention is governed by `logs.retention_days`.
@@ -108,9 +117,9 @@ AlgoDesk Next enforces strict session observability across file logging, write-a
 - **Console Status Line**: Periodic status updates emit every `run.status_seconds` (default 30s; silenced with `--quiet`) displaying IST time, state, total ticks, oldest tick age, closed bars, signals, orders, fills, kill-switch status, and RSS.
 - **Session Observability Report**: `algodesk session report [RUN_ID]` prints first/last tick in IST, session coverage % against the NSE calendar session, feed gaps, bars per timeframe, signals, orders, fills, rule rejects, p95 latency, peak RSS, recorder rows/bytes, journal growth, and failure reasons. Runs starting after session open are tagged `partial`.
 
-## 12. Not built yet
+## 13. Not built yet
 
-- **M2 Data layer (remaining)**: Broker history fetchers, instrument mapping, accumulation jobs, BSE and MCX full holiday tables.
+- **M2 Data layer (remaining)**: Accumulation jobs, BSE and MCX full holiday tables, dynamic adjustments (M2-4).
 - **M3 Indicators and screens**: Full built-in set, custom-indicator scaffold, TOML and Python screens, saved screen runs.
 - **M4 Backtester and reports**: Backtest mode (bar and tick level), models, portfolio mode, results store, compare.
 - **M5 Risk and control**: Risk profiles in the parameter registry, monitors, health guards, Telegram commands, outage policies.

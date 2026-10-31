@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from algodesk.data.fetcher import Fetcher, FetchResult
 from algodesk.data.layout import (
     bar_file_path,
     dataset_id_for_key,
     parse_bar_file_path,
 )
+from algodesk.data.limiter import RateLimiter
 from algodesk.data.manifest import (
     CoverageDayRecord,
     DataManifest,
@@ -17,6 +19,7 @@ from algodesk.data.manifest import (
     PartRecord,
     QuarantineRecord,
 )
+from algodesk.data.planner import FetchChunk, FetchPlan, GapPlanner
 from algodesk.data.recorder import Recorder
 from algodesk.data.replay import ReplayFeed
 from algodesk.data.schema import (
@@ -40,12 +43,18 @@ __all__ = [
     "DataManifest",
     "DataService",
     "DatasetRecord",
+    "FetchChunk",
     "FetchLogRecord",
+    "FetchPlan",
+    "FetchResult",
+    "Fetcher",
     "FileRecord",
+    "GapPlanner",
     "InstrumentRecord",
     "MARKET_EVENT_SCHEMA",
     "PartRecord",
     "QuarantineRecord",
+    "RateLimiter",
     "Recorder",
     "ReplayFeed",
     "bar_file_path",

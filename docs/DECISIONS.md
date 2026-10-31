@@ -90,5 +90,9 @@ Short decision records (context, decision, reason) in the order they were taken.
 
 **ADR-041 yfinance auto_adjust=True by default, raw optional, corporate actions stored.** The yfinance broker plugin requests historical bars with `auto_adjust=True` by default so strategies receive dividend- and split-adjusted OHLCV. Raw unadjusted prices remain selectable via explicit configuration, and corporate actions (dividends and stock splits) are extracted and persisted alongside price series in the catalog.
 
+**ADR-042 Core rate limiter keyed to (source, endpoint).** Historical and market data requests are throttled centrally in `RateLimiter` using sliding windows across 1-second, 1-minute, and 30-minute intervals. The limiter is keyed per `(source, endpoint)`, pulling limits from plugin manifests and registry parameters. On 429 or rate errors, all workers for that endpoint pause with exponential backoff and jitter, logged directly to the journal.
+
+**ADR-043 M1 acceptance criteria requires two live sessions of 60+ minutes continuous feed.** Formal acceptance for Milestone 1 requires successfully executing at least two live trading sessions of 60 continuous minutes or longer without feed gaps, process crashes, or state corruption. This validates end-to-end WebSocket stability, heartbeat monitoring, and deterministic journaling under genuine market conditions before proceeding to larger real-capital operations.
+
 
 

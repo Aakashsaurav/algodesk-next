@@ -144,7 +144,18 @@ class IndicatorManager:
         )
 
         try:
-            bars = data_service.history(key, start=start_dt, end=session_start)
+            from algodesk.data.service import DataService
+
+            if isinstance(data_service, DataService):
+                slice_res = data_service.get(key, start=start_dt, end=session_start)
+                bars = list(slice_res.bars)
+            elif hasattr(data_service, "history"):
+                bars = list(data_service.history(key, start=start_dt, end=session_start))
+            elif hasattr(data_service, "get"):
+                slice_res = data_service.get(key, start=start_dt, end=session_start)
+                bars = list(getattr(slice_res, "bars", []))
+            else:
+                bars = []
         except Exception:
             # pyrefly: ignore[implicit-any-empty-container]
             bars = []

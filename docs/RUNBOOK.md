@@ -94,7 +94,15 @@ Merge instrument-day part files into single daily parquet files:
 - All uncompacted: `algodesk data compact`
 - Specific date: `algodesk data compact --date 2026-10-23`
 
-### 6. Status and verification
+### 6. Fetching historical data
+Query historical candlestick bars with automatic gap planning, central rate limiting, and on-the-fly resampling:
+- Daily bars (default adjusted): `algodesk data get RELIANCE 1d 2026-10-01 2026-10-20`
+- Intraday 1-minute bars: `algodesk data get RELIANCE 1m 2026-10-20T09:15:00 2026-10-20T15:30:00 --source upstox`
+- Resampled 5-minute bars: `algodesk data get RELIANCE 5m 2026-10-20 2026-10-22`
+- Download unadjusted raw bars: `algodesk data get RELIANCE 1d 2026-10-01 2026-10-20 --download raw`
+- Fill cache without rendering table: `algodesk data get RELIANCE 1d 2026-10-01 2026-10-20 --fill-only`
+
+### 7. Status and verification
 Inspect datasets, file parts, checksums, and detect trading day gaps:
 - Overall status summary: `algodesk data status`
 - Grouped status summary: `algodesk data status --group`
@@ -105,7 +113,13 @@ Inspect datasets, file parts, checksums, and detect trading day gaps:
 - Verify only bars or ticks: `algodesk data verify --only bars` / `algodesk data verify --only ticks`
 - Missing trading day gaps: `algodesk data gaps NSE:EQ:INFY --from 2026-10-01 --to 2026-10-26`
 
-### 7. Quarantine lifecycle
+### 8. Spike inspection commands
+Probe live/research broker data characteristics without exposing credentials:
+- Upstox history reach and split continuity: `algodesk spike upstox-history --symbol RELIANCE --split-date 2026-10-15`
+- Yahoo Finance reach and split continuity: `algodesk spike yfinance-history --symbol RELIANCE`
+- Upstox corporate actions response fields: `algodesk spike upstox-actions --symbols RELIANCE,INFY`
+
+### 9. Quarantine lifecycle
 Invalid chunks failing validation are quarantined under `data/.quarantine/<timestamp>/` with `report.json`:
 - List quarantined items: `algodesk data quarantine list`
 - Inspect report details: `algodesk data quarantine show <id>`
@@ -113,16 +127,16 @@ Invalid chunks failing validation are quarantined under `data/.quarantine/<times
 - Purge specific item: `algodesk data quarantine purge --id <id> --yes`
 - Purge all quarantined items: `algodesk data quarantine purge --all --yes`
 
-### 8. Live session bars
+### 10. Live session bars
 Ephemeral intraday bars stored under `data/session_bars/date=YYYY-MM-DD/`, isolated from history:
 - Purge old session partitions (default retention): `algodesk data session-bars purge`
 - Purge older than N days: `algodesk data session-bars purge --days 3`
 
-### 9. Instrument groups
+### 11. Instrument groups
 - List groups: `algodesk groups list`
 - Inspect a group: `algodesk groups show demo5`
 
-### 10. Paper trading and historical replay
+### 12. Paper trading and historical replay
 
 Follow the four-step operating lifecycle for every trading session:
 

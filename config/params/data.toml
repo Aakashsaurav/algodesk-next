@@ -115,3 +115,72 @@ description = "Price jump threshold percentage between consecutive bars for warn
 owner = "data"
 
 
+
+[[param]]
+name = "data.fetch_chunk_days"
+type = "int"
+default = 30
+min = 1
+max = 365
+unit = "days"
+scope = "global"
+tighten = "down"
+description = "Maximum chunk span in days per historical data fetch request"
+owner = "data"
+
+[[param]]
+name = "data.fetch_max_workers"
+type = "int"
+default = 4
+min = 1
+max = 32
+unit = "workers"
+scope = "global"
+tighten = "down"
+description = "Maximum concurrent worker threads for parallel historical data fetching"
+owner = "data"
+
+[[param]]
+name = "data.fetch_retries"
+type = "int"
+default = 3
+min = 0
+max = 10
+unit = "retries"
+scope = "global"
+tighten = "down"
+description = "Maximum retries before marking an unreached historical data chunk as EMPTY"
+owner = "data"
+
+[[param]]
+name = "data.rate_backoff_base_s"
+type = "float"
+default = 1.0
+min = 0.1
+max = 60.0
+unit = "s"
+scope = "global"
+tighten = "up"
+description = "Initial exponential backoff base delay in seconds upon rate limit or 429 error"
+owner = "data"
+
+[[param]]
+name = "data.rate_backoff_jitter_s"
+type = "float"
+default = 0.5
+min = 0.0
+max = 10.0
+unit = "s"
+scope = "global"
+tighten = "none"
+description = "Random jitter in seconds added to rate limit backoff delay"
+owner = "data"
+
+[[param]]
+name = "data.warmup_source"
+type = "str"
+default = "upstox"
+scope = "global"
+tighten = "none"
+description = "Default market data source plugin name used for pre-session warm-up"
+owner = "data"

@@ -105,7 +105,7 @@ class UpstoxInstrumentManager:
         url: str = "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz",
     ) -> bytes:
         """Download remote instrument master file with gzip compression."""
-        timeout = float(self._param("upstox.request_timeout_s", 15.0))
+        timeout = float(self._param("upstox.instrument_download_timeout_s", 60.0))
         headers = {"Accept-Encoding": "gzip"}
         with httpx.Client(transport=self._transport, timeout=timeout) as client:
             resp = client.get(url, headers=headers)
@@ -130,6 +130,10 @@ class UpstoxInstrumentManager:
             content = p.read_bytes()
             self._cleanup_older_downloads(p)
         else:
+            import sys
+
+            sys.stderr.write("Downloading Upstox instrument master (~3.4 MB)...\n")
+            sys.stderr.flush()
             content = self.download_master()
             p.write_bytes(content)
             self._cleanup_older_downloads(p)
@@ -215,11 +219,12 @@ class UpstoxInstrumentManager:
 
     def resolve(self, symbol_or_id: str | InstrumentId) -> Instrument:
         """Resolve symbol, raw key, or canonical InstrumentId to Instrument."""
+        fetch_error: Exception | None = None
         if not self._instruments:
             try:
                 self.load_or_fetch()
-            except Exception:
-                pass
+            except Exception as e:
+                fetch_error = e
 
         raw = str(symbol_or_id).strip()
         if raw in self._instruments:
@@ -229,6 +234,16 @@ class UpstoxInstrumentManager:
         upper_sym = (raw.split(":")[-1] if ":" in raw else raw).upper()
         if upper_sym in self._symbol_to_inst:
             return self._symbol_to_inst[upper_sym]
+
+        if fetch_error is not None:
+            raise ConfigError(
+                what=(
+                    f"Cannot map symbol '{symbol_or_id}': Upstox instrument master "
+                    f"failed to load ({fetch_error})"
+                ),
+                where="UpstoxInstrumentManager.resolve",
+                fix="Verify network connection to assets.upstox.com or check timeout settings",
+            ) from fetch_error
 
         raise ConfigError(
             what=f"Cannot map unknown symbol '{symbol_or_id}' in Upstox instrument master",

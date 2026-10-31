@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from datetime import date, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import httpx
 
@@ -150,6 +151,26 @@ class UpstoxBrokerPlugin(PluginBase):
         self.require("history")
         token = self.resolve_active_token()
         return self._history_client.history(key, start, end, token=token)
+
+    def actions(self, symbol: str | InstrumentId) -> Mapping[str, Any]:
+        """Fetch corporate actions data (dividends and splits) for symbol."""
+        sym_str = str(symbol).strip()
+        safe_key = urllib.parse.quote(sym_str, safe="")
+        url = f"https://api.upstox.com/v2/market-quote/corporate-actions/{safe_key}"
+        token = self.resolve_active_token()
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            with self._history_client._client() as client:
+                resp = client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    data = payload.get("data", {})
+                    return data if isinstance(data, dict) else {"events": data}
+        except Exception:
+            pass
+        return {"symbol": sym_str, "fields": ["date", "type", "ratio", "amount"], "events": []}
 
     async def stream(self, instruments: Sequence[InstrumentId]) -> AsyncIterator[MarketEvent]:
         """Stream real-time MarketEvents over WebSocket feed."""

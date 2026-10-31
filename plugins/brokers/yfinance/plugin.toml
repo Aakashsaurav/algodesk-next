@@ -6,8 +6,8 @@ entry = "plugin:YFinanceBrokerPlugin"
 config_schema = "config_schema:YFinanceConfig"
 modes_allowed = ["research", "backtest"]
 order_capable = false
-verified_on = "2026-10-23"
-sources = ["Yahoo Finance unofficial public endpoints via yfinance Python library"]
+verified_on = "2026-10-31"
+sources = ["Yahoo Finance unofficial public endpoints via yfinance Python library (verified 31 Oct 2026)"]
 
 [capabilities]
 history = true
@@ -16,6 +16,19 @@ realtime = false
 live_suitable = false
 official_api = false
 delay_seconds = 0
+
+[limits.history]
+requests_per_second = 2
+requests_per_minute = 60
+requests_per_30min = 1000
+
+[max_span]
+"1m" = 7
+"1d" = 3650
+
+[retention]
+"1m" = 7
+"1d" = 36500
 
 [requires]
 packages = ["yfinance", "pydantic", "pytest"]

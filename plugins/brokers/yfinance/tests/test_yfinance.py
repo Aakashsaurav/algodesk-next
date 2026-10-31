@@ -246,6 +246,39 @@ def test_yfinance_extra_methods(manifest: PluginManifest) -> None:
 
 
 def test_yfinance_conformance(manifest: PluginManifest) -> None:
-    plugin = YFinanceBrokerPlugin(manifest, _yf_module=FakeYFModule())
+    from algodesk.api import bar_sequence_conformance_problems
+
+    fake_yf = FakeYFModule()
+    plugin = YFinanceBrokerPlugin(manifest, _yf_module=fake_yf)
     problems = data_source_problems(plugin)
     assert problems == []
+
+    # Verify extended conformance: tz-aware, monotonic, inside range
+    key_1d = SeriesKey(
+        instrument=InstrumentId("NSE:EQ:INFY"),
+        kind="bars",
+        timeframe="1d",
+        adjustment="adjusted",
+        source="yfinance",
+    )
+    s_dt = datetime(2026, 10, 1, tzinfo=UTC)
+    e_dt = datetime(2026, 10, 10, tzinfo=UTC)
+    bars_1d = list(plugin.history(key_1d, s_dt, e_dt))
+    assert len(bars_1d) > 0
+    bar_probs = bar_sequence_conformance_problems(bars_1d, s_dt, e_dt, timeframe="1d")
+    assert bar_probs == []
+
+    # 1m history conformance
+    now_dt = datetime.now(UTC)
+    key_1m = SeriesKey(
+        instrument=InstrumentId("BSE:EQ:INFY"),
+        kind="bars",
+        timeframe="1m",
+        adjustment="raw",
+        source="yfinance",
+    )
+    s_1m = now_dt - timedelta(days=2)
+    e_1m = now_dt - timedelta(days=1)
+    bars_1m = list(plugin.history(key_1m, s_1m, e_1m))
+    assert len(bars_1m) > 0
+    assert bar_sequence_conformance_problems(bars_1m, s_1m, e_1m, timeframe="1m") == []

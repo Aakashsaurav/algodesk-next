@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -10,9 +11,12 @@ import httpx
 
 from algodesk.api import (
     AlgoDeskError,
+    AuthError,
     Bar,
     ConfigError,
+    DataError,
     PluginContext,
+    RateLimitError,
     SeriesKey,
 )
 
@@ -85,13 +89,38 @@ class UpstoxHistoryClient:
         from_str = start.strftime("%Y-%m-%d")
         to_str = end.strftime("%Y-%m-%d")
 
-        url = f"https://api.upstox.com/v3/historical-candle/{upstox_key}/{unit}/{interval}/{to_str}/{from_str}"
+        safe_key = urllib.parse.quote(upstox_key, safe="")
+        url = f"https://api.upstox.com/v3/historical-candle/{safe_key}/{unit}/{interval}/{to_str}/{from_str}"
         headers: dict[str, str] = {"Accept": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
         with self._client() as client:
             resp = client.get(url, headers=headers)
+            if resp.status_code == 429:
+                raise RateLimitError(
+                    what="Upstox API rate limit exceeded (HTTP 429)",
+                    where="UpstoxHistoryClient.history",
+                    fix="Back off requests or adjust rate limit in config/params/upstox.toml",
+                )
+            if resp.status_code in (401, 403):
+                raise AuthError(
+                    what=(
+                        f"Upstox API authentication/authorization failed with "
+                        f"HTTP {resp.status_code}"
+                    ),
+                    where="UpstoxHistoryClient.history",
+                    fix="Refresh analytics/oauth token using 'algodesk login upstox'",
+                )
+            if resp.status_code in (400, 404):
+                raise DataError(
+                    what=(
+                        f"Candle history request failed: query rejected with "
+                        f"HTTP {resp.status_code}: {resp.text}"
+                    ),
+                    where="UpstoxHistoryClient.history",
+                    fix="Verify instrument key, timeframe unit, and date range",
+                )
             if resp.status_code != 200:
                 raise AlgoDeskError(
                     what=f"Candle history request failed with HTTP {resp.status_code}",

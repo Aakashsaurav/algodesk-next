@@ -37,6 +37,7 @@ from algodesk.data.manifest import (
 from algodesk.data.quarantine import QuarantineManager
 from algodesk.data.recorder import MarketRecorder
 from algodesk.data.schema import read_bars_parquet
+from algodesk.data.service import DataService
 from algodesk.data.session_bars import SessionBarStore
 from algodesk.data.store import BarStore, _compute_sha256
 from algodesk.data.synth import synth_ticks
@@ -95,6 +96,13 @@ def data_get(
     start: str = typer.Argument(..., help="Start date/time (e.g. YYYY-MM-DD or ISO8601)"),
     end: str = typer.Argument(..., help="End date/time (e.g. YYYY-MM-DD or ISO8601)"),
     adjusted: bool = typer.Option(False, "--adjusted", help="Use adjusted prices"),
+    download: str = typer.Option(
+        "adjusted", "--download", help="Download raw or adjusted series ('raw' or 'adjusted')"
+    ),
+    adjust: str = typer.Option("none", "--adjust", help="Dynamic price adjustment ('none')"),
+    fill_only: bool = typer.Option(
+        False, "--fill-only", help="Fetch and commit data to store without returning table"
+    ),
     source: str = typer.Option("yfinance", "--source", help="Data source broker plugin"),
 ) -> None:
     """Fetch and display historical market data bars in a table."""
@@ -102,20 +110,53 @@ def data_get(
     start_dt = _parse_data_cli_dt(start, is_end=False)
     end_dt = _parse_data_cli_dt(end, is_end=True)
 
+    download_mode = "adjusted" if adjusted else download
     inst_id = InstrumentId(symbol if ":" in symbol else f"NSE:EQ:{symbol}")
     key = SeriesKey(
         instrument=inst_id,
         kind="bars",
         timeframe=timeframe,
-        adjustment="adjusted" if adjusted else "raw",
+        adjustment=download_mode,
         source=source,
     )
 
     with _open_rt(ctx, ensure=False) as rt:
         p_ctx = build_context(Mode.RESEARCH, run_id=f"data_get_{source}")
         broker: Any = rt.plugins.create("broker", source, config={}, ctx=p_ctx)
-        bars = list(broker.history(key, start_dt, end_dt))
+        sources = {source: broker}
+        manifests = {
+            p.manifest.name: p.manifest for p in rt.plugins.list() if hasattr(p, "manifest")
+        }
+        manifest_obj = _get_manifest(rt)
+        data_dir = getattr(getattr(rt, "paths", None), "data", Path("data"))
+        store = BarStore(
+            data_dir=data_dir,
+            manifest=manifest_obj,
+            params=rt.params,
+            journal=getattr(rt, "journal", None),
+        )
+        ds = DataService(
+            sources=sources,
+            default_source=source,
+            store=store,
+            manifests=manifests,
+            params=rt.params,
+            journal=getattr(rt, "journal", None),
+        )
+        data_slice = ds.get(
+            series=key,
+            start=start_dt,
+            end=end_dt,
+            download=download_mode,
+            adjust=adjust,
+            fill_only=fill_only,
+        )
 
+    if fill_only:
+        typer.echo(f"Filled data for {symbol} ({timeframe}) between {start} and {end}.")
+        return
+
+    bars = list(data_slice.bars)
     if not bars:
         typer.echo(f"No bars returned for {symbol} ({timeframe}) between {start} and {end}.")
         return

@@ -5,6 +5,7 @@ Public API surface — re-exports everything downstream code needs.
 
 from algodesk.api.checks import CheckResult, DoctorCheck, Severity
 from algodesk.api.conformance import (
+    bar_sequence_conformance_problems,
     calendar_problems,
     clock_problems,
     data_source_problems,
@@ -19,6 +20,7 @@ from algodesk.api.conformance import (
 )
 from algodesk.api.errors import (
     AlgoDeskError,
+    AuthError,
     CalendarCoverageError,
     ConfigError,
     DataError,
@@ -27,6 +29,7 @@ from algodesk.api.errors import (
     NotSupported,
     ParamError,
     PluginError,
+    RateLimitError,
     SafetyViolation,
 )
 from algodesk.api.kinds import API_VERSION, Mode, PluginKind
@@ -118,6 +121,7 @@ __all__ = [
     "Severity",
     # errors
     "AlgoDeskError",
+    "AuthError",
     "CalendarCoverageError",
     "ConfigError",
     "DataError",
@@ -126,6 +130,7 @@ __all__ = [
     "NotSupported",
     "ParamError",
     "PluginError",
+    "RateLimitError",
     "SafetyViolation",
     # kinds
     "API_VERSION",
@@ -209,6 +214,7 @@ __all__ = [
     "SystemClock",
     "TradingSession",
     # conformance
+    "bar_sequence_conformance_problems",
     "calendar_problems",
     "clock_problems",
     "data_source_problems",

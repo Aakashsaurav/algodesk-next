@@ -16,10 +16,13 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
-def test_session_report_without_results_dir_raises_error(tmp_project: Path, runner: CliRunner) -> None:
+def test_session_report_without_results_dir_raises_error(
+    tmp_project: Path, runner: CliRunner
+) -> None:
     results_dir = tmp_project / "results"
     if results_dir.exists():
         import shutil
+
         shutil.rmtree(results_dir)
     res = runner.invoke(app, ["--root", str(tmp_project), "session", "report"])
     assert res.exit_code == 1
@@ -44,7 +47,9 @@ def test_session_report_nonexistent_run_id(tmp_project: Path, runner: CliRunner)
     results_dir = tmp_project / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    res = runner.invoke(app, ["--root", str(tmp_project), "session", "report", "nonexistent_run_id_xyz"])
+    res = runner.invoke(
+        app, ["--root", str(tmp_project), "session", "report", "nonexistent_run_id_xyz"]
+    )
     assert res.exit_code == 1
     assert "not found" in res.output
 
@@ -130,7 +135,9 @@ def test_session_report_with_explicit_run_id(tmp_project: Path, runner: CliRunne
         "# Run Summary\nVerdict: PASS (partial)\n", encoding="utf-8"
     )
 
-    res = runner.invoke(app, ["--root", str(tmp_project), "session", "report", "custom_test_session_001"])
+    res = runner.invoke(
+        app, ["--root", str(tmp_project), "session", "report", "custom_test_session_001"]
+    )
     assert res.exit_code == 0
     out = res.output
     assert "custom_test_session_001" in out
@@ -169,7 +176,8 @@ def test_session_report_with_fail_verdict_and_reason(tmp_project: Path, runner: 
     }
     (run_dir / "metrics.json").write_text(json.dumps(metrics), encoding="utf-8")
     (run_dir / "SUMMARY.md").write_text(
-        "# Run Summary\nVerdict: FAIL\nReason: WebSocket connection closed by broker with code 401\n",
+        "# Run Summary\nVerdict: FAIL\n"
+        "Reason: WebSocket connection closed by broker with code 401\n",
         encoding="utf-8",
     )
     (run_dir / "session.md").write_text(

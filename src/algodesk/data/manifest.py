@@ -6,6 +6,7 @@ Transactional updates use explicit BEGIN IMMEDIATE for data integrity.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -105,14 +106,16 @@ class QuarantineRecord:
 class DataManifest:
     """SQLite-backed metadata catalog with ACID transaction safety."""
 
-    __slots__ = ("_conn", "_db_path")
+    __slots__ = ("_conn", "_db_path", "_lock")
 
     def __init__(self, db_path: Path | str) -> None:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
         self._conn = sqlite3.connect(
             str(self._db_path),
             autocommit=True,
+            check_same_thread=False,
         )
 
         self._conn.row_factory = sqlite3.Row

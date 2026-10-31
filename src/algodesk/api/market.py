@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
-from typing import NewType
+from typing import Any, NewType
 
 InstrumentId = NewType("InstrumentId", str)
 
@@ -184,10 +184,26 @@ class DataSlice:
     gaps: tuple[DataGap, ...] = ()
     dataset_ids: tuple[str, ...] = ()
     checksums: tuple[str, ...] = ()
+    source: str = ""
+    adjustment: str = ""
+    fetched_at: str = ""
+    provenance: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         _validate_utc_ts(self.start, "start")
         _validate_utc_ts(self.end, "end")
+
+    @property
+    def provenance_info(self) -> dict[str, Any]:
+        if self.provenance is not None:
+            return dict(self.provenance)
+        return {
+            "dataset_ids": list(self.dataset_ids),
+            "checksums": list(self.checksums),
+            "source": self.source or self.key.source,
+            "adjustment": self.adjustment or self.key.adjustment,
+            "fetched_at": self.fetched_at,
+        }
 
     @property
     def has_gaps(self) -> bool:
