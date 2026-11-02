@@ -17,6 +17,7 @@ from algodesk.api import (
     AuthSession,
     Bar,
     CheckResult,
+    DataError,
     DoctorCheck,
     Instrument,
     InstrumentId,
@@ -61,7 +62,13 @@ def _parse_upstox_action(
     isin: str,
     now_iso: str,
 ) -> ActionRecord:
-    name_raw = str(ev.get("name") or ev.get("type") or ev.get("event_type") or "").lower()
+    name_raw = str(
+        ev.get("name")
+        or ev.get("type")
+        or ev.get("event_type")
+        or ev.get("purpose")
+        or ""
+    ).lower()
     if "split" in name_raw:
         ev_type = "split"
     elif "bonus" in name_raw:
@@ -119,6 +126,16 @@ def _parse_upstox_action(
             amt_val = None
 
     text = str(ev.get("details") or ev.get("description") or name_raw)
+    reason = None
+    if ev_type in ("split", "bonus") and ratio_val is None:
+        status = "unverified"
+        reason = "Missing ratio in Upstox response"
+    elif ev_type == "other":
+        status = "manual_required"
+        reason = "Unrecognized corporate action type"
+    else:
+        status = "unverified"
+
     return ActionRecord(
         ex_date=ex_d,
         type=ev_type,
@@ -131,6 +148,7 @@ def _parse_upstox_action(
         symbol=symbol,
         exchange=exchange,
         status=status,
+        reason=reason,
     )
 
 
@@ -318,22 +336,38 @@ class UpstoxBrokerPlugin(PluginBase):
                 where="UpstoxBrokerPlugin.actions",
                 fix="Run 'algodesk login upstox' or provide active analytics token",
             )
-        if resp.status_code in (400, 404):
-            return []
-
         if resp.status_code != 200:
-            raise AlgoDeskError(
+            raise DataError(
                 what=f"Upstox corporate actions error: HTTP {resp.status_code}",
                 where="UpstoxBrokerPlugin.actions",
                 fix="Verify symbol or ISIN identifier",
             )
 
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except Exception as exc:
+            raise DataError(
+                what=f"Invalid JSON in Upstox corporate actions response for {sym_str}",
+                where="UpstoxBrokerPlugin.actions",
+                fix="Check Upstox API response",
+            ) from exc
+
+        if not isinstance(payload, dict):
+            raise DataError(
+                what=f"Unexpected Upstox corporate actions shape: expected dict, got {type(payload).__name__}",
+                where="UpstoxBrokerPlugin.actions",
+                fix="Check Upstox corporate actions response format",
+            )
+
         events_data = payload.get("data")
         if events_data is None:
-            events_data = payload.get("events", [])
-        if not isinstance(events_data, list):
-            return []
+            events_data = payload.get("events")
+        if events_data is None or not isinstance(events_data, list):
+            raise DataError(
+                what="Unexpected Upstox corporate actions payload shape: missing events list",
+                where="UpstoxBrokerPlugin.actions",
+                fix="Verify Upstox corporate actions response structure",
+            )
 
         now_iso = datetime.now(UTC).isoformat()
         return [
@@ -341,6 +375,63 @@ class UpstoxBrokerPlugin(PluginBase):
             for ev in events_data
             if isinstance(ev, dict)
         ]
+
+    def probe_actions_raw(self, symbol: str | InstrumentId) -> dict[str, Any]:
+        """Diagnostic probe returning raw response metadata without disclosing tokens."""
+        self.require("corporate_actions")
+        sym_str = str(symbol).strip()
+        try:
+            isin = self._instruments_mgr.resolve_isin(sym_str)
+        except Exception:
+            isin = sym_str
+
+        url = f"https://api.upstox.com/v2/fundamentals/{isin}/corporate-actions"
+        token = self.resolve_active_token()
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        client = self._client()
+        try:
+            resp = client.get(url, headers=headers)
+            status_code = resp.status_code
+            try:
+                payload = resp.json()
+            except Exception:
+                # pyrefly: ignore[implicit-any-empty-container]
+                payload = {}
+        except Exception as exc:
+            return {
+                "symbol": sym_str,
+                "isin": isin,
+                "status_code": 0,
+                "error": str(exc),
+            }
+
+        if status_code != 200:
+            msg = payload.get("message") or f"HTTP {status_code}"
+            return {
+                "symbol": sym_str,
+                "isin": isin,
+                "status_code": status_code,
+                "error": str(msg),
+            }
+
+        top_keys = list(payload.keys()) if isinstance(payload, dict) else []
+        items = payload.get("data") if isinstance(payload, dict) else None
+        if items is None and isinstance(payload, dict):
+            items = payload.get("events")
+        item_list = items if isinstance(items, list) else []
+        first_item = item_list[0] if item_list and isinstance(item_list[0], dict) else {}
+
+        return {
+            "symbol": sym_str,
+            "isin": isin,
+            "status_code": status_code,
+            "top_level_keys": top_keys,
+            "item_count": len(item_list),
+            "first_item": first_item,
+        }
 
     async def stream(self, instruments: Sequence[InstrumentId]) -> AsyncIterator[MarketEvent]:
         """Stream real-time MarketEvents over WebSocket feed."""

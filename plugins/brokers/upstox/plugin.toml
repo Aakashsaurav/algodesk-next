@@ -9,7 +9,7 @@ order_capable = false
 verified_on = "2026-10-31"
 sources = ["Upstox Developer API V2 and V3, WebSocket V3 with Protobuf", "upstox.com/developer/api-documentation/rate-limiting (31 Oct 2026)", "upstox.com/developer/api-documentation/v3/get-historical-candle-data (31 Oct 2026)"]
 candles_adjusted = "unknown"
-candles_adjustment_basis = "unknown"
+candles_adjustment_basis = "splits"
 
 [capabilities]
 history = true

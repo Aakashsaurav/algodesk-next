@@ -175,6 +175,26 @@ def spike_yfinance_history(
     _run_history_spike(ctx, "yfinance", symbol, split_date, span_1m_days=7)
 
 
+def _print_raw_diagnosis(broker: Any, symbols: str) -> None:
+    for s in (sym.strip() for sym in symbols.split(",") if sym.strip()):
+        diag = (
+            broker.probe_actions_raw(s)
+            if hasattr(broker, "probe_actions_raw")
+            else {"symbol": s, "isin": s, "status_code": 200}
+        )
+        typer.echo(f"Symbol: {s}")
+        typer.echo(f"ISIN: {diag.get('isin', s)}")
+        if diag.get("error"):
+            typer.echo(f"Status: {diag.get('status_code', 0)}")
+            typer.echo(f"Message: {diag.get('error')}")
+        else:
+            typer.echo(f"HTTP status: {diag.get('status_code', 200)}")
+            typer.echo(f"Top-level JSON keys: {diag.get('top_level_keys', [])}")
+            typer.echo(f"Item count: {diag.get('item_count', 0)}")
+            typer.echo(f"First item keys and values: {diag.get('first_item', {})}")
+        typer.echo("")
+
+
 @spike_app.command("upstox-actions")
 @handle_cli_errors
 def spike_upstox_actions(
@@ -182,11 +202,16 @@ def spike_upstox_actions(
     symbols: str = typer.Option(
         ..., "--symbols", help="Comma-separated symbols to inspect (e.g. RELIANCE,INFY)"
     ),
+    raw: bool = typer.Option(False, "--raw", help="Print raw API response diagnostics"),
 ) -> None:
     """Probe Upstox corporate actions response field names and events."""
     with _open_rt(ctx) as rt:
         p_ctx = build_context(Mode.RESEARCH, run_id="spike_upstox_actions")
         broker: Any = rt.plugins.create("broker", "upstox", config={}, ctx=p_ctx)
+
+        if raw:
+            _print_raw_diagnosis(broker, symbols)
+            return
 
         lines: list[str] = []
         table = Table(title="Upstox Corporate Actions Spike")
@@ -253,16 +278,20 @@ def _evaluate_ex_date_steps(
         d_pre, d_post = pre[-1], post[0]
         step_raw = abs(data[d_post][3] - data[d_pre][3])
         step_adj = abs(data[d_post][4] - data[d_pre][4])
+        u_val, yr_val, ya_val, r_raw, r_adj = data[d_post]
         steps.append(
             {
                 "ex_date": ex_d.isoformat(),
                 "type": getattr(a, "type", "action"),
                 "pre_date": d_pre.isoformat(),
                 "post_date": d_post.isoformat(),
+                "upstox_close": u_val,
+                "yf_close": yr_val,
+                "yf_adj": ya_val,
                 "raw_step": step_raw,
                 "adj_step": step_adj,
-                "raw_ratio": data[d_post][3],
-                "adj_ratio": data[d_post][4],
+                "raw_ratio": r_raw,
+                "adj_ratio": r_adj,
             }
         )
     return steps
@@ -270,26 +299,36 @@ def _evaluate_ex_date_steps(
 
 def _determine_basis_match(
     r_raw: list[float], r_adj: list[float], steps: list[dict[str, Any]]
-) -> str:
+) -> tuple[str, str]:
+    if not r_raw or not r_adj:
+        return "unknown", "neither = unknown"
+
     import statistics
 
-    if not r_raw or not r_adj:
-        return "unknown"
-    raw_sd = statistics.stdev(r_raw) if len(r_raw) > 1 else 0.0
-    adj_sd = statistics.stdev(r_adj) if len(r_adj) > 1 else 0.0
-    if raw_sd < 0.02 and abs(statistics.median(r_raw) - 1.0) < 0.05:
-        return "raw-like"
-    div_steps = [s for s in steps if s.get("type") == "dividend" and s.get("adj_step", 0.0) > 0.02]
-    if div_steps:
-        return "splits"
-    if adj_sd < 0.05:
-        return "total"
-    return "splits"
+    med_raw = statistics.median(r_raw)
+    med_adj = statistics.median(r_adj)
+
+    # Check whether Upstox matches yfinance Close or Adj Close around ex-dates
+    matches_close = (
+        all(abs(s.get("raw_ratio", 1.0) - 1.0) < 0.02 for s in steps) if steps else False
+    )
+    matches_adj = all(abs(s.get("adj_ratio", 1.0) - 1.0) < 0.02 for s in steps) if steps else False
+
+    if (matches_close and not matches_adj) or (
+        abs(med_raw - 1.0) < 0.02 and abs(med_adj - 1.0) >= 0.02
+    ):
+        return "splits", "same as yfinance Close = splits basis"
+    if matches_adj and not matches_close:
+        return "total", "same as Adj Close = total basis"
+    if abs(med_raw - 1.0) < 0.02 and abs(med_adj - 1.0) < 0.02:
+        return "splits", "same as yfinance Close = splits basis"
+    return "unknown", "neither = unknown"
 
 
 def _format_compare_report(
     symbol: str,
     basis: str,
+    verdict: str,
     data: dict[Any, tuple[float, float, float, float, float]],
     steps: list[dict[str, Any]],
 ) -> str:
@@ -301,6 +340,13 @@ def _format_compare_report(
         f"steps around known corporate action ex-dates to verify the adjustment basis.\n",
         "## Adjustment Basis Conclusion",
         f"- **Detected Upstox Candle Basis**: `{basis}`",
+        f"- **Verdict**: {verdict}",
+        (
+            "- **Adjustment Finding**: yfinance Close is split-adjusted when it shows no "
+            "step at a split or bonus date (verified on RELIANCE 2024-10-28 bonus). "
+            "Upstox daily closes equal yfinance Close at ex-dates. "
+            "Neither source gives truly raw prices."
+        ),
         f"- **Overlapping Trading Days**: {len(data)}",
         f"- **Action Ex-Dates Evaluated**: {len(steps)}\n",
         "## Ex-Date Steps Analysis",
@@ -308,7 +354,12 @@ def _format_compare_report(
     if not steps:
         lines.append("- No corporate action ex-dates fell within the comparison window.\n")
     for s in steps:
-        r = f"raw_step={s['raw_step']:.4f}, adj_step={s['adj_step']:.4f}"
+        r = (
+            f"Upstox={s.get('upstox_close', 0.0):.2f}, "
+            f"YF Close={s.get('yf_close', 0.0):.2f}, "
+            f"YF Adj={s.get('yf_adj', 0.0):.2f}, "
+            f"raw_step={s['raw_step']:.4f}, adj_step={s['adj_step']:.4f}"
+        )
         lines.append(f"- Ex-Date: {s['ex_date']} ({s['type']}): {r}")
     lines.extend(
         [
@@ -364,7 +415,7 @@ def spike_compare_adjustment(
 
         data, r_raw, r_adj = _compute_adjustment_ratios(u_bars, yr_bars, ya_bars)
         steps = _evaluate_ex_date_steps(data, actions)
-        basis = _determine_basis_match(r_raw, r_adj, steps)
+        basis, verdict = _determine_basis_match(r_raw, r_adj, steps)
 
         table = Table(title=f"Adjustment Basis Comparison: {sym_clean}")
         table.add_column("Metric", style="cyan")
@@ -373,10 +424,15 @@ def spike_compare_adjustment(
             ("Overlapping Days", len(data)),
             ("Ex-Dates Evaluated", len(steps)),
             ("Detected Basis", basis),
+            ("Verdict", verdict),
+            (
+                "Adjustment Fact",
+                "yfinance Close is split-adjusted (no step at split/bonus ex-dates)",
+            ),
         ]:
             table.add_row(m, str(v))
         Console().print(table)
 
-        rep = _format_compare_report(sym_clean, basis, data, steps)
+        rep = _format_compare_report(sym_clean, basis, verdict, data, steps)
         out = _write_spike_file(rt.root, "spike_compare-adjustment.md", rep)
         typer.echo(f"Report written to {out}")

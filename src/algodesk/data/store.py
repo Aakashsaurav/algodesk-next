@@ -152,17 +152,26 @@ class BarStore:
         ds_id = self.dataset_id(key)
         now_iso = datetime.now(UTC).isoformat()
 
-        # Ensure dataset metadata exists in manifest
+        # Ensure dataset metadata exists in manifest with authoritative adjustment_basis
+        if key.source == "upstox":
+            basis = "splits"
+        elif key.source == "yfinance":
+            basis = "total" if key.adjustment == "adjusted" else "splits"
+        else:
+            basis = "splits" if key.adjustment == "raw" else "total"
+
         self._manifest.record_dataset(
             DatasetRecord(
-                ds_id,
-                str(key.instrument),
-                key.kind,
-                key.timeframe,
-                key.adjustment,
-                key.source,
-                1,
-                now_iso,
+                dataset_id=ds_id,
+                instrument=str(key.instrument),
+                kind=key.kind,
+                timeframe=key.timeframe,
+                adjustment=key.adjustment,
+                source=key.source,
+                schema_version=1,
+                created_at=now_iso,
+                actions_epoch=None,
+                adjustment_basis=basis,
             )
         )
 

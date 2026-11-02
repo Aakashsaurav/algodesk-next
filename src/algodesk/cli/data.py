@@ -513,16 +513,25 @@ def _adopt_bar(
     manifest: Any, key: Any, o_rel: str, o_path: Path, bars: list[Any], now_iso: str
 ) -> None:
     ds_id = dataset_id_for_key(key)
+    if key.source == "upstox":
+        basis = "splits"
+    elif key.source == "yfinance":
+        basis = "total" if key.adjustment == "adjusted" else "splits"
+    else:
+        basis = "splits" if key.adjustment == "raw" else "total"
+
     manifest.record_dataset(
         DatasetRecord(
-            ds_id,
-            str(key.instrument),
-            key.kind,
-            key.timeframe,
-            key.adjustment,
-            key.source,
-            1,
-            now_iso,
+            dataset_id=ds_id,
+            instrument=str(key.instrument),
+            kind=key.kind,
+            timeframe=key.timeframe,
+            adjustment=key.adjustment,
+            source=key.source,
+            schema_version=1,
+            created_at=now_iso,
+            actions_epoch=None,
+            adjustment_basis=basis,
         )
     )
     sha, f_bytes = _compute_sha256(o_path), o_path.stat().st_size
@@ -993,9 +1002,14 @@ def actions_refresh(
             groups_dir=Path("config/groups"),
         )
         res = mgr.refresh(selector, source=source, force=force)
+        src_counts = res.get("source_counts", {})
+        counts_str = (
+            ", ".join(f"{k}: {v}" for k, v in sorted(src_counts.items())) if src_counts else ""
+        )
+        detail = f" ({counts_str})" if counts_str else ""
         typer.echo(
             f"Actions refresh complete: {len(res['refreshed'])} refreshed, "
-            f"{len(res['skipped'])} cached, {res['actions_count']} events."
+            f"{len(res['skipped'])} cached, {res['actions_count']} events{detail}."
         )
 
 
@@ -1031,6 +1045,43 @@ def _build_reconciler(ctx: typer.Context, p: Any) -> CorporateActionsReconciler:
     )
 
 
+ACTION_COLUMNS = ["Symbol", "Date", "Type", "Ratio or Amount", "Sources", "Status", "Reason"]
+
+
+def _format_action_row(
+    symbol: str,
+    dt_str: str,
+    ev_type: str,
+    ratio: float | None,
+    amount: Any,
+    sources_str: str,
+    status: str,
+    reason: str,
+) -> list[str]:
+    if ratio is not None:
+        r_or_a = f"{ratio:g}" if isinstance(ratio, float) and ratio.is_integer() else f"{ratio}"
+    elif amount is not None:
+        r_or_a = str(amount)
+    else:
+        r_or_a = "-"
+    return [
+        symbol,
+        dt_str,
+        ev_type,
+        r_or_a,
+        sources_str or "-",
+        status,
+        reason or "-",
+    ]
+
+
+def _format_summary_counts(statuses: Sequence[str]) -> str:
+    from collections import Counter
+
+    counts = Counter(statuses)
+    return ", ".join(f"{st}={cnt}" for st, cnt in sorted(counts.items()))
+
+
 @actions_app.command("list")
 @handle_cli_errors
 def actions_list(
@@ -1050,20 +1101,6 @@ def actions_list(
 
         reconciler = _build_reconciler(ctx, rt.params)
 
-        def _act_row(a: Any) -> list[str]:
-            r_str = f"{a.ratio:.4f}" if a.ratio is not None else "-"
-            amt_str = str(a.amount) if a.amount is not None else "-"
-            return [
-                a.symbol,
-                a.ex_date.isoformat(),
-                a.type,
-                r_str,
-                amt_str,
-                a.source,
-                a.status,
-                a.reason or a.text,
-            ]
-
         def _get_raw(s: str) -> Sequence[ActionRecord]:
             return store.read(exchange, s)
 
@@ -1071,13 +1108,26 @@ def actions_list(
             return reconciler.reconcile(exchange, s, store.read(exchange, s))
 
         fetch_fn = _get_raw if raw else _get_reconciled
-        rows = [_act_row(a) for s in symbols for a in fetch_fn(s)]
+        rows = [
+            _format_action_row(
+                a.symbol,
+                a.ex_date.isoformat(),
+                a.type,
+                a.ratio,
+                a.amount,
+                a.source,
+                a.status,
+                a.reason or a.text,
+            )
+            for s in symbols
+            for a in fetch_fn(s)
+        ]
         if not rows:
             typer.echo("No corporate actions found.")
             return
 
-        headers = ["Symbol", "Ex-Date", "Type", "Ratio", "Amount", "Source", "Status", "Notes"]
-        typer.echo(format_table(headers, rows))
+        typer.echo(format_table(ACTION_COLUMNS, rows))
+        typer.echo(f"\nSummary counts: {_format_summary_counts([r[5] for r in rows])}")
 
 
 @actions_app.command("check")
@@ -1085,6 +1135,7 @@ def actions_list(
 def actions_check(
     ctx: typer.Context,
     selector: str | None = typer.Argument(None, help="Optional symbol, ID, or @group selector"),
+    raw: bool = typer.Option(False, "--raw", help="Check raw un-reconciled actions"),
     exchange: str = typer.Option("NSE", "--exchange", help="Exchange code"),
 ) -> None:
     """Check corporate actions for conflicts, unverified records, and price anomalies."""
@@ -1102,28 +1153,50 @@ def actions_check(
         issue_rows: list[list[str]] = []
         for sym in symbols:
             raw_acts = store.read(exchange, sym)
-            reconciled = reconciler.reconcile(exchange, sym, raw_acts)
-            for a in reconciled:
+            acts = raw_acts if raw else reconciler.reconcile(exchange, sym, raw_acts)
+            for a in acts:
                 if a.status in ("conflict", "manual_required", "unverified"):
                     issue_rows.append(
-                        [sym, a.ex_date.isoformat(), a.status, a.reason or f"Status {a.status}"]
+                        _format_action_row(
+                            sym,
+                            a.ex_date.isoformat(),
+                            a.type,
+                            a.ratio,
+                            a.amount,
+                            a.source,
+                            a.status,
+                            a.reason or a.text or f"Status {a.status}",
+                        )
                     )
 
             exch_u = exchange.upper()
             day_p = rt.paths.data / "bars/1d" / f"exchange={exch_u}/symbol={sym}/day.parquet"
             if day_p.exists():
                 bars = read_bars_parquet(day_p, InstrumentId(f"{exch_u}:EQ:{sym}"), "1d")
-                for it in detect_price_anomalies(sym, bars, reconciled, detect_jump_pct=jump_pct):
-                    issue_rows.append([sym, it.date.isoformat(), it.kind, it.details])
+                for it in detect_price_anomalies(sym, bars, acts, detect_jump_pct=jump_pct):
+                    issue_rows.append(
+                        _format_action_row(
+                            sym,
+                            it.date.isoformat(),
+                            "anomaly",
+                            None,
+                            None,
+                            "detection",
+                            it.kind,
+                            it.details,
+                        )
+                    )
 
         if not issue_rows:
             typer.echo(f"Checked {len(symbols)} symbol(s): all corporate actions verified clean.")
             return
 
-        typer.echo(format_table(["Symbol", "Date", "Kind / Status", "Details"], issue_rows))
-        typer.echo(
-            "\nAction required: resolve issues with 'algodesk data actions override add ...'"
-        )
+        typer.echo(format_table(ACTION_COLUMNS, issue_rows))
+        typer.echo(f"\nSummary counts: {_format_summary_counts([r[5] for r in issue_rows])}")
+        if any(r[5] in ("conflict", "manual_required", "suspect_event") for r in issue_rows):
+            typer.echo(
+                "\nAction required: resolve issues with 'algodesk data actions override add ...'"
+            )
 
 
 @actions_app.command("audit")

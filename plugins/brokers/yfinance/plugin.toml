@@ -8,7 +8,9 @@ modes_allowed = ["research", "backtest"]
 order_capable = false
 verified_on = "2026-10-31"
 sources = ["Yahoo Finance unofficial public endpoints via yfinance Python library (verified 31 Oct 2026)"]
-candles_adjustment_basis = "total"
+[candles_adjustment_basis]
+raw = "splits"
+adjusted = "total"
 
 [capabilities]
 history = true

@@ -64,7 +64,7 @@ owner = "core"
 [[param]]
 name = "budget.core_lines_guidance"
 type = "int"
-default = 20000
+default = 25000
 min = 1000
 max = 50000
 unit = "lines"

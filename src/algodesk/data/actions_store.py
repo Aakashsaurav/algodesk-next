@@ -254,6 +254,50 @@ class CorporateActionsManager:
         dts = [dt for a in existing if a.fetched_at and (dt := _parse(a.fetched_at))]
         return not dts or (datetime.now(UTC) - max(dts)).total_seconds() / 3600.0 >= ttl_hours
 
+    def _resolve_sources(self, source: str | None) -> list[str]:
+        if source:
+            if source not in self._sources:
+                raise DataError(
+                    what=f"Corporate actions source '{source}' is not configured",
+                    where="CorporateActionsManager.refresh",
+                    fix=f"Configure '{source}' or choose from {list(self._sources.keys())}",
+                )
+            return [source]
+        return [n for n, s in self._sources.items() if hasattr(s, "actions")]
+
+    def _parse_inst(self, sym_or_id: str) -> tuple[str, str]:
+        s_str = sym_or_id.strip()
+        parts = s_str.split(":") if ":" in s_str else ["NSE", "EQ", s_str]
+        return parts[0].upper(), parts[-1].upper()
+
+    def _fetch_and_store_symbol(
+        self, exch: str, sym: str, src_list: list[str]
+    ) -> tuple[int, dict[str, int]]:
+        sym_actions: list[ActionRecord] = []
+        counts: dict[str, int] = {}
+        for src_name in src_list:
+            self._limiter.acquire(src_name, "corporate_actions")
+            try:
+                acts = list(self._sources[src_name].actions(sym))  # type: ignore[attr-defined]
+                self._store.write(exch, sym, acts, source=src_name)
+                sym_actions.extend(acts)
+                counts[src_name] = len(acts)
+            except Exception:
+                if len(src_list) == 1:
+                    raise
+        if self._journal:
+            self._journal.append(
+                "data.actions",
+                {
+                    "symbol": sym,
+                    "exchange": exch,
+                    "sources": src_list,
+                    "count": len(sym_actions),
+                    "action_ids": [a.id for a in sym_actions],
+                },
+            )
+        return len(sym_actions), counts
+
     def refresh(
         self, selector: str, source: str | None = None, force: bool = False
     ) -> dict[str, Any]:
@@ -270,56 +314,28 @@ class CorporateActionsManager:
 
         p = self._params
         ttl = int(p.get("data.actions_ttl_hours", "24")) if p else 24
-        if source:
-            if source not in self._sources:
-                raise DataError(
-                    what=f"Corporate actions source '{source}' is not configured",
-                    where="CorporateActionsManager.refresh",
-                    fix=f"Configure '{source}' or choose from {list(self._sources.keys())}",
-                )
-            src_list = [source]
-        else:
-            src_list = [n for n, s in self._sources.items() if hasattr(s, "actions")]
+        src_list = self._resolve_sources(source)
 
         # pyrefly: ignore[implicit-any-empty-container]
         refreshed, skipped, total = [], [], 0
+        source_counts: dict[str, int] = {s: 0 for s in src_list}
         for sym_or_id in insts:
-            s_str = str(sym_or_id).strip()
-            parts = s_str.split(":") if ":" in s_str else ["NSE", "EQ", s_str]
-            exch, sym = parts[0].upper(), parts[-1].upper()
-            existing = self._store.read(exch, sym)
-            if not force and not self._is_stale(existing, ttl):
+            # pyrefly: ignore[unnecessary-type-conversion]
+            exch, sym = self._parse_inst(str(sym_or_id))
+            if not force and not self._is_stale(self._store.read(exch, sym), ttl):
                 skipped.append(f"{exch}:{sym}")
                 continue
 
-            sym_actions: list[ActionRecord] = []
-            for src_name in src_list:
-                self._limiter.acquire(src_name, "corporate_actions")
-                try:
-                    acts = list(self._sources[src_name].actions(sym))  # type: ignore[attr-defined]
-                    self._store.write(exch, sym, acts, source=src_name)
-                    sym_actions.extend(acts)
-                except Exception:
-                    if len(src_list) == 1:
-                        raise
-
-            if self._journal:
-                self._journal.append(
-                    "data.actions",
-                    {
-                        "symbol": sym,
-                        "exchange": exch,
-                        "sources": src_list,
-                        "count": len(sym_actions),
-                        "action_ids": [a.id for a in sym_actions],
-                    },
-                )
+            cnt, src_map = self._fetch_and_store_symbol(exch, sym, src_list)
+            for s_name, c in src_map.items():
+                source_counts[s_name] = source_counts.get(s_name, 0) + c
             refreshed.append(f"{exch}:{sym}")
-            total += len(sym_actions)
+            total += cnt
 
         return {
             "refreshed": refreshed,
             "skipped": skipped,
             "actions_count": total,
             "sources": src_list,
+            "source_counts": source_counts,
         }

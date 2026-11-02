@@ -7,9 +7,10 @@ The yfinance broker plugin implements the `DataSource` protocol for research and
 - **Timeframe & Reach**:
   - `1m`: Intraday 1-minute history reaches approximately 7 days.
   - `1d`: Daily history spans multiple decades.
-- **Adjustment Modes**:
-  - `download="adjusted"` uses `auto_adjust=True` (default). Declared `candles_adjustment_basis = "total"`.
-  - `download="raw"` uses `auto_adjust=False`. Used with dynamic `adjust="total"` to derive split- and dividend-adjusted bars.
+- **Adjustment Modes & Basis Facts (Spike 2 Nov 2026, RELIANCE 699 days)**:
+  - `download="adjusted"` uses `auto_adjust=True` (default). Reflects dividend reinvestment adjustments alongside splits (`total` basis).
+  - `download="raw"` uses `auto_adjust=False`. Close series has no break at split or bonus dates and is already split- and bonus-adjusted (`splits` basis). It is not truly raw prices.
+  - Declared `[candles_adjustment_basis]` in `plugin.toml`: `raw = "splits"`, `adjusted = "total"`.
   - Output is strictly timezone-aware UTC and monotonic ascending.
 - **Corporate Actions**:
   - Read via `Ticker.actions`, extracting split ratios and dividends per share.

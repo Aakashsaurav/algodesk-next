@@ -118,6 +118,7 @@ Probe live/research broker data characteristics without exposing credentials:
 - Upstox history reach and split continuity: `algodesk spike upstox-history --symbol RELIANCE --split-date 2026-10-15`
 - Yahoo Finance reach and split continuity: `algodesk spike yfinance-history --symbol RELIANCE`
 - Upstox corporate actions response fields: `algodesk spike upstox-actions --symbols RELIANCE,INFY`
+- Upstox corporate actions raw diagnostic probe (zero tokens disclosed): `algodesk spike upstox-actions --symbols RELIANCE --raw`
 - Compare candle adjustment basis across providers: `algodesk spike compare-adjustment --symbol RELIANCE --from 2024-10-01 --to 2024-11-01`
 
 ### 9. Quarantine lifecycle
@@ -141,8 +142,8 @@ Ephemeral intraday bars stored under `data/session_bars/date=YYYY-MM-DD/`, isola
 Manage partitioned corporate actions storage (`data/actions/`), reconciliation, operator overrides, and adjustment audits:
 - Refresh actions from readers (respects `data.actions_ttl_hours`): `algodesk data actions refresh @demo5`
 - Refresh from specific source: `algodesk data actions refresh RELIANCE --source upstox`
-- List actions and reconciliation statuses: `algodesk data actions list RELIANCE`
-- Check corporate actions reconciliation status: `algodesk data actions check @demo5`
+- List actions and reconciliation statuses: `algodesk data actions list RELIANCE` (add `--raw` for un-reconciled actions)
+- Check corporate actions reconciliation status: `algodesk data actions check @demo5` (add `--raw` to inspect raw feeds)
 - Add operator override (requires `--reason`): `algodesk data actions override add --symbol RELIANCE --ex-date 2024-10-28 --type bonus --ratio 2.0 --reason "Confirmed via NSE circular"`
 - Audit derived adjusted series vs source-adjusted series: `algodesk data actions audit RELIANCE --from 2024-01-01 --to 2024-12-31`
 

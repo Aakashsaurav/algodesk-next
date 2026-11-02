@@ -38,11 +38,19 @@ class PluginManifest(BaseModel):
     max_span: dict[str, Any] = {}
     retention: dict[str, Any] = {}
     candles_adjusted: str | None = None
-    candles_adjustment_basis: str | None = None
+    candles_adjustment_basis: str | dict[str, str] | None = None
     requires: dict[str, Any] = {}
     config_schema: str | None = None
     verified_on: date | None = None
     sources: list[str] = []
+
+    def get_candles_adjustment_basis(self, adjustment: str = "raw") -> str:
+        """Resolve candle adjustment basis for a given adjustment mode."""
+        if isinstance(self.candles_adjustment_basis, dict):
+            return self.candles_adjustment_basis.get(adjustment, "splits")
+        if isinstance(self.candles_adjustment_basis, str):
+            return self.candles_adjustment_basis
+        return "splits"
 
     # ------------------------------------------------------------------
     # Field validators

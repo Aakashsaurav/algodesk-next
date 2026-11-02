@@ -20,7 +20,7 @@ from algodesk.api.market import (
 from algodesk.api.protocols import Calendar, DataSource
 from algodesk.api.services import JournalWriter, ParamReader
 from algodesk.data.actions_store import ActionsStore
-from algodesk.data.adjust import AdjustmentView
+from algodesk.data.adjust import AdjustmentResult, AdjustmentView
 from algodesk.data.fetcher import Fetcher
 from algodesk.data.limiter import RateLimiter
 from algodesk.data.planner import GapPlanner, resolve_base_timeframe
@@ -65,18 +65,27 @@ def _apply_raw_adjustments(
     bars: Sequence[Bar],
     key: SeriesKey,
     store: BarStore | None,
-    adj_mode: str,
+    from_basis: str,
+    tgt_basis: str,
     accept_unverified: bool,
     params: ParamReader | None,
     exchange_tz: tzinfo,
-) -> tuple[tuple[Bar, ...], list[str], str]:
-    if store is None or adj_mode == "none":
-        return tuple(bars), [], ""
+) -> AdjustmentResult:
+    if store is None or from_basis == tgt_basis:
+        return AdjustmentResult(
+            tuple(bars), [], "", factor_kinds=[], basis=tgt_basis, from_basis=from_basis
+        )
     acts = _get_reconciled(key, store, params)
     d_key = SeriesKey(key.instrument, "bars", "1d", "raw", key.source)
     d_slice = store.read(d_key, datetime(2000, 1, 1, tzinfo=UTC), datetime.now(UTC))
     return AdjustmentView.apply(
-        bars, acts, adj_mode, d_slice.bars or None, exchange_tz, accept_unverified
+        bars,
+        acts,
+        from_basis=from_basis,
+        to_basis=tgt_basis,
+        daily_bars=d_slice.bars or None,
+        exchange_tz=exchange_tz,
+        accept_unverified=accept_unverified,
     )
 
 
@@ -219,7 +228,7 @@ class DataService:
         accept_unverified: bool = False,
     ) -> DataSlice:
         """Fetch historical bars with gap planning, rate limiting, and dynamic adjustment."""
-        adj_mode = adjust if adjust is not None else ("total" if download == "raw" else "none")
+        adj_mode = adjust if adjust is not None else "total"
         if adj_mode not in ("none", "splits", "total"):
             raise NotSupported(
                 what=f"Dynamic adjustment '{adj_mode}' not supported yet",
@@ -241,17 +250,6 @@ class DataService:
             )
         req_key = self._resolve_series_key(series, source, download)
         src_manifest = self._manifests.get(req_key.source)
-        basis = (
-            getattr(src_manifest, "candles_adjustment_basis", "unknown")
-            if src_manifest
-            else "unknown"
-        )
-        if download == "adjusted" and basis == "unknown" and adj_mode == "total":
-            raise DataError(
-                what=f"Source '{req_key.source}' has unknown adjustment basis",
-                where="DataService.get",
-                fix="Use download='raw' with adjust='total' or verify source candle basis",
-            )
         base_tf = resolve_base_timeframe(req_key.timeframe)
         base_key = SeriesKey(
             instrument=req_key.instrument,
@@ -266,6 +264,27 @@ class DataService:
                 where="DataService.get",
                 fix="Provide a configured BarStore to DataService",
             )
+
+        ds_id = self._store.dataset_id(base_key)
+        ds_rec = self._store.manifest.get_dataset(ds_id)
+        if ds_rec and ds_rec.adjustment_basis:
+            from_basis = ds_rec.adjustment_basis
+        elif src_manifest is not None:
+            from_basis = src_manifest.get_candles_adjustment_basis(download)
+        elif req_key.source == "upstox":
+            from_basis = "splits"
+        elif req_key.source == "yfinance":
+            from_basis = "total" if download == "adjusted" else "splits"
+        else:
+            from_basis = "splits" if download == "raw" else "total"
+
+        if from_basis == "unknown" and adj_mode == "total":
+            raise DataError(
+                what=f"Source '{req_key.source}' has unknown adjustment basis",
+                where="DataService.get",
+                fix="Use download='raw' with adjust='total' or verify source candle basis",
+            )
+
         if download == "adjusted":
             _check_staleness(base_key, self._store, self._sources, self._params, self._exchange_tz)
 
@@ -289,7 +308,6 @@ class DataService:
                 journal=self._journal,
             ).fetch(plan)
 
-        ds_id = self._store.dataset_id(base_key)
         self._recorded_datasets.add(ds_id)
         now_iso = datetime.now(UTC).isoformat()
         if fill_only:
@@ -321,11 +339,12 @@ class DataService:
                 )
             )
         )
-        adj_bars, act_ids, act_hash = _apply_raw_adjustments(
+        adj_res = _apply_raw_adjustments(
             bars=raw_bars,
             key=req_key,
             store=self._store,
-            adj_mode=adj_mode,
+            from_basis=from_basis,
+            tgt_basis=adj_mode,
             accept_unverified=accept_unverified,
             params=self._params,
             exchange_tz=self._exchange_tz,
@@ -336,10 +355,13 @@ class DataService:
             "source": req_key.source,
             "adjustment": download,
             "fetched_at": now_iso,
-            "action_ids": act_ids,
-            "actions_hash": act_hash,
+            "action_ids": adj_res.action_ids,
+            "actions_hash": adj_res.hash,
             "adjust": adj_mode,
-            "adjustment_basis": basis,
+            "basis": adj_mode,
+            "adjustment_basis": adj_mode,
+            "from_basis": from_basis,
+            "factor_kinds": adj_res.factor_kinds,
         }
         if req_key.source == "upstox":
             prov_dict["warnings"] = [
@@ -349,7 +371,7 @@ class DataService:
             key=req_key,
             start=start,
             end=end,
-            bars=adj_bars,
+            bars=adj_res.bars,
             gaps=base_slice.gaps,
             dataset_ids=(ds_id,),
             checksums=base_slice.checksums,

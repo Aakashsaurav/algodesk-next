@@ -43,7 +43,7 @@ def test_load_shipped_defaults() -> None:
     assert disk.tighten == Tighten.UP
 
     budget_lines = by_name["budget.core_lines_guidance"]
-    assert budget_lines.default == 20000
+    assert budget_lines.default == 25000
     assert budget_lines.tighten == Tighten.DOWN
 
 

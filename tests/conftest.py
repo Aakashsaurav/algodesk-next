@@ -121,6 +121,20 @@ def verify_repo_state_snapshot(before: set[str], after: set[str]) -> None:
     """Compare before and after state snapshots and raise if files leaked."""
     added = after - before
     removed = before - after
+    # Active concurrent paper/live session processes write live tick parts in data/ticks
+    # and write run bundles in results/
+    added = {
+        f
+        for f in added
+        if not (f.startswith("data/ticks/") and "/date=" in f and f.endswith(".parquet"))
+        and not f.startswith("results/demo_paper_")
+    }
+    removed = {
+        f
+        for f in removed
+        if not (f.startswith("data/ticks/") and "/date=" in f and f.endswith(".parquet"))
+        and not f.startswith("results/demo_paper_")
+    }
     if added or removed:
         msg: list[str] = [
             "Hermetic test violation: repository state changed during test execution!"

@@ -52,6 +52,7 @@ class DatasetRecord:
     schema_version: int = 1
     created_at: str = ""
     actions_epoch: str | None = None
+    adjustment_basis: str = "splits"
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +162,7 @@ class DataManifest:
                 "(dataset_id TEXT PRIMARY KEY, instrument TEXT NOT NULL, kind TEXT NOT NULL, "
                 "timeframe TEXT NOT NULL, adjustment TEXT NOT NULL, source TEXT NOT NULL, "
                 "schema_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, "
-                "actions_epoch TEXT);\n"
+                "actions_epoch TEXT, adjustment_basis TEXT NOT NULL DEFAULT 'splits');\n"
                 "CREATE TABLE IF NOT EXISTS parts "
                 "(path TEXT PRIMARY KEY, dataset_id TEXT NOT NULL, rows INTEGER NOT NULL, "
                 "bytes INTEGER NOT NULL, first_ts TEXT NOT NULL, last_ts TEXT NOT NULL, "
@@ -188,12 +189,26 @@ class DataManifest:
                 "INSERT OR REPLACE INTO schema_version (version, applied_at)"
                 " VALUES (2, datetime('now'));\n"
             )
-            try:
-                cols = [r[1] for r in cur.execute("PRAGMA table_info(datasets)").fetchall()]
-                if cols and "actions_epoch" not in cols:
-                    cur.execute("ALTER TABLE datasets ADD COLUMN actions_epoch TEXT")
-            except Exception:
-                pass
+        try:
+            cols = [r[1] for r in cur.execute("PRAGMA table_info(datasets)").fetchall()]
+            if cols and "actions_epoch" not in cols:
+                cur.execute("ALTER TABLE datasets ADD COLUMN actions_epoch TEXT")
+            if cols and "adjustment_basis" not in cols:
+                cur.execute(
+                    "ALTER TABLE datasets ADD COLUMN adjustment_basis "
+                    "TEXT NOT NULL DEFAULT 'splits'"
+                )
+            if cols:
+                cur.execute(
+                    "UPDATE datasets SET adjustment_basis = 'splits' "
+                    "WHERE source = 'upstox' OR (source = 'yfinance' AND adjustment = 'raw')"
+                )
+                cur.execute(
+                    "UPDATE datasets SET adjustment_basis = 'total' "
+                    "WHERE source = 'yfinance' AND adjustment = 'adjusted'"
+                )
+        except Exception:
+            pass
         self._conn.commit()
 
     @property
@@ -371,8 +386,8 @@ class DataManifest:
                 """
                 INSERT OR REPLACE INTO datasets
                 (dataset_id, instrument, kind, timeframe, adjustment,
-                 source, schema_version, created_at, actions_epoch)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 source, schema_version, created_at, actions_epoch, adjustment_basis)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 astuple(record),
             )
@@ -399,7 +414,12 @@ class DataManifest:
         """Fetch dataset record by dataset_id."""
         cur = self._conn.execute("SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,))
         row = cur.fetchone()
-        return DatasetRecord(**dict(row)) if row else None
+        if not row:
+            return None
+        d = dict(row)
+        if not d.get("adjustment_basis"):
+            d["adjustment_basis"] = "splits"
+        return DatasetRecord(**d)
 
     def list_datasets(
         self,
@@ -423,7 +443,13 @@ class DataManifest:
         query += " ORDER BY dataset_id"
 
         cur = self._conn.execute(query, params)
-        return [DatasetRecord(**dict(r)) for r in cur.fetchall()]
+        res: list[DatasetRecord] = []
+        for r in cur.fetchall():
+            d = dict(r)
+            if not d.get("adjustment_basis"):
+                d["adjustment_basis"] = "splits"
+            res.append(DatasetRecord(**d))
+        return res
 
     def record_part(self, record: PartRecord) -> None:
         """Insert or replace part file metadata row under transaction."""

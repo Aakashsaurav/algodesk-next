@@ -33,13 +33,31 @@ class CorporateActionsReconciler:
         conflict_reason: str = "",
     ) -> ActionRecord:
         c = next((a for a in actions if a.source.lower() == self._primary_source), actions[0])
+        ratio = c.ratio
+        ratio_old = c.ratio_old
+        ratio_new = c.ratio_new
+        if ratio is None and c.type.lower() in ("split", "bonus"):
+            for other in actions:
+                if other.ratio is not None:
+                    ratio = other.ratio
+                    ratio_old = other.ratio_old
+                    ratio_new = other.ratio_new
+                    break
+
+        amount = c.amount
+        if amount is None and c.type.lower() == "dividend":
+            for other in actions:
+                if other.amount is not None:
+                    amount = other.amount
+                    break
+
         return ActionRecord(
             ex_date=c.ex_date,
             type=c.type,
-            ratio=c.ratio,
-            ratio_old=c.ratio_old,
-            ratio_new=c.ratio_new,
-            amount=c.amount,
+            ratio=ratio,
+            ratio_old=ratio_old,
+            ratio_new=ratio_new,
+            amount=amount,
             record_date=c.record_date,
             text=c.text,
             source=c.source,
@@ -56,7 +74,7 @@ class CorporateActionsReconciler:
 
     def _reconcile_split_bonus(self, acts: list[ActionRecord]) -> str:
         ratios = [a.ratio for a in acts if a.ratio is not None]
-        if len(ratios) < len(acts):
+        if not ratios:
             return "manual_required"
         r0 = ratios[0]
         return (
