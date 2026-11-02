@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .compare import compare_runs
+from .roundtrips import RoundTrip, compute_round_trip_metrics
 from .writer import ResultsWriter
 
-__all__ = ["ResultsWriter", "compare_runs"]
+__all__ = ["ResultsWriter", "RoundTrip", "compare_runs", "compute_round_trip_metrics"]

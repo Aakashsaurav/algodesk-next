@@ -13,6 +13,6 @@ The `strategies/sma_cross` plugin implements a deterministic long-only Simple Mo
 - `fast`: Fast SMA lookback period (default `20`).
 - `slow`: Slow SMA lookback period (default `50`).
 - `qty`: Order quantity per entry (default `10`).
-- `product`: Order product type, either `"cnc"` or `"mis"` (default `"cnc"`).
+- `product`: Order product type, either `"cnc"` or `"mis"` (default `"mis"`).
 - `exit_time`: Intraday square-off time string (default `"15:15"`).
 - `stop_pct`: Optional stop-loss percentage from entry price (e.g. `0.02` for 2%).

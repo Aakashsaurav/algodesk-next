@@ -17,6 +17,7 @@ from typing import Any
 
 from algodesk.api.errors import ConfigError
 from algodesk.api.scrub import Scrubber
+from algodesk.logs.formatting import format_ist
 
 _STANDARD_LOG_ATTRS = {
     "name",
@@ -91,6 +92,7 @@ class JsonLogFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         data: dict[str, Any] = {
             "ts": _iso_ms(record.created),
+            "ts_ist": format_ist(record.created, include_ms=True),
             "level": record.levelname,
             "logger": record.name,
             "run_id": self.run_id,
@@ -113,13 +115,14 @@ class TextLogFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         ts = _iso_ms(record.created)
+        ts_ist = format_ist(record.created, include_ms=True)
         extras = {
             k: v
             for k, v in record.__dict__.items()
             if k not in _STANDARD_LOG_ATTRS and not k.startswith("_")
         }
         extras_str = f" | {extras}" if extras else ""
-        prefix = f"{ts} [{record.levelname}] {record.name} (run={self.run_id})"
+        prefix = f"{ts} [{ts_ist}] [{record.levelname}] {record.name} (run={self.run_id})"
         msg = f"{prefix}: {record.getMessage()}{extras_str}"
         if record.exc_text:
             msg += f"\n{record.exc_text}"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -360,10 +361,88 @@ def _build_env_checks(runtime: Runtime) -> list[DoctorCheck]:
     ]
 
 
+def _check_ticks_projection(runtime: Runtime) -> CheckResult:
+    """Doctor check: warn when projected 10 days of ticks exceed registry fraction of free disk."""
+    fraction = 0.5
+    if runtime.params is not None:
+        try:
+            val = runtime.params.get("recorder.max_disk_fraction")
+            if val is not None:
+                fraction = float(val)
+        except Exception:
+            pass
+    if fraction == 0.5:
+        data_toml = runtime.root / "config" / "params" / "data.toml"
+        v = _read_toml_param(data_toml, "recorder.max_disk_fraction")
+        if v is not None:
+            fraction = float(v)
+
+    try:
+        usage = shutil.disk_usage(runtime.root)
+        free_bytes = float(usage.free)
+        warn_limit_bytes = free_bytes * fraction
+
+        proj_day_bytes: float | None = None
+        results_dir = runtime.paths.results
+        if results_dir.is_dir():
+            for m_path in sorted(results_dir.glob("*/metrics.json"), reverse=True):
+                try:
+                    m_data = json.loads(m_path.read_text(encoding="utf-8"))
+                    if (
+                        "projected_full_day_mb" in m_data
+                        and float(m_data["projected_full_day_mb"]) > 0
+                    ):
+                        proj_day_bytes = float(m_data["projected_full_day_mb"]) * 1024.0 * 1024.0
+                        break
+                    rec_bytes = float(m_data.get("recorder_bytes", 0))
+                    cov_pct = float(m_data.get("session_coverage_pct", 0.0))
+                    if rec_bytes > 0 and cov_pct > 0.0:
+                        proj_day_bytes = rec_bytes / (cov_pct / 100.0)
+                        break
+                except Exception:
+                    pass
+
+        if proj_day_bytes is None:
+            num_inst = 6
+            proj_day_bytes = num_inst * 50.0 * 1024.0 * 1024.0
+
+        proj_10d_bytes = proj_day_bytes * 10.0
+        proj_10d_gb = proj_10d_bytes / (1024.0**3)
+        free_gb = free_bytes / (1024.0**3)
+
+        if proj_10d_bytes > warn_limit_bytes:
+            return CheckResult(
+                ok=False,
+                message=(
+                    f"Projected 10-day tick volume ({proj_10d_gb:.2f} GB) exceeds "
+                    f"{fraction:.0%} of free disk space ({free_gb:.1f} GB)"
+                ),
+                fix="Free up disk space or adjust recorder.max_disk_fraction in parameter registry",
+            )
+        return CheckResult(
+            ok=True,
+            message=(
+                f"Projected 10-day tick volume ({proj_10d_gb:.2f} GB) is within "
+                f"{fraction:.0%} of free disk space ({free_gb:.1f} GB)"
+            ),
+        )
+    except Exception as exc:
+        return CheckResult(
+            ok=False,
+            message=f"Failed to check disk ticks projection: {exc}",
+            fix="Inspect disk usage on host machine",
+        )
+
+
 def _build_journal_and_disk_checks(runtime: Runtime) -> list[DoctorCheck]:
     W, C = Severity.WARNING, Severity.CRITICAL
     return [
         DoctorCheck(id="disk.free", severity=W, run=lambda: _check_disk_free(runtime)),
+        DoctorCheck(
+            id="disk.ticks_projection",
+            severity=W,
+            run=lambda: _check_ticks_projection(runtime),
+        ),
         DoctorCheck(
             id="journal.integrity", severity=C, run=lambda: _check_journal_integrity(runtime)
         ),

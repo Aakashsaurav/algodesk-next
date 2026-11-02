@@ -18,7 +18,6 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import typer
 
@@ -58,12 +57,14 @@ from algodesk.engine.strategy_runtime import StrategyRuntime
 from algodesk.fees.engine import FeeEngine
 from algodesk.journal.store import JournalReader
 from algodesk.journal.writer import Journal, JournalSettings
+from algodesk.logs.formatting import IST, format_ist
 from algodesk.oms.manager import OrderManager
 from algodesk.ops.checks import build_run_checks
 from algodesk.ops.context import build_context
 from algodesk.ops.doctor import DoctorRegistry
 from algodesk.ops.runtime import Runtime
 from algodesk.portfolio.ledger import PortfolioLedger
+from algodesk.results.roundtrips import compute_round_trip_metrics
 from algodesk.results.writer import ResultsWriter, compute_max_drawdown
 from algodesk.risk.engine import RiskEngine
 from algodesk.risk.killswitch import KillSwitch
@@ -112,12 +113,10 @@ class SessionRunner:
         self._journal_db = journal_db
 
         self.run_name = getattr(getattr(self.run_config, "run", None), "name", "run")
-        ts_str = self.clock.now().strftime("%Y%m%d_%H%M%S")
+        ts_str = WallClock().now().strftime("%Y%m%d_%H%M%S")
         mode_str = "replay" if self._is_replay else str(self.mode.value)
         if run_id is not None:
             self.run_id = run_id
-        elif self._is_replay:
-            self.run_id = f"{self.run_name}_{mode_str}_{ts_str}"
         else:
             rand_suffix = uuid.uuid4().hex[:6]
             self.run_id = f"{self.run_name}_{mode_str}_{ts_str}_{rand_suffix}"
@@ -136,8 +135,11 @@ class SessionRunner:
         self._latest_quotes: dict[InstrumentId, Quote] = {}
 
         self._tick_to_intent_latencies: list[float] = []
+        self._bar_close_delays: list[float] = []
         self._latest_tick_ts: dict[Any, datetime] = {}
+        self._latest_tick_mono: dict[Any, float] = {}
         self._latest_tick_recv_time: dict[Any, datetime] = {}
+        self._last_bar_trigger_mono: dict[Any, float] = {}
         self._first_tick_ts: datetime | None = None
         self._last_tick_ts: datetime | None = None
         self._bars_closed: int = 0
@@ -763,6 +765,13 @@ class SessionRunner:
             self._bars_closed += 1
             tf = str(getattr(bar, "timeframe", "1m"))
             self._bars_by_tf[tf] = self._bars_by_tf.get(tf, 0) + 1
+            tick_ts = self._latest_tick_ts.get(bar.instrument) or self._last_tick_ts
+            if tick_ts is not None and getattr(bar, "end_ts", None) is not None:
+                bcd = max(0.0, (tick_ts - bar.end_ts).total_seconds() * 1000.0)
+                self._bar_close_delays.append(bcd)
+            self._last_bar_trigger_mono[bar.instrument] = self._latest_tick_mono.get(
+                bar.instrument, time.monotonic()
+            )
             asyncio.create_task(_on_bar_closed(bar))
 
         tfs = [s.params.get("timeframe", "5m") for s in self.run_config.strategies]
@@ -776,10 +785,10 @@ class SessionRunner:
 
     def _on_strategy_intent(self, inst: Any, now_dt: datetime) -> None:
         self._signals_count += 1
-        tick_ts = self._latest_tick_ts.get(inst) or self._last_tick_ts
-        if tick_ts is not None:
-            lat = max(0.1, (now_dt - tick_ts).total_seconds() * 1000.0)
-            self._tick_to_intent_latencies.append(lat)
+        t_mono = time.monotonic()
+        trigger_mono = self._last_bar_trigger_mono.get(inst, t_mono)
+        lat = max(0.01, (t_mono - trigger_mono) * 1000.0)
+        self._tick_to_intent_latencies.append(lat)
 
     def _init_recorder(self, bus: EventBus, scheduler: Scheduler) -> Recorder | None:
         if self.mode != Mode.PAPER or not getattr(self.run_config, "recording", True):
@@ -881,6 +890,7 @@ class SessionRunner:
                     self._first_tick_ts = ev.exch_ts
                 self._last_tick_ts = ev.exch_ts
                 self._latest_tick_ts[ev.instrument] = ev.exch_ts
+                self._latest_tick_mono[ev.instrument] = time.monotonic()
                 self._latest_tick_recv_time[ev.instrument] = clock.now()
                 c["bar_builder"].on_tick(ev)
                 self._tick_stats[str(ev.instrument)] = (
@@ -949,6 +959,7 @@ class SessionRunner:
             eq_val = float(snap.equity)
             pt_dict = {
                 "ts": clock.now().isoformat(),
+                "ts_ist": format_ist(clock.now()),
                 "equity": eq_val,
                 "cash": float(snap.cash),
                 "unrealized": float(ledger.unrealized),
@@ -1066,9 +1077,8 @@ class SessionRunner:
             peak_rss_mb = peak_rss / (1024 * 1024) if sys.platform == "darwin" else peak_rss / 1024
             self._peak_rss_mb = max(self._peak_rss_mb, round(peak_rss_mb, 2))
 
-            ist_tz = ZoneInfo("Asia/Kolkata")
-            ist_time_str = clock.now().astimezone(ist_tz).strftime("%H:%M:%S")
-            state_str = getattr(self.mode, "value", str(self.mode))
+            ist_time_str = format_ist(clock.now())[11:19]
+            state_str = self.mode_name
             total_ticks = sum(self._tick_stats.values())
             if self._latest_tick_recv_time:
                 oldest_recv = min(self._latest_tick_recv_time.values())
@@ -1237,6 +1247,7 @@ class SessionRunner:
         self._equity_curve.append(
             {
                 "ts": clock.now().isoformat(),
+                "ts_ist": format_ist(clock.now()),
                 "equity": equity_val,
                 "cash": cash_val,
                 "unrealized": unrealized_val,
@@ -1268,33 +1279,26 @@ class SessionRunner:
                 "price": float(f.price),
                 "charges": float(f.charges.total) if f.charges else 0.0,
                 "ts": f.ts.isoformat(),
+                "ts_ist": format_ist(f.ts),
             }
             for f in fills
         ]
 
-        win_trades = sum(1 for f in fills if f.price > 0)
-        win_rate = (win_trades / len(fills) * 100.0) if fills else 0.0
+        rt_metrics = compute_round_trip_metrics(fills)
+        win_rate = rt_metrics["win_rate"]
+        gross_win_rate = rt_metrics["gross_win_rate"]
         max_dd = compute_max_drawdown([p["equity"] for p in self._equity_curve])
 
         date_str = clock.now().strftime("%Y-%m-%d")
         mode_str = self.mode_name
 
-        ist_tz = ZoneInfo("Asia/Kolkata")
-        first_tick_ist_str = (
-            self._first_tick_ts.astimezone(ist_tz).strftime("%Y-%m-%d %H:%M:%S IST")
-            if self._first_tick_ts
-            else "N/A"
-        )
-        last_tick_ist_str = (
-            self._last_tick_ts.astimezone(ist_tz).strftime("%Y-%m-%d %H:%M:%S IST")
-            if self._last_tick_ts
-            else "N/A"
-        )
+        first_tick_ist_str = format_ist(self._first_tick_ts) if self._first_tick_ts else "N/A"
+        last_tick_ist_str = format_ist(self._last_tick_ts) if self._last_tick_ts else "N/A"
         coverage_pct = 0.0
         is_partial = False
         if self._first_tick_ts and self._last_tick_ts:
-            f_ist = self._first_tick_ts.astimezone(ist_tz)
-            l_ist = self._last_tick_ts.astimezone(ist_tz)
+            f_ist = self._first_tick_ts.astimezone(IST)
+            l_ist = self._last_tick_ts.astimezone(IST)
             session_open = f_ist.replace(hour=9, minute=15, second=0, microsecond=0)
             session_close = f_ist.replace(hour=15, minute=30, second=0, microsecond=0)
             if f_ist > session_open:
@@ -1304,7 +1308,7 @@ class SessionRunner:
             covered_sec = max(0.0, (session_end - session_start).total_seconds())
             coverage_pct = min(100.0, max(0.0, (covered_sec / 22500.0) * 100.0))
         elif self.mode == Mode.PAPER:
-            now_ist = clock.now().astimezone(ist_tz)
+            now_ist = clock.now().astimezone(IST)
             session_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
             if now_ist > session_open:
                 is_partial = True
@@ -1318,6 +1322,15 @@ class SessionRunner:
             p50 = 0.0
             p95 = 0.0
 
+        if self._bar_close_delays:
+            sorted_bcds = sorted(self._bar_close_delays)
+            n_bcds = len(sorted_bcds)
+            p50_bcd = float(sorted_bcds[int(n_bcds * 0.50)])
+            p95_bcd = float(sorted_bcds[min(n_bcds - 1, int(n_bcds * 0.95))])
+        else:
+            p50_bcd = 0.0
+            p95_bcd = 0.0
+
         peak_rss_raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         if sys.platform == "darwin":
             peak_rss_mb = peak_rss_raw / (1024.0 * 1024.0)
@@ -1327,6 +1340,25 @@ class SessionRunner:
 
         rec_rows = recorder.total_rows if recorder is not None else 0
         rec_bytes = recorder.total_bytes if recorder is not None else 0
+
+        duration_sec = (
+            (self._last_tick_ts - self._first_tick_ts).total_seconds()
+            if (self._first_tick_ts and self._last_tick_ts)
+            else 0.0
+        )
+        duration_hours = max(0.0001, duration_sec / 3600.0)
+        active_insts = (
+            len([k for k, v in self._tick_stats.items() if v > 0]) or len(self._tick_stats) or 1
+        )
+        inst_hours = active_insts * duration_hours
+        rec_mb = rec_bytes / (1024.0 * 1024.0)
+        rec_mb_per_inst_hour = (rec_mb / inst_hours) if inst_hours > 0 else 0.0
+
+        univ_symbols = getattr(getattr(self.run_config, "universe", None), "symbols", None) or list(
+            self._tick_stats.keys()
+        )
+        total_univ_count = len(univ_symbols) if univ_symbols else max(1, active_insts)
+        projected_full_day_mb = rec_mb_per_inst_hour * total_univ_count * 6.25
 
         worker = getattr(self, "worker_id", getattr(self, "_worker_id", None))
         worker_suffix = f"_{worker}" if worker else ""
@@ -1340,8 +1372,6 @@ class SessionRunner:
 
         if self._is_replay:
             peak_rss_mb = 0.0
-            p50 = 0.0
-            p95 = 0.0
             journal_growth = 0
 
         is_fail = self._interrupted or self._feed_halted or bool(self._run_error)
@@ -1357,6 +1387,8 @@ class SessionRunner:
                 {
                     "p50_ms": round(p50, 2),
                     "p95_ms": round(p95, 2),
+                    "bar_close_delay_p50_ms": round(p50_bcd, 2),
+                    "bar_close_delay_p95_ms": round(p95_bcd, 2),
                     "samples": len(self._tick_to_intent_latencies),
                 },
             )
@@ -1393,6 +1425,8 @@ class SessionRunner:
             "charges": round(total_charges, 2),
             "trades": len(fills),
             "win_rate": round(win_rate, 2),
+            "gross_win_rate": round(gross_win_rate, 2),
+            "closed_round_trips": rt_metrics["round_trips"],
             "max_drawdown": max_dd,
             "exposure_time": 0.0,
             "rejects_by_rule": self._rejects_by_rule,
@@ -1408,9 +1442,15 @@ class SessionRunner:
             "fills": len(fills),
             "p50_latency_ms": round(p50, 2),
             "p95_latency_ms": round(p95, 2),
+            "p50_bar_close_delay_ms": round(p50_bcd, 2),
+            "p95_bar_close_delay_ms": round(p95_bcd, 2),
+            "bar_close_delay_p95_ms": round(p95_bcd, 2),
+            "bar_close_delay_ms": round(p95_bcd, 2),
             "peak_rss_mb": peak_rss_mb,
             "recorder_rows": rec_rows,
             "recorder_bytes": rec_bytes,
+            "recorder_mb_per_inst_hour": round(rec_mb_per_inst_hour, 4),
+            "projected_full_day_mb": round(projected_full_day_mb, 2),
             "journal_growth_bytes": journal_growth,
             "is_partial": is_partial,
             "fail_reason": fail_reason_str,

@@ -13,6 +13,7 @@ import typer
 
 from algodesk.api.errors import ConfigError
 from algodesk.cli.common import _open_rt, format_table, handle_cli_errors
+from algodesk.logs.formatting import format_ist
 
 session_app = typer.Typer(help="Session reporting and operations.")
 
@@ -86,8 +87,8 @@ def session_report_cmd(
         if is_partial and "(partial)" not in verdict:
             verdict = f"{verdict} (partial)"
 
-        first_tick = metrics.get("first_tick_ist", "N/A")
-        last_tick = metrics.get("last_tick_ist", "N/A")
+        first_tick = format_ist(metrics.get("first_tick_ist") or metrics.get("first_tick_ts"))
+        last_tick = format_ist(metrics.get("last_tick_ist") or metrics.get("last_tick_ts"))
         cov_pct = float(metrics.get("session_coverage_pct", 0.0))
         ticks_per_inst: dict[str, Any] = metrics.get("ticks_per_instrument", {})
         feed_gaps = int(metrics.get("feed_gaps", 0))
@@ -95,11 +96,21 @@ def session_report_cmd(
         signals = int(metrics.get("signals", 0))
         orders = int(metrics.get("orders", 0))
         fills = int(metrics.get("trades", metrics.get("fills", 0)))
+        win_rate = float(metrics.get("win_rate", 0.0))
+        gross_win_rate = float(metrics.get("gross_win_rate", win_rate))
         rejects = metrics.get("rejects_by_rule", {})
         p95_lat = float(metrics.get("p95_latency_ms", 0.0))
+        p95_bcd = float(
+            metrics.get(
+                "p95_bar_close_delay_ms",
+                metrics.get("bar_close_delay_p95_ms", metrics.get("bar_close_delay_ms", 0.0)),
+            )
+        )
         peak_rss = float(metrics.get("peak_rss_mb", 0.0))
         rec_rows = int(metrics.get("recorder_rows", 0))
         rec_bytes = int(metrics.get("recorder_bytes", 0))
+        rec_mb_inst_hr = float(metrics.get("recorder_mb_per_inst_hour", 0.0))
+        proj_full_day_mb = float(metrics.get("projected_full_day_mb", 0.0))
         j_growth = int(metrics.get("journal_growth_bytes", 0))
         fail_reason = metrics.get("fail_reason")
 
@@ -119,14 +130,21 @@ def session_report_cmd(
         typer.echo(f"First Tick (IST):     {first_tick}")
         typer.echo(f"Last Tick (IST):      {last_tick}")
         typer.echo(f"Session Coverage:     {cov_pct:.1f}%")
+        typer.echo(f"Win Rate:             {win_rate:.1f}% (Gross: {gross_win_rate:.1f}%)")
         typer.echo(f"Feed Gaps:            {feed_gaps}")
         typer.echo(f"Signals:              {signals}")
         typer.echo(f"Orders:               {orders}")
         typer.echo(f"Fills:                {fills}")
         typer.echo(f"Rejects by Rule:      {rejects if rejects else 'None'}")
         typer.echo(f"Latency (p95):        {p95_lat:.2f} ms")
+        typer.echo(f"Bar-Close Delay (p95):{p95_bcd:.2f} ms")
         typer.echo(f"Peak RSS:             {peak_rss:.1f} MB")
         typer.echo(f"Recorder Written:     {rec_rows} rows ({rec_bytes} bytes)")
+        if rec_mb_inst_hr > 0 or proj_full_day_mb > 0:
+            typer.echo(
+                f"Recorder Volume:      {rec_mb_inst_hr:.2f} MB / inst-hr "
+                f"(Projected full-day: {proj_full_day_mb:.2f} MB)"
+            )
         typer.echo(f"Journal Growth:       {j_growth} bytes")
 
         if ticks_per_inst:

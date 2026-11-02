@@ -9,6 +9,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from algodesk.logs.formatting import format_ist
+
 logger = logging.getLogger("algodesk.results.writer")
 
 
@@ -74,6 +76,8 @@ class ResultsWriter:
         run_name = summary_info.get("run_name", self.run_id)
         mode = summary_info.get("mode", "paper")
         date_str = summary_info.get("date", "2026-10-26")
+        start_ist = summary_info.get("start_ist") or metrics.get("first_tick_ist")
+        start_clause = f"Start: {start_ist}. " if start_ist and start_ist != "N/A" else ""
         net_pnl = float(metrics.get("net_pnl", 0.0))
         gross_pnl = float(metrics.get("gross_pnl", 0.0))
         charges = float(metrics.get("charges", 0.0))
@@ -87,7 +91,7 @@ class ResultsWriter:
         content = (
             f"# Run Summary: {self.run_id}\n\n"
             "## Summary\n"
-            f"AlgoDesk Next {mode} session '{run_name}' executed on {date_str}. "
+            f"AlgoDesk Next {mode} session '{run_name}' executed on {date_str} IST. {start_clause}"
             f"Net P&L: ₹{net_pnl:.2f} (Gross: ₹{gross_pnl:.2f}, Charges: ₹{charges:.2f}) "
             f"across {trade_count} trades with {win_rate:.1f}% win rate and max DD of "
             f"{max_dd:.2f}%. Verdict: {verdict}. {fail_clause}"
@@ -127,6 +131,7 @@ class ResultsWriter:
             "price",
             "charges",
             "ts",
+            "ts_ist",
         ]
         file_path = self.run_dir / "trades.csv"
         try:
@@ -135,13 +140,15 @@ class ResultsWriter:
                 writer.writeheader()
                 for tr in trades:
                     row = {k: tr.get(k, "") for k in fieldnames}
+                    if not row.get("ts_ist") and row.get("ts"):
+                        row["ts_ist"] = format_ist(row["ts"])
                     writer.writerow(row)
         except Exception as exc:
             logger.warning("Failed writing trades.csv: %s", exc)
 
     def _write_equity_csv(self, equity_points: Sequence[Mapping[str, Any]]) -> None:
         """Serialize equity curve snapshots to equity.csv."""
-        fieldnames = ["ts", "equity", "cash", "unrealized", "realized", "drawdown"]
+        fieldnames = ["ts", "equity", "cash", "unrealized", "realized", "drawdown", "ts_ist"]
         file_path = self.run_dir / "equity.csv"
         try:
             with open(file_path, "w", newline="", encoding="utf-8") as f:
@@ -149,6 +156,8 @@ class ResultsWriter:
                 writer.writeheader()
                 for pt in equity_points:
                     row = {k: pt.get(k, "") for k in fieldnames}
+                    if not row.get("ts_ist") and row.get("ts"):
+                        row["ts_ist"] = format_ist(row["ts"])
                     writer.writerow(row)
         except Exception as exc:
             logger.warning("Failed writing equity.csv: %s", exc)
@@ -167,10 +176,12 @@ class ResultsWriter:
             net_pnl = float(metrics.get("net_pnl", 0.0))
             trades = int(metrics.get("trades", 0))
             max_dd = metrics.get("max_drawdown", 0.0)
+            first_tick_ist = metrics.get("first_tick_ist", "N/A")
             content = (
                 f"Session {run_name} completed.\n"
+                f"Start (IST): {first_tick_ist}\n"
                 f"Net P&L: ₹{net_pnl:.2f} | Trades: {trades} | Max DD: {max_dd:.2f}%\n"
-                f"Status: {summary_info.get('verdict', 'COMPLETED')}"
+                f"Status: {summary_info.get('verdict', 'COMPLETED')}\n"
             )
         self._write_text_file("session.md", content)
 

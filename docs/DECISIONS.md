@@ -100,6 +100,9 @@ Short decision records (context, decision, reason) in the order they were taken.
 
 **ADR-046 core line guidance raised to 25000 in config/params.** As Milestone 2 expanded with corporate actions reconciliation, price anomaly detection, multi-source rate limiting, and empirical basis conversion, the codebase surpassed the earlier 20,000 line advisory limit. Parameter `budget.core_lines_guidance` in `config/params/core.toml` is raised to 25,000 core lines. Size remains advisory guidance behind correctness, typing, and test rigor.
 
+**ADR-047 Indian Standard Time for display, UTC for storage.** All timestamps stored in databases, Parquet partitions, CSV files, and run identifiers remain strictly UTC with explicit timezones. All operator-facing displays, CLI tables, console log lines, summary reports, and exported CSV companion columns (`ts_ist`) present times in Indian Standard Time (IST, UTC+05:30) with an explicit `IST` suffix or trading calendar date (`YYYY-MM-DD` without `+00:00`), preventing off-by-one trading day ambiguity.
+
+
 
 
 

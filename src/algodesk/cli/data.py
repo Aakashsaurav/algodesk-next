@@ -51,6 +51,7 @@ from algodesk.data.session_bars import SessionBarStore
 from algodesk.data.store import BarStore, _compute_sha256
 from algodesk.data.synth import synth_ticks
 from algodesk.data.validator import BarValidator
+from algodesk.logs.formatting import format_ist
 from algodesk.ops.context import build_context
 from algodesk.ops.runtime import Runtime
 
@@ -138,7 +139,6 @@ def data_get(
     source: str = typer.Option("yfinance", "--source", help="Data source broker plugin"),
 ) -> None:
     """Fetch and display historical market data bars in a table."""
-    ist = ZoneInfo("Asia/Kolkata")
     start_dt, end_dt = _parse_data_cli_dt(start, is_end=False), _parse_data_cli_dt(end, is_end=True)
     download_mode = "adjusted" if adjusted else download
     inst_id = InstrumentId(symbol if ":" in symbol else f"NSE:EQ:{symbol}")
@@ -172,10 +172,14 @@ def data_get(
         return
 
     is_daily = timeframe.lower() == "1d"
-    headers = ["DATE" if is_daily else "DATE/TIME", "OPEN", "HIGH", "LOW", "CLOSE", "VOLUME"]
+    headers = (
+        ["DATE", "OPEN", "HIGH", "LOW", "CLOSE", "VOLUME"]
+        if is_daily
+        else ["DATE/TIME (IST)", "OPEN", "HIGH", "LOW", "CLOSE", "VOLUME"]
+    )
     rows = [
         [
-            b.start_ts.astimezone(ist).strftime("%Y-%m-%d" if is_daily else "%Y-%m-%d %H:%M"),
+            format_ist(b.start_ts, date_only=is_daily),
             f"{b.open:.2f}",
             f"{b.high:.2f}",
             f"{b.low:.2f}",
@@ -872,8 +876,11 @@ def data_gaps(
             typer.echo(f"No gaps found for '{selector}' between {start_d} and {end_d}.")
             return
 
-        headers = ["INSTRUMENT", "DAY", "STATUS", "REASON"]
-        rows = [[g["instrument"], g["day"], g["status"], g["reason"]] for g in all_gaps]
+        headers = ["INSTRUMENT", "DAY (IST)", "STATUS", "REASON"]
+        rows = [
+            [g["instrument"], format_ist(g["day"], date_only=True), g["status"], g["reason"]]
+            for g in all_gaps
+        ]
         typer.echo(format_table(headers, rows))
 
 

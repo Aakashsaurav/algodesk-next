@@ -8,6 +8,7 @@ import typer
 
 from algodesk.cli.common import _open_rt, format_table, handle_cli_errors
 from algodesk.journal.store import runs, tail, verify_journal
+from algodesk.logs.formatting import format_ist
 
 journal_app = typer.Typer(help="Inspect, tail, and verify append-only journal.")
 
@@ -48,11 +49,11 @@ def journal_tail(
         typer.echo("No journal events found.")
         return
 
-    headers = ["SEQ", "TS_UTC", "KIND", "RUN_ID"]
+    headers = ["SEQ", "TS_IST", "KIND", "RUN_ID"]
     rows = [
         [
             str(e.get("seq", "")),
-            str(e.get("ts_utc", "")),
+            format_ist(e.get("ts_utc", "")),
             str(e.get("kind", "")),
             str(e.get("run_id", "")),
         ]
@@ -81,14 +82,14 @@ def journal_runs(ctx: typer.Context) -> None:
         typer.echo("No runs found in journal.")
         return
 
-    headers = ["RUN_ID", "MODE", "STATUS", "STARTED_UTC", "ENDED_UTC"]
+    headers = ["RUN_ID", "MODE", "STATUS", "STARTED_IST", "ENDED_IST"]
     rows = [
         [
             str(r.get("run_id", "")),
             str(r.get("mode", "")),
             str(r.get("status", "")),
-            str(r.get("started_utc", "")),
-            str(r.get("ended_utc") or "-"),
+            format_ist(r.get("started_utc", "")),
+            format_ist(r.get("ended_utc")) if r.get("ended_utc") else "-",
         ]
         for r in raw_runs
     ]

@@ -23,6 +23,7 @@ from algodesk.cli.common import (
 from algodesk.cli.secrets import _resolve_secrets_provider
 from algodesk.config.snapshot import build_effective
 from algodesk.engine.runner import SessionRunner
+from algodesk.logs.formatting import format_ist
 from algodesk.ops.checks import build_run_checks
 from algodesk.ops.context import build_context
 from algodesk.ops.doctor import DoctorRegistry
@@ -253,7 +254,7 @@ def results_list_cmd(ctx: typer.Context) -> None:
             typer.echo("No results directory found.")
             return
 
-        headers = ["RUN ID", "DATE", "MODE", "TRADES", "NET P&L", "VERDICT"]
+        headers = ["RUN ID", "DATE", "MODE", "TRADES", "NET P&L", "VERDICT", "START_IST"]
         rows: list[list[str]] = []
 
         for p in sorted(results_dir.iterdir(), reverse=True):
@@ -264,13 +265,14 @@ def results_list_cmd(ctx: typer.Context) -> None:
             if not m_path.is_file() and not s_path.is_file():
                 continue
 
-            r_id, dt, mode, trades, net_pnl, verdict = (
+            r_id, dt, mode, trades, net_pnl, verdict, start_ist = (
                 p.name,
                 "unknown",
                 "paper",
                 "0",
                 "0.00",
                 "PASS",
+                "N/A",
             )
             if m_path.is_file():
                 try:
@@ -278,6 +280,10 @@ def results_list_cmd(ctx: typer.Context) -> None:
                     dt, mode = str(data.get("date", dt)), str(data.get("mode", mode))
                     trades = str(data.get("trades", 0))
                     net_pnl = f"{float(data.get('net_pnl', 0.0)):.2f}"
+                    if data.get("first_tick_ist") and data.get("first_tick_ist") != "N/A":
+                        start_ist = str(data.get("first_tick_ist"))
+                    elif data.get("first_tick_ts"):
+                        start_ist = format_ist(data.get("first_tick_ts"))
                 except Exception:
                     pass
 
@@ -293,7 +299,20 @@ def results_list_cmd(ctx: typer.Context) -> None:
                 except Exception:
                     pass
 
-            rows.append([r_id, dt, mode, trades, net_pnl, verdict])
+            if start_ist == "N/A":
+                import re
+
+                m_match = re.search(r"(\d{8}_\d{6})", r_id)
+                if m_match:
+                    try:
+                        ts_utc = datetime.strptime(m_match.group(1), "%Y%m%d_%H%M%S").replace(
+                            tzinfo=UTC
+                        )
+                        start_ist = format_ist(ts_utc)
+                    except Exception:
+                        pass
+
+            rows.append([r_id, dt, mode, trades, net_pnl, verdict, start_ist])
 
         if not rows:
             typer.echo("No results found under results/")

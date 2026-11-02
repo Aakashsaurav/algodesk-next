@@ -16,6 +16,7 @@ from rich.table import Table
 from algodesk.api.kinds import Mode
 from algodesk.api.market import Bar, InstrumentId, SeriesKey
 from algodesk.cli.common import handle_cli_errors
+from algodesk.logs.formatting import format_ist
 from algodesk.ops.context import build_context
 from algodesk.ops.runtime import Runtime
 
@@ -40,15 +41,22 @@ def _write_spike_file(root: Path, file_name: str, content: str) -> Path:
     return out_file
 
 
-def _analyze_candles(bars: Sequence[Bar]) -> dict[str, Any]:
+def _analyze_candles(bars: Sequence[Bar], *, is_daily: bool = False) -> dict[str, Any]:
     if not bars:
         return {"first": "N/A", "last": "N/A", "count": 0, "months": {}}
     months: dict[str, int] = defaultdict(int)
     for b in bars:
-        months[b.start_ts.strftime("%Y-%m")] += 1
+        m_str = format_ist(b.start_ts, date_only=True)[:7]
+        months[m_str] += 1
+    first_str = (
+        format_ist(bars[0].start_ts, date_only=True) if is_daily else format_ist(bars[0].start_ts)
+    )
+    last_str = (
+        format_ist(bars[-1].start_ts, date_only=True) if is_daily else format_ist(bars[-1].start_ts)
+    )
     return {
-        "first": bars[0].start_ts.isoformat(),
-        "last": bars[-1].start_ts.isoformat(),
+        "first": first_str,
+        "last": last_str,
         "count": len(bars),
         "months": dict(sorted(months.items())),
     }
@@ -129,7 +137,8 @@ def _run_history_spike(
         k_1m = SeriesKey(inst_id, "bars", "1m", "adjusted", broker_name)
         bars_1d = list(broker.history(k_1d, start_1d, now_dt))
         bars_1m = list(broker.history(k_1m, start_1m, now_dt))
-        a_1d, a_1m = _analyze_candles(bars_1d), _analyze_candles(bars_1m)
+        a_1d = _analyze_candles(bars_1d, is_daily=True)
+        a_1m = _analyze_candles(bars_1m, is_daily=False)
         _, split_msg = _check_split_discontinuity(bars_1d, split_date)
         _print_history_results(broker_name, symbol, a_1d, a_1m, 2, split_msg)
         title = "Upstox" if broker_name == "upstox" else "Yahoo Finance"
