@@ -86,15 +86,11 @@ class BarStore:
         self._calendar = calendar
         self._exchange_tz = exchange_tz or _DEFAULT_EXCH_TZ
 
-        if settle_minutes is not None:
-            self._settle_delay_m = settle_minutes
-        elif params is not None:
-            try:
-                self._settle_delay_m = int(params.get("data.settle_minutes"))
-            except Exception:
-                self._settle_delay_m = 0
-        else:
-            self._settle_delay_m = 0
+        self._settle_delay_m = (
+            settle_minutes
+            if settle_minutes is not None
+            else (int(params.get("data.settle_minutes", "0")) if params else 0)
+        )
 
         self._coverage_index = CoverageIndex(
             manifest=self._manifest,
@@ -159,14 +155,14 @@ class BarStore:
         # Ensure dataset metadata exists in manifest
         self._manifest.record_dataset(
             DatasetRecord(
-                dataset_id=ds_id,
-                instrument=str(key.instrument),
-                kind=key.kind,
-                timeframe=key.timeframe,
-                adjustment=key.adjustment,
-                source=key.source,
-                schema_version=1,
-                created_at=now_iso,
+                ds_id,
+                str(key.instrument),
+                key.kind,
+                key.timeframe,
+                key.adjustment,
+                key.source,
+                1,
+                now_iso,
             )
         )
 
@@ -277,16 +273,16 @@ class BarStore:
                 rel_path = str(target_file)
 
             part_rec = PartRecord(
-                path=rel_path,
-                dataset_id=ds_id,
-                rows=len(merged_bars),
-                bytes=file_bytes,
-                first_ts=first_ts,
-                last_ts=last_ts,
-                sha256=sha256,
-                source=key.source,
-                source_version=source_version,
-                fetched_at=now_iso,
+                rel_path,
+                ds_id,
+                len(merged_bars),
+                file_bytes,
+                first_ts,
+                last_ts,
+                sha256,
+                key.source,
+                source_version,
+                now_iso,
             )
             self._manifest.record_part(part_rec)
             part_records.append(part_rec)
@@ -314,14 +310,13 @@ class BarStore:
             part_path = part_records[0].path if part_records else ""
             coverage_updates.append(
                 CoverageDayRecord(
-                    dataset_id=ds_id,
-                    day=day.isoformat(),
-                    status=st,
-                    rows=len(d_bars),
-                    expected_rows=len(d_bars),
-                    part_path=part_path,
-                    fetched_at=now_iso,
-                    note="",
+                    ds_id,
+                    day.isoformat(),
+                    st,
+                    len(d_bars),
+                    len(d_bars),
+                    part_path,
+                    now_iso,
                 )
             )
 

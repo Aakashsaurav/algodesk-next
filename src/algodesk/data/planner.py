@@ -41,22 +41,15 @@ def is_older_than_retention(
     """Check if date d is older than source retention limit."""
     if retention_setting is None:
         return False
-
-    if isinstance(retention_setting, int):
-        cutoff = as_of - timedelta(days=retention_setting)
-        return d < cutoff
-
+    if isinstance(retention_setting, int) or (
+        isinstance(retention_setting, str) and retention_setting.strip().isdigit()
+    ):
+        return d < as_of - timedelta(days=int(retention_setting))
     if isinstance(retention_setting, str):
-        s = retention_setting.strip()
-        if s.isdigit():
-            cutoff = as_of - timedelta(days=int(s))
-            return d < cutoff
         try:
-            cutoff_date = date.fromisoformat(s)
-            return d < cutoff_date
+            return d < date.fromisoformat(retention_setting.strip())
         except ValueError:
-            return False
-
+            pass
     return False
 
 
@@ -137,24 +130,18 @@ class GapPlanner:
         span_bound_days = chunk_days
 
         if source_manifest is not None:
-            if hasattr(source_manifest, "retention") and source_manifest.retention:
-                retention_val = source_manifest.retention.get(base_tf)
-            if hasattr(source_manifest, "max_span") and source_manifest.max_span:
-                m_span = source_manifest.max_span.get(base_tf)
-                if m_span is not None:
-                    try:
-                        span_bound_days = int(m_span)
-                    except Exception:
-                        pass
-            elif hasattr(source_manifest, "limits") and source_manifest.limits:
-                m_span = source_manifest.limits.get("max_span", {}).get(base_tf)
-                if m_span is not None:
-                    try:
-                        span_bound_days = int(m_span)
-                    except Exception:
-                        pass
-                if retention_val is None:
-                    retention_val = source_manifest.limits.get("retention", {}).get(base_tf)
+            ret = getattr(source_manifest, "retention", None) or getattr(
+                source_manifest, "limits", {}
+            ).get("retention", {})
+            retention_val = ret.get(base_tf) if isinstance(ret, dict) else None
+            msp = getattr(source_manifest, "max_span", None) or getattr(
+                source_manifest, "limits", {}
+            ).get("max_span", {})
+            if isinstance(msp, dict) and (v := msp.get(base_tf)) is not None:
+                try:
+                    span_bound_days = int(v)
+                except Exception:
+                    pass
 
         effective_chunk_limit = max(1, min(span_bound_days, chunk_days))
 

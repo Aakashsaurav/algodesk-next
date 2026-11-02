@@ -37,6 +37,12 @@ class FakeDataFrame:
     def __len__(self) -> int:
         return len(self._records)
 
+    @property
+    def columns(self) -> list[str]:
+        if not self._records:
+            return []
+        return list(self._records[0].keys())
+
     def iterrows(self) -> Any:
         yield from zip(self._dates, self._records, strict=False)
 
@@ -52,7 +58,8 @@ class FakeTicker:
         self.symbol = symbol
         self.fail_429_count = fail_429_count
         self.history_calls: list[dict[str, Any]] = []
-        self.actions = FakeTable([{"Dividends": 10.0, "Stock Splits": 0.0}])
+        now_dt = datetime.now(UTC)
+        self.actions = FakeDataFrame([{"Dividends": 10.0, "Stock Splits": 0.0}], [now_dt])
         self.financials = FakeTable([{"Revenue": 1000000}])
         self.info = {"shortName": "Reliance Industries", "symbol": symbol}
         self.options = ["2026-10-29", "2026-11-26"]
@@ -107,6 +114,7 @@ def manifest() -> PluginManifest:
         entry="plugin:YFinanceBrokerPlugin",
         capabilities={
             "history": True,
+            "corporate_actions": True,
             "stream": False,
             "realtime": False,
             "live_suitable": False,
@@ -232,7 +240,7 @@ def test_yfinance_extra_methods(manifest: PluginManifest) -> None:
     plugin = YFinanceBrokerPlugin(manifest, _yf_module=fake_yf)
 
     actions = plugin.actions("RELIANCE")
-    assert len(actions) > 0 and "Dividends" in actions[0]
+    assert len(actions) > 0 and actions[0].type == "dividend"
 
     fund = plugin.fundamentals("RELIANCE")
     assert len(fund) > 0 and "Revenue" in fund[0]

@@ -29,6 +29,11 @@ Upstox broker plugin for AlgoDesk Next providing market data streaming via WebSo
   - Candle format: `[timestamp IST ISO, open, high, low, close, volume, open interest]`.
   - Adjustments: Upstox candles are stored with `adj=adjusted` and manifest field `candles_adjusted = "unknown"` with a provenance warning until verified post-spike.
 
+## Changes in M2-4 (2026-10-31)
+- **Corporate Actions Reader**: Implemented `corporate_actions(symbol)` using official endpoint `GET https://api.upstox.com/v2/corporate-actions/{isin}` keyed by ISIN from instrument master. Rate-limited per API and user under limiter key `corporate_actions`.
+- **Adjustment Basis**: Upstox candles are split/bonus adjusted (verified via spike 1 Nov 2026: RELIANCE bonus ex-date 2024-10-28, ratio 1.0049); dividend treatment remains unknown. Declared `candles_adjustment_basis = "unknown"` in `plugin.toml` until verified post-comparison spike. Views refuse to treat unknown as total.
+- **Unverified Events**: If the Upstox response lacks split or bonus ratio fields, events are marked `unverified` and require operator override or two-source reconciliation.
+
 ## Changes in M2-2 (2026-10-31)
 - **history.py**: Added URL-encoding of instrument keys, mapping 4xx HTTP responses to typed errors (`RateLimitError` for 429, `AuthError` for 401/403, `DataError` for 400/404).
 - **plugin.toml**: Declared rate limits, retention, and max span chunk boundaries.

@@ -184,3 +184,60 @@ scope = "global"
 tighten = "none"
 description = "Default market data source plugin name used for pre-session warm-up"
 owner = "data"
+
+[[param]]
+name = "data.actions_ttl_hours"
+type = "int"
+default = 24
+min = 1
+max = 720
+unit = "hours"
+scope = "global"
+tighten = "down"
+description = "TTL in hours for corporate actions cache before refresh is required"
+owner = "data"
+
+[[param]]
+name = "corp.dividend_tolerance_pct"
+type = "float"
+default = 1.0
+min = 0.0
+max = 100.0
+unit = "%"
+scope = "global"
+tighten = "down"
+description = "Tolerance percentage for confirming dividend amounts between sources"
+owner = "data"
+
+[[param]]
+name = "corp.primary_source"
+type = "str"
+default = "upstox"
+scope = "global"
+tighten = "none"
+description = "Primary data source used to choose values when corporate actions are confirmed across sources"
+owner = "data"
+
+[[param]]
+name = "corp.detect_jump_pct"
+type = "float"
+default = 20.0
+min = 0.1
+max = 1000.0
+unit = "%"
+scope = "global"
+tighten = "down"
+description = "Price jump percentage threshold on raw 1d bars to suspect corporate action"
+owner = "data"
+
+[[param]]
+name = "corp.audit_tolerance_pct"
+type = "float"
+default = 0.5
+min = 0.01
+max = 10.0
+unit = "%"
+scope = "global"
+tighten = "down"
+description = "Audit tolerance percentage comparing derived adjusted series with source-adjusted series"
+owner = "data"

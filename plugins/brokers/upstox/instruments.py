@@ -206,6 +206,11 @@ class UpstoxInstrumentManager:
         except Exception:
             tick = Decimal("0.05")
 
+        isin = str(row.get("isin") or (identifier if identifier.startswith("IN") else "")).strip()
+        broker_keys: dict[str, str] = {"upstox": key}
+        if isin:
+            broker_keys["isin"] = isin
+
         return Instrument(
             id=canonical_id,
             exchange=exchange,
@@ -214,7 +219,7 @@ class UpstoxInstrumentManager:
             kind="equity" if canonical_seg == "EQ" else "fno",
             lot_size=lot,
             tick_size=tick,
-            broker_keys={"upstox": key},
+            broker_keys=broker_keys,
         )
 
     def resolve(self, symbol_or_id: str | InstrumentId) -> Instrument:
@@ -250,6 +255,21 @@ class UpstoxInstrumentManager:
             where="UpstoxInstrumentManager.resolve",
             fix="Check trading symbol spelling or ensure instrument master is loaded",
         )
+
+    def resolve_isin(self, symbol_or_id: str | InstrumentId) -> str:
+        """Resolve symbol or instrument id to ISIN for fundamentals API."""
+        raw = str(symbol_or_id).strip()
+        if raw.startswith("IN") and len(raw) == 12 and raw.isalnum():
+            return raw
+        inst = self.resolve(symbol_or_id)
+        if "isin" in inst.broker_keys and inst.broker_keys["isin"]:
+            return inst.broker_keys["isin"]
+        upstox_key = inst.broker_keys.get("upstox", "")
+        if "|" in upstox_key:
+            ident = upstox_key.split("|", 1)[1]
+            if ident.startswith("IN") and len(ident) == 12:
+                return ident
+        return inst.symbol
 
     def all_instruments(self) -> Iterable[Instrument]:
         """Return all indexed instruments."""

@@ -37,21 +37,11 @@ results_app = typer.Typer(help="Inspect and list past session execution results.
 def run_cmd(
     ctx: typer.Context,
     run_name: str = typer.Argument("demo_paper", help="Run configuration name"),
-    prepare: bool = typer.Option(
-        False, "--prepare", help="Test plugins, refresh master, run doctor and stop"
-    ),
-    observe: bool = typer.Option(
-        False, "--observe", help="Run in observation mode (no new risk exposure)"
-    ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Verify configuration and plan without execution"
-    ),
-    quiet: bool = typer.Option(
-        False, "--quiet", "-q", help="Disable periodic console status lines"
-    ),
-    warmup_source: str | None = typer.Option(
-        None, "--warmup-source", help="Override warm-up data source (e.g. upstox, yfinance)"
-    ),
+    prepare: bool = typer.Option(False, "--prepare", help="Test plugins, doctor and stop"),
+    observe: bool = typer.Option(False, "--observe", help="Run in observation mode"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Verify configuration and plan"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Disable console status lines"),
+    warmup_source: str | None = typer.Option(None, "--warmup-source", help="Warmup source"),
 ) -> None:
     """Execute a paper trading or live session with full engine wiring."""
     with _open_rt(ctx, ensure=True) as rt:
@@ -75,12 +65,9 @@ def run_cmd(
                     m_db = rt.paths.data / "manifest.db"
                 if m_db.exists():
                     m_inst = DataManifest(m_db)
-                    qm = QuarantineManager(rt.paths.data, m_inst, params=rt.params)
-                    qm.purge_expired()
+                    QuarantineManager(rt.paths.data, m_inst, params=rt.params).purge_expired()
                     m_inst.close()
-
-                sbs = SessionBarStore(rt.paths.data, params=rt.params)
-                sbs.purge_older_than()
+                SessionBarStore(rt.paths.data, params=rt.params).purge_older_than()
             except Exception:
                 pass
 
@@ -160,25 +147,33 @@ def run_cmd(
         if dry_run:
             runner.run_prestart_doctor()
             cfg = runner.run_config
-            typer.echo("=== Dry-Run Execution Plan ===")
-            typer.echo(f"Run Name:          {runner.run_name}")
-            typer.echo(f"Mode:              {getattr(runner.mode, 'value', runner.mode)}")
+            ds = getattr(cfg, "data_source", None)
+            ev = getattr(cfg, "execution_venue", None)
+            u = getattr(cfg, "universe", None)
+            syms = getattr(u, "symbols", []) if u else []
+            strats = getattr(cfg, "strategies", [])
+            plan_lines = [
+                "=== Dry-Run Execution Plan ===",
+                f"Run Name:          {runner.run_name}",
+                f"Mode:              {getattr(runner.mode, 'value', runner.mode)}",
+            ]
             if cfg is not None:
-                typer.echo(f"Allocated Capital: ₹{cfg.allocated_capital:,.2f}")
-                ds = getattr(cfg, "data_source", None)
-                typer.echo(f"Data Source:       {getattr(ds, 'plugin', 'none')}")
-                ev = getattr(cfg, "execution_venue", None)
-                typer.echo(f"Execution Venue:   {getattr(ev, 'plugin', 'none')}")
-                u = getattr(cfg, "universe", None)
-                syms = getattr(u, "symbols", []) if u else []
-                typer.echo(f"Universe Symbols:  {len(syms)} ({', '.join(syms[:3])}...)")
-                strats = getattr(cfg, "strategies", [])
-                s_names = [s.plugin for s in strats]
-                typer.echo(f"Strategies:        {', '.join(s_names)}")
-            typer.echo("Doctor checks:     0 critical, 0 warnings")
-            typer.echo(
-                "Plan verified successfully. No network connections opened; no orders placed."
+                plan_lines.extend(
+                    [
+                        f"Allocated Capital: ₹{cfg.allocated_capital:,.2f}",
+                        f"Data Source:       {getattr(ds, 'plugin', 'none')}",
+                        f"Execution Venue:   {getattr(ev, 'plugin', 'none')}",
+                        f"Universe Symbols:  {len(syms)} ({', '.join(syms[:3])}...)",
+                        f"Strategies:        {', '.join(s.plugin for s in strats)}",
+                    ]
+                )
+            plan_lines.extend(
+                [
+                    "Doctor checks:     0 critical, 0 warnings",
+                    "Plan verified successfully. No network connections opened; no orders placed.",
+                ]
             )
+            typer.echo("\n".join(plan_lines))
             return
 
         try:
@@ -219,26 +214,17 @@ def replay_cmd(
             ts_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             run_id_a = f"{run_name}_replay_{ts_str}_a"
             run_id_b = f"{run_name}_replay_{ts_str}_b"
-
-            runner1 = SessionRunner(
-                rt,
-                run_config=eff.run,
-                mode="replay",
-                replay_dates=parsed_dates,
-                run_id=run_id_a,
-                quiet=quiet,
-            )
-            asyncio.run(runner1.run())
-
-            runner2 = SessionRunner(
-                rt,
-                run_config=eff.run,
-                mode="replay",
-                replay_dates=parsed_dates,
-                run_id=run_id_b,
-                quiet=quiet,
-            )
-            p2 = asyncio.run(runner2.run())
+            p2 = None
+            for r_id in (run_id_a, run_id_b):
+                runner_rep = SessionRunner(
+                    rt,
+                    run_config=eff.run,
+                    mode="replay",
+                    replay_dates=parsed_dates,
+                    run_id=r_id,
+                    quiet=quiet,
+                )
+                p2 = asyncio.run(runner_rep.run())
 
             is_equal, diff = compare_runs(rt.root, run_id_a, run_id_b)
             typer.echo(f"replay equal: {is_equal}")
@@ -278,18 +264,18 @@ def results_list_cmd(ctx: typer.Context) -> None:
             if not m_path.is_file() and not s_path.is_file():
                 continue
 
-            r_id = p.name
-            dt = "unknown"
-            mode = "paper"
-            trades = "0"
-            net_pnl = "0.00"
-            verdict = "PASS"
-
+            r_id, dt, mode, trades, net_pnl, verdict = (
+                p.name,
+                "unknown",
+                "paper",
+                "0",
+                "0.00",
+                "PASS",
+            )
             if m_path.is_file():
                 try:
                     data = json.loads(m_path.read_text())
-                    dt = str(data.get("date", dt))
-                    mode = str(data.get("mode", mode))
+                    dt, mode = str(data.get("date", dt)), str(data.get("mode", mode))
                     trades = str(data.get("trades", 0))
                     net_pnl = f"{float(data.get('net_pnl', 0.0)):.2f}"
                 except Exception:
@@ -297,11 +283,9 @@ def results_list_cmd(ctx: typer.Context) -> None:
 
             if s_path.is_file():
                 try:
-                    content = s_path.read_text()
-                    for line in content.splitlines():
+                    for line in s_path.read_text().splitlines():
                         if "Verdict:" in line:
-                            raw_verdict = line.split("Verdict:")[-1].strip()
-                            verdict = raw_verdict.split(".")[0]
+                            verdict = line.split("Verdict:")[-1].strip().split(".")[0]
                         elif "Date:" in line:
                             dt = line.split("Date:")[-1].strip()
                         elif "Mode:" in line:

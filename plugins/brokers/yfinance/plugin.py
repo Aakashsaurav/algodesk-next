@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
 import random
 import time
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
 from algodesk.api import (
+    ActionRecord,
     Bar,
     ConfigError,
     DataSource,
@@ -214,11 +216,67 @@ class YFinanceBrokerPlugin(PluginBase, DataSource):
             fix="Use live suitable broker plugin (e.g. upstox) for streaming market events",
         )
 
-    def actions(self, symbol: str | InstrumentId) -> Mapping[str, Any]:
+    def actions(self, symbol: str | InstrumentId) -> Sequence[ActionRecord]:
         """Fetch plain corporate actions data (dividends and splits)."""
+        self.require("corporate_actions")
         sym = self.map_symbol(symbol)
-        df = self._execute_with_retry(lambda: self._yf.Ticker(sym).actions)
-        return df.to_dict() if hasattr(df, "to_dict") else {}
+        clean_sym = sym.split(".")[0]
+        if sym.endswith(".NS"):
+            exch = "NSE"
+        elif sym.endswith(".BO"):
+            exch = "BSE"
+        else:
+            exch = self._cfg.default_exchange.upper()
+
+        def _fetch() -> Any:
+            ticker = self._yf.Ticker(sym)
+            return ticker.actions
+
+        df = self._execute_with_retry(_fetch)
+        if df is None or len(df) == 0:
+            return []
+
+        now_iso = datetime.now(UTC).isoformat()
+        records: list[ActionRecord] = []
+        for idx_ts, row in df.iterrows():
+            ts = idx_ts.to_pydatetime() if hasattr(idx_ts, "to_pydatetime") else idx_ts
+            ex_d = ts.date() if hasattr(ts, "date") else ts
+
+            if "Stock Splits" in df.columns:
+                split_val = float(row.get("Stock Splits") or 0.0)
+                if split_val > 0.0:
+                    records.append(
+                        ActionRecord(
+                            ex_date=ex_d,
+                            type="split",
+                            ratio=split_val,
+                            source="yfinance",
+                            source_ref=sym,
+                            fetched_at=now_iso,
+                            symbol=clean_sym,
+                            exchange=exch,
+                            status="unverified",
+                        )
+                    )
+
+            if "Dividends" in df.columns:
+                div_val = float(row.get("Dividends") or 0.0)
+                if div_val > 0.0:
+                    records.append(
+                        ActionRecord(
+                            ex_date=ex_d,
+                            type="dividend",
+                            amount=Decimal(str(row["Dividends"])),
+                            source="yfinance",
+                            source_ref=sym,
+                            fetched_at=now_iso,
+                            symbol=clean_sym,
+                            exchange=exch,
+                            status="unverified",
+                        )
+                    )
+
+        return sorted(records, key=lambda a: (a.ex_date, a.type))
 
     def fundamentals(self, symbol: str | InstrumentId) -> Mapping[str, Any]:
         """Fetch financial statement fundamentals."""

@@ -35,6 +35,7 @@ from algodesk.api.errors import (
 from algodesk.api.kinds import API_VERSION, Mode, PluginKind
 from algodesk.api.manifest import PluginManifest, parse_manifest
 from algodesk.api.market import (
+    ActionRecord,
     Bar,
     CoverageStatus,
     DataGap,
@@ -150,6 +151,7 @@ __all__ = [
     "SecretReader",
     "resolve_secret_ref",
     # market
+    "ActionRecord",
     "Bar",
     "CoverageStatus",
     "DataGap",

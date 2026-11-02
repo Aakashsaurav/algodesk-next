@@ -148,45 +148,35 @@ def resolve_selector(
             )
         return sorted(matched)
 
-    # Check exact match on broker trading symbol
-    tsym_matches = [
-        inst.id for inst in known_instruments if inst.trading_symbol.upper() == sel.upper()
-    ]
-    if len(tsym_matches) == 1:
-        return tsym_matches
-    if len(tsym_matches) > 1:
-        raise DataError(
-            what=f"Ambiguous trading symbol '{sel}' matches multiple instruments",
-            where="catalog.resolve",
-            fix=f"Specify full canonical ID: {', '.join(tsym_matches)}",
-        )
-
-    # Check bare symbol
-    matched_bare = [i for i in all_inst_ids if _extract_symbol(i).upper() == sel.upper()]
-    if len(matched_bare) == 1:
-        return matched_bare
-    if len(matched_bare) > 1:
-        raise DataError(
-            what=f"Ambiguous bare symbol '{sel}' matches multiple exchanges/segments",
-            where="catalog.resolve",
-            fix=f"Specify full canonical ID: {', '.join(matched_bare)}",
-        )
-
-    # Check compact contract name (ignoring case, spaces, punctuation)
     norm_sel = _normalize_name(sel)
+    tsym_matches = [i.id for i in known_instruments if i.trading_symbol.upper() == sel.upper()]
+    bare_matches = [i for i in all_inst_ids if _extract_symbol(i).upper() == sel.upper()]
     compact_matches = [
-        inst.id
-        for inst in known_instruments
-        if _normalize_name(inst.trading_symbol) == norm_sel or _normalize_name(inst.id) == norm_sel
+        i.id
+        for i in known_instruments
+        if _normalize_name(i.trading_symbol) == norm_sel or _normalize_name(i.id) == norm_sel
     ]
-    if len(compact_matches) == 1:
-        return compact_matches
-    if len(compact_matches) > 1:
-        raise DataError(
-            what=f"Ambiguous compact contract selector '{sel}' matches multiple instruments",
-            where="catalog.resolve",
-            fix=f"Candidates: {', '.join(compact_matches)}",
-        )
+    tsym_matches = [i.id for i in known_instruments if i.trading_symbol.upper() == sel.upper()]
+    bare_matches = [i for i in all_inst_ids if _extract_symbol(i).upper() == sel.upper()]
+    compact_matches = [
+        i.id
+        for i in known_instruments
+        if _normalize_name(i.trading_symbol) == norm_sel or _normalize_name(i.id) == norm_sel
+    ]
+    checks: list[tuple[str, list[str]]] = [
+        ("trading symbol", tsym_matches),
+        ("bare symbol", bare_matches),
+        ("compact contract selector", compact_matches),
+    ]
+    for name, matches in checks:
+        if len(matches) == 1:
+            return matches
+        if len(matches) > 1:
+            raise DataError(
+                what=f"Ambiguous {name} '{sel}' matches multiple instruments",
+                where="catalog.resolve",
+                fix=f"Specify full canonical ID: {', '.join(matches)}",
+            )
 
     # Not found, find closest candidates
     search_pool = [inst.trading_symbol for inst in known_instruments] + all_inst_ids
@@ -319,7 +309,6 @@ def plan_delete(
             matching_files.append(f)
             insts_with_files.add(inst)
 
-        # Also match bar parts for this instrument
         for p in all_parts:
             ds = datasets.get(p.dataset_id)
             if ds is None or ds.instrument != inst:
@@ -333,19 +322,19 @@ def plan_delete(
                 continue
             matching_files.append(
                 FileRecord(
-                    path=p.path,
-                    instrument=ds.instrument,
-                    kind=ds.kind,
-                    timeframe=ds.timeframe,
-                    date=p_date,
-                    rows=p.rows,
-                    bytes=p.bytes,
-                    first_ts=p.first_ts,
-                    last_ts=p.last_ts,
-                    sha256=p.sha256,
-                    source=p.source,
-                    state="bar",
-                    created_ts=p.fetched_at,
+                    p.path,
+                    ds.instrument,
+                    ds.kind,
+                    ds.timeframe,
+                    p_date,
+                    p.rows,
+                    p.bytes,
+                    p.first_ts,
+                    p.last_ts,
+                    p.sha256,
+                    p.source,
+                    "bar",
+                    p.fetched_at,
                 )
             )
             insts_with_files.add(inst)

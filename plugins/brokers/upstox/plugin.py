@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-import urllib.parse
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
-from datetime import date, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
 import httpx
 
 from algodesk.api import (
+    ActionRecord,
     AlgoDeskError,
+    AuthError,
     AuthSession,
     Bar,
     CheckResult,
@@ -23,6 +25,7 @@ from algodesk.api import (
     PluginBase,
     PluginContext,
     PluginManifest,
+    RateLimitError,
     SeriesKey,
     Severity,
     resolve_secret_ref,
@@ -33,6 +36,102 @@ from .config_schema import UpstoxConfig
 from .feed import UpstoxWebSocketFeed
 from .history import UpstoxHistoryClient
 from .instruments import UpstoxInstrumentManager
+
+
+def _parse_upstox_action_date(val: Any) -> date | None:
+    if not val:
+        return None
+    s = str(val).strip()
+    try:
+        return date.fromisoformat(s[:10])
+    except Exception:
+        pass
+    for fmt in ("%d %b %Y", "%d-%b-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            pass
+    return None
+
+
+def _parse_upstox_action(
+    ev: dict[str, Any],
+    symbol: str,
+    exchange: str,
+    isin: str,
+    now_iso: str,
+) -> ActionRecord:
+    name_raw = str(ev.get("name") or ev.get("type") or ev.get("event_type") or "").lower()
+    if "split" in name_raw:
+        ev_type = "split"
+    elif "bonus" in name_raw:
+        ev_type = "bonus"
+    elif "dividend" in name_raw:
+        ev_type = "dividend"
+    elif "rights" in name_raw:
+        ev_type = "rights"
+    elif "demerger" in name_raw:
+        ev_type = "demerger"
+    elif "merger" in name_raw:
+        ev_type = "merger"
+    elif "buyback" in name_raw:
+        ev_type = "buyback"
+    else:
+        ev_type = "other"
+
+    status = "manual_required" if ev_type == "other" else "unverified"
+
+    ex_d = _parse_upstox_action_date(ev.get("ex_date") or ev.get("expiry_date"))
+    if not ex_d:
+        details = ev.get("event_details") or []
+        if isinstance(details, list):
+            for item in details:
+                if isinstance(item, dict) and "ex" in str(item.get("name", "")).lower():
+                    ex_d = _parse_upstox_action_date(item.get("value"))
+                    if ex_d:
+                        break
+    if not ex_d:
+        ex_d = datetime.now(UTC).date()
+
+    ratio_val: float | None = None
+    ratio_raw = ev.get("ratio")
+    if ratio_raw is not None:
+        try:
+            if isinstance(ratio_raw, (int, float)):
+                ratio_val = float(ratio_raw)
+            elif ":" in str(ratio_raw):
+                p = str(ratio_raw).split(":")
+                ratio_val = float(p[0]) / float(p[1])
+            elif "/" in str(ratio_raw):
+                p = str(ratio_raw).split("/")
+                ratio_val = float(p[0]) / float(p[1])
+            else:
+                ratio_val = float(ratio_raw)
+        except Exception:
+            ratio_val = None
+
+    amt_val: Decimal | None = None
+    amt_raw = ev.get("amount")
+    if amt_raw is not None:
+        try:
+            amt_val = Decimal(str(amt_raw))
+        except Exception:
+            amt_val = None
+
+    text = str(ev.get("details") or ev.get("description") or name_raw)
+    return ActionRecord(
+        ex_date=ex_d,
+        type=ev_type,
+        ratio=ratio_val,
+        amount=amt_val,
+        text=text,
+        source="upstox",
+        source_ref=isin,
+        fetched_at=now_iso,
+        symbol=symbol,
+        exchange=exchange,
+        status=status,
+    )
 
 
 class UpstoxBrokerPlugin(PluginBase):
@@ -79,6 +178,31 @@ class UpstoxBrokerPlugin(PluginBase):
             http_transport=self._http_transport,
         )
         self._session: AuthSession | None = None
+        self._http_client: httpx.Client | None = None
+
+    def _param(self, name: str, default: Any) -> Any:
+        if hasattr(self, "ctx") and self.ctx is not None and self.ctx.params is not None:
+            try:
+                val = self.ctx.params.get(name)
+                return val if val is not None else default
+            except Exception:
+                return default
+        return default
+
+    def _client(self) -> httpx.Client:
+        """Reuse single persistent HTTP client across requests."""
+        if self._http_client is None or self._http_client.is_closed:
+            timeout_s = float(self._param("upstox.request_timeout_s", 15.0))
+            self._http_client = httpx.Client(
+                transport=self._http_transport,
+                timeout=timeout_s,
+            )
+        return self._http_client
+
+    def close(self) -> None:
+        """Close persistent HTTP client if open."""
+        if self._http_client is not None and not self._http_client.is_closed:
+            self._http_client.close()
 
     @property
     def auth(self) -> UpstoxAuthFlow:
@@ -152,25 +276,71 @@ class UpstoxBrokerPlugin(PluginBase):
         token = self.resolve_active_token()
         return self._history_client.history(key, start, end, token=token)
 
-    def actions(self, symbol: str | InstrumentId) -> Mapping[str, Any]:
-        """Fetch corporate actions data (dividends and splits) for symbol."""
+    def actions(self, symbol: str | InstrumentId) -> Sequence[ActionRecord]:
+        """Fetch corporate actions data from Upstox fundamentals endpoint."""
+        self.require("corporate_actions")
         sym_str = str(symbol).strip()
-        safe_key = urllib.parse.quote(sym_str, safe="")
-        url = f"https://api.upstox.com/v2/market-quote/corporate-actions/{safe_key}"
+        try:
+            inst = self._instruments_mgr.resolve(sym_str)
+            isin = self._instruments_mgr.resolve_isin(sym_str)
+            clean_sym = inst.symbol
+            exchange = inst.exchange
+        except Exception:
+            isin = sym_str
+            clean_sym = sym_str.split(":")[-1]
+            exchange = "NSE"
+
+        url = f"https://api.upstox.com/v2/fundamentals/{isin}/corporate-actions"
         token = self.resolve_active_token()
         headers = {"Accept": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+
+        client = self._client()
         try:
-            with self._history_client._client() as client:
-                resp = client.get(url, headers=headers)
-                if resp.status_code == 200:
-                    payload = resp.json()
-                    data = payload.get("data", {})
-                    return data if isinstance(data, dict) else {"events": data}
-        except Exception:
-            pass
-        return {"symbol": sym_str, "fields": ["date", "type", "ratio", "amount"], "events": []}
+            resp = client.get(url, headers=headers)
+        except Exception as exc:
+            raise AlgoDeskError(
+                what=f"Failed to query Upstox corporate actions for {sym_str}: {exc}",
+                where="UpstoxBrokerPlugin.actions",
+                fix="Check network connectivity or credentials",
+            ) from exc
+
+        if resp.status_code == 429:
+            raise RateLimitError(
+                what="Upstox rate limit exceeded on corporate actions",
+                where="UpstoxBrokerPlugin.actions",
+                fix="Reduce request rate or wait before retrying",
+            )
+        if resp.status_code in (401, 403):
+            raise AuthError(
+                what="Upstox authentication failed on corporate actions",
+                where="UpstoxBrokerPlugin.actions",
+                fix="Run 'algodesk login upstox' or provide active analytics token",
+            )
+        if resp.status_code in (400, 404):
+            return []
+
+        if resp.status_code != 200:
+            raise AlgoDeskError(
+                what=f"Upstox corporate actions error: HTTP {resp.status_code}",
+                where="UpstoxBrokerPlugin.actions",
+                fix="Verify symbol or ISIN identifier",
+            )
+
+        payload = resp.json()
+        events_data = payload.get("data")
+        if events_data is None:
+            events_data = payload.get("events", [])
+        if not isinstance(events_data, list):
+            return []
+
+        now_iso = datetime.now(UTC).isoformat()
+        return [
+            _parse_upstox_action(ev, clean_sym, exchange, isin, now_iso)
+            for ev in events_data
+            if isinstance(ev, dict)
+        ]
 
     async def stream(self, instruments: Sequence[InstrumentId]) -> AsyncIterator[MarketEvent]:
         """Stream real-time MarketEvents over WebSocket feed."""

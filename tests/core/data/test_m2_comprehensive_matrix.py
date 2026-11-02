@@ -328,7 +328,7 @@ def test_data_service_download_modes(tmp_path: Path, download_mode: str) -> None
     assert slice_res.adjustment == download_mode
 
 
-@pytest.mark.parametrize("adjust_arg", ["splits", "dividends", "all", "backadjusted"])
+@pytest.mark.parametrize("adjust_arg", ["dividends", "all", "backadjusted"])
 def test_data_service_dynamic_adjust_unsupported(tmp_path: Path, adjust_arg: str) -> None:
     m = DataManifest(tmp_path / "data_manifest.db")
     store = BarStore(tmp_path, manifest=m)

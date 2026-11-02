@@ -40,6 +40,12 @@ class FakeDataFrame:
     def __len__(self) -> int:
         return len(self._records)
 
+    @property
+    def columns(self) -> list[str]:
+        if not self._records:
+            return []
+        return list(self._records[0].keys())
+
     def iterrows(self) -> Any:
         yield from zip(self._dates, self._records, strict=False)
 
@@ -110,6 +116,7 @@ def fake_manifest() -> PluginManifest:
         entry="plugin:YFinanceBrokerPlugin",
         capabilities={
             "history": True,
+            "corporate_actions": True,
             "actions": True,
             "fundamentals": True,
             "info": True,
@@ -231,7 +238,8 @@ def test_yfinance_extra_methods(fake_manifest: PluginManifest) -> None:
     plugin = YFinanceBrokerPlugin(fake_manifest, YFinanceConfig(), ctx, _yf_module=fake_mod)
 
     actions = plugin.actions("RELIANCE")
-    assert "records" in actions
+    assert len(actions) == 1
+    assert actions[0].type == "dividend"
 
     fund = plugin.fundamentals("RELIANCE")
     assert "records" in fund

@@ -6,6 +6,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from itertools import groupby
 from pathlib import Path
 from typing import Any
@@ -13,10 +14,11 @@ from zoneinfo import ZoneInfo
 
 import typer
 
-from algodesk.api import InstrumentId, SeriesKey
+from algodesk.api import ActionRecord, InstrumentId, SeriesKey
 from algodesk.api.errors import ConfigError, DataError
 from algodesk.api.kinds import Mode
 from algodesk.cli.common import _open_rt, format_table, handle_cli_errors
+from algodesk.data.actions_store import ActionsStore, CorporateActionsManager
 from algodesk.data.catalog import (
     coverage,
     execute_delete,
@@ -26,15 +28,22 @@ from algodesk.data.catalog import (
     resolve_selector,
 )
 from algodesk.data.coverage import CoverageIndex
+from algodesk.data.detection import detect_price_anomalies
 from algodesk.data.groups import get_group, list_group_details
 from algodesk.data.layout import dataset_id_for_key, parse_bar_file_path
 from algodesk.data.manifest import (
     CoverageDayRecord,
     DataManifest,
     DatasetRecord,
+    FileRecord,
     PartRecord,
 )
+from algodesk.data.overrides import (
+    ActionOverride,
+    add_override,
+)
 from algodesk.data.quarantine import QuarantineManager
+from algodesk.data.reconciler import CorporateActionsReconciler
 from algodesk.data.recorder import MarketRecorder
 from algodesk.data.schema import read_bars_parquet
 from algodesk.data.service import DataService
@@ -46,11 +55,15 @@ from algodesk.ops.context import build_context
 from algodesk.ops.runtime import Runtime
 
 data_app = typer.Typer(help="Fetch, inspect, delete, and manage market data.")
+actions_app = typer.Typer(help="Manage, refresh, inspect, and reconcile corporate actions.")
 data_trash_app = typer.Typer(help="Manage data safety trash.")
 groups_app = typer.Typer(help="Inspect and list configured instrument groups.")
 quarantine_app = typer.Typer(help="Inspect, release, and purge quarantined market data.")
 session_bars_app = typer.Typer(help="Manage ephemeral live session bars.")
+override_app = typer.Typer(help="Manage corporate actions operator overrides.")
 
+data_app.add_typer(actions_app, name="actions")
+actions_app.add_typer(override_app, name="override")
 data_app.add_typer(data_trash_app, name="trash")
 data_app.add_typer(quarantine_app, name="quarantine")
 data_app.add_typer(session_bars_app, name="session-bars")
@@ -72,6 +85,12 @@ def _purge_expired_quarantine(rt: Runtime, manifest: DataManifest) -> None:
         pass
 
 
+def _coverage_row(r: Any) -> list[str]:
+    a = [r.target, r.kind, r.timeframe, r.first_date, r.last_date]
+    b = [str(r.days), str(r.rows), str(r.bytes), r.source]
+    return a + b
+
+
 def _parse_data_cli_dt(val: str, is_end: bool) -> datetime:
     val = val.strip()
     ist = ZoneInfo("Asia/Kolkata")
@@ -87,29 +106,40 @@ def _parse_data_cli_dt(val: str, is_end: bool) -> datetime:
         return datetime.combine(d, time.min, tzinfo=ist).astimezone(UTC)
 
 
+def _build_data_service(rt: Runtime, source: str = "yfinance") -> DataService:
+    p_ctx = build_context(Mode.RESEARCH, run_id=f"data_ds_{source}")
+    broker: Any = rt.plugins.create("broker", source, config={}, ctx=p_ctx)
+    manifests = {p.manifest.name: p.manifest for p in rt.plugins.list() if hasattr(p, "manifest")}
+    store = BarStore(
+        getattr(getattr(rt, "paths", None), "data", Path("data")),
+        _get_manifest(rt),
+        params=rt.params,
+        journal=getattr(rt, "journal", None),
+    )
+    j = getattr(rt, "journal", None)
+    return DataService(
+        {source: broker}, source, store, None, manifests=manifests, params=rt.params, journal=j
+    )
+
+
 @data_app.command("get")
 @handle_cli_errors
 def data_get(
     ctx: typer.Context,
     symbol: str = typer.Argument(..., help="Symbol (e.g. RELIANCE, INFY)"),
-    timeframe: str = typer.Argument(..., help="Timeframe (e.g. 1m, 5m, 15m, 30m, 1h, 1d)"),
-    start: str = typer.Argument(..., help="Start date/time (e.g. YYYY-MM-DD or ISO8601)"),
-    end: str = typer.Argument(..., help="End date/time (e.g. YYYY-MM-DD or ISO8601)"),
+    timeframe: str = typer.Argument(..., help="Timeframe (e.g. 1m, 1d)"),
+    start: str = typer.Argument(..., help="Start date/time"),
+    end: str = typer.Argument(..., help="End date/time"),
     adjusted: bool = typer.Option(False, "--adjusted", help="Use adjusted prices"),
-    download: str = typer.Option(
-        "adjusted", "--download", help="Download raw or adjusted series ('raw' or 'adjusted')"
-    ),
-    adjust: str = typer.Option("none", "--adjust", help="Dynamic price adjustment ('none')"),
-    fill_only: bool = typer.Option(
-        False, "--fill-only", help="Fetch and commit data to store without returning table"
-    ),
+    download: str = typer.Option("adjusted", "--download", help="Download raw or adjusted series"),
+    adjust: str | None = typer.Option(None, "--adjust", help="Adjustment: none, splits, total"),
+    accept_unverified: bool = typer.Option(False, "--accept-unverified", help="Accept unverified"),
+    fill_only: bool = typer.Option(False, "--fill-only", help="Fetch and commit without table"),
     source: str = typer.Option("yfinance", "--source", help="Data source broker plugin"),
 ) -> None:
     """Fetch and display historical market data bars in a table."""
     ist = ZoneInfo("Asia/Kolkata")
-    start_dt = _parse_data_cli_dt(start, is_end=False)
-    end_dt = _parse_data_cli_dt(end, is_end=True)
-
+    start_dt, end_dt = _parse_data_cli_dt(start, is_end=False), _parse_data_cli_dt(end, is_end=True)
     download_mode = "adjusted" if adjusted else download
     inst_id = InstrumentId(symbol if ":" in symbol else f"NSE:EQ:{symbol}")
     key = SeriesKey(
@@ -121,28 +151,7 @@ def data_get(
     )
 
     with _open_rt(ctx, ensure=False) as rt:
-        p_ctx = build_context(Mode.RESEARCH, run_id=f"data_get_{source}")
-        broker: Any = rt.plugins.create("broker", source, config={}, ctx=p_ctx)
-        sources = {source: broker}
-        manifests = {
-            p.manifest.name: p.manifest for p in rt.plugins.list() if hasattr(p, "manifest")
-        }
-        manifest_obj = _get_manifest(rt)
-        data_dir = getattr(getattr(rt, "paths", None), "data", Path("data"))
-        store = BarStore(
-            data_dir=data_dir,
-            manifest=manifest_obj,
-            params=rt.params,
-            journal=getattr(rt, "journal", None),
-        )
-        ds = DataService(
-            sources=sources,
-            default_source=source,
-            store=store,
-            manifests=manifests,
-            params=rt.params,
-            journal=getattr(rt, "journal", None),
-        )
+        ds = _build_data_service(rt, source)
         data_slice = ds.get(
             series=key,
             start=start_dt,
@@ -150,6 +159,7 @@ def data_get(
             download=download_mode,
             adjust=adjust,
             fill_only=fill_only,
+            accept_unverified=accept_unverified,
         )
 
     if fill_only:
@@ -163,21 +173,39 @@ def data_get(
 
     is_daily = timeframe.lower() == "1d"
     headers = ["DATE" if is_daily else "DATE/TIME", "OPEN", "HIGH", "LOW", "CLOSE", "VOLUME"]
-    rows: list[list[str]] = []
-    for b in bars:
-        ts_ist = b.start_ts.astimezone(ist)
-        d_str = ts_ist.strftime("%Y-%m-%d") if is_daily else ts_ist.strftime("%Y-%m-%d %H:%M")
-        rows.append(
-            [
-                d_str,
-                f"{b.open:.2f}",
-                f"{b.high:.2f}",
-                f"{b.low:.2f}",
-                f"{b.close:.2f}",
-                str(b.volume),
-            ]
-        )
+    rows = [
+        [
+            b.start_ts.astimezone(ist).strftime("%Y-%m-%d" if is_daily else "%Y-%m-%d %H:%M"),
+            f"{b.open:.2f}",
+            f"{b.high:.2f}",
+            f"{b.low:.2f}",
+            f"{b.close:.2f}",
+            str(b.volume),
+        ]
+        for b in bars
+    ]
     typer.echo(format_table(headers, rows))
+
+
+def _journal_data_event(rt: Runtime, event_type: str, payload: dict[str, Any], caller: str) -> None:
+    if (j := getattr(rt, "journal", None)) is not None:
+        j.append(event_type, payload, durable=True)
+        return
+    try:
+        from algodesk.journal.writer import Journal, JournalSettings
+
+        p = rt.params
+        s = JournalSettings(
+            flush_interval_ms=int(p.get("journal.flush_interval_ms")) if p else 50,
+            max_buffer_events=int(p.get("journal.max_buffer_events")) if p else 1000,
+            backpressure_timeout_ms=int(p.get("journal.backpressure_timeout_ms")) if p else 5000,
+        )
+        with Journal(rt.state.journal_db, settings=s) as jnl:
+            jnl.start_run("research", "core", "maint", caller)
+            jnl.append(event_type, payload, durable=True)
+            jnl.end_run("ok")
+    except Exception:
+        pass
 
 
 def _log_data_deleted(
@@ -189,48 +217,22 @@ def _log_data_deleted(
     total_bytes: int,
     purge: bool,
 ) -> None:
-    try:
-        from algodesk.journal.writer import Journal, JournalSettings
-
-        flush_interval = int(rt.params.get("journal.flush_interval_ms")) if rt.params else 50
-        max_buffer = int(rt.params.get("journal.max_buffer_events")) if rt.params else 1000
-        bp_timeout = int(rt.params.get("journal.backpressure_timeout_ms")) if rt.params else 5000
-        settings = JournalSettings(
-            flush_interval_ms=flush_interval,
-            max_buffer_events=max_buffer,
-            backpressure_timeout_ms=bp_timeout,
-        )
-        with Journal(rt.state.journal_db, settings=settings) as journal:
-            journal.start_run(
-                mode="research",
-                code_version="core",
-                config_hash="maint",
-                registry_hash="data_delete",
-            )
-            journal.append(
-                "data.deleted",
-                {
-                    "reason": reason,
-                    "selectors": list(selectors),
-                    "instruments": list(instruments),
-                    "files_count": files_count,
-                    "bytes": total_bytes,
-                    "purge": purge,
-                },
-                durable=True,
-            )
-            journal.end_run("ok")
-    except Exception:
-        pass
+    payload = {
+        "reason": reason,
+        "selectors": list(selectors),
+        "instruments": list(instruments),
+        "files_count": files_count,
+        "bytes": total_bytes,
+        "purge": purge,
+    }
+    _journal_data_event(rt, "data.deleted", payload, "data_delete")
 
 
 @data_app.command("list")
 @handle_cli_errors
 def data_list(
     ctx: typer.Context,
-    group_by: str = typer.Option(
-        "none", "--group-by", help="Grouping: exchange|segment|underlying|group|none"
-    ),
+    group_by: str = typer.Option("none", "--group-by", help="Grouping: exchange|segment|group"),
     group: str | None = typer.Option(None, "--group", help="Filter by instrument group"),
     kind: str | None = typer.Option(None, "--kind", help="Filter by data kind (ticks, bars)"),
     json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
@@ -246,43 +248,17 @@ def data_list(
             filters={"kind": kind} if kind else None,
             groups_dir=groups_dir,
         )
-
         if group:
             members = get_group(group, groups_dir) or []
             if group_by == "none":
                 rows = [r for r in rows if r.target in members]
-
         if json_out:
             typer.echo(json.dumps([asdict(r) for r in rows], indent=2))
             return
 
-        target_col = group_by.upper() if group_by != "none" else "INSTRUMENT"
-        headers = [
-            target_col,
-            "KIND",
-            "TIMEFRAME",
-            "FIRST DATE",
-            "LAST DATE",
-            "DAYS",
-            "ROWS",
-            "BYTES",
-            "SOURCE",
-        ]
-        table_rows = [
-            [
-                r.target,
-                r.kind,
-                r.timeframe,
-                r.first_date,
-                r.last_date,
-                str(r.days),
-                str(r.rows),
-                str(r.bytes),
-                r.source,
-            ]
-            for r in rows
-        ]
-        typer.echo(format_table(headers, table_rows))
+        t_col = group_by.upper() if group_by != "none" else "INSTRUMENT"
+        headers = [t_col] + "KIND|TIMEFRAME|FIRST DATE|LAST DATE|DAYS|ROWS|BYTES|SOURCE".split("|")
+        typer.echo(format_table(headers, [_coverage_row(r) for r in rows]))
 
 
 @data_app.command("delete")
@@ -378,18 +354,13 @@ def data_compact(
 ) -> None:
     """Compact raw partition parts into day.parquet."""
     with _open_rt(ctx, ensure=False) as rt:
-        manifest_db = rt.root / "data" / "state" / "data_manifest.db"
-        manifest = DataManifest(manifest_db)
+        manifest = DataManifest(rt.root / "data" / "state" / "data_manifest.db")
         recorder = MarketRecorder(data_dir=rt.root / "data", manifest=manifest)
-
-        dates_to_compact: list[str] = (
+        dates = (
             [date_val] if date_val else sorted({f.date for f in manifest.get_files(state="part")})
         )
-        total_compacted = 0
-        for d in dates_to_compact:
-            compacted = recorder.compact(d)
-            total_compacted += len(compacted)
-        typer.echo(f"Compacted {total_compacted} partition(s).")
+        total = sum(len(recorder.compact(d)) for d in dates)
+        typer.echo(f"Compacted {total} partition(s).")
 
 
 @data_app.command("synth")
@@ -411,8 +382,7 @@ def data_synth(
         )
     sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
     with _open_rt(ctx, ensure=False) as rt:
-        manifest_db = rt.root / "data" / "state" / "data_manifest.db"
-        manifest = DataManifest(manifest_db)
+        manifest = DataManifest(rt.root / "data" / "state" / "data_manifest.db")
         total_rows = synth_ticks(
             symbols=sym_list,
             days=days,
@@ -474,13 +444,12 @@ def groups_list_cmd(
         if json_out:
             typer.echo(json.dumps(details, indent=2))
             return
+
+        def _p(m: list[str]) -> str:
+            return f"{len(m)}: {', '.join(m[:3])}{'...' if len(m) > 3 else ''}"
+
         headers = ["NAME", "DESCRIPTION", "MEMBERS"]
-        rows = []
-        for d in details.values():
-            m_count = len(d["members"])
-            preview = ", ".join(d["members"][:3])
-            suffix = "..." if m_count > 3 else ""
-            rows.append([d["name"], d["description"], f"{m_count}: {preview}{suffix}"])
+        rows = [[d["name"], d["description"], _p(d["members"])] for d in details.values()]
         typer.echo(format_table(headers, rows))
 
 
@@ -506,19 +475,87 @@ def groups_show_cmd(
         if json_out:
             typer.echo(json.dumps(info, indent=2))
             return
-        typer.echo(f"Group: {info['name']}")
-        if info["description"]:
-            typer.echo(f"Description: {info['description']}")
-        typer.echo("Members:")
-        for m in info["members"]:
-            typer.echo(f"  - {m}")
+        desc = f"\nDescription: {info['description']}" if info["description"] else ""
+        m_lines = "\n".join(f"  - {m}" for m in info["members"])
+        typer.echo(f"Group: {info['name']}{desc}\nMembers:\n{m_lines}")
+
+
+def _check_manifest_file(
+    path_str: str,
+    expected_sha: str,
+    data_dir: Path,
+    missing: list[str],
+    errors: list[str],
+) -> Path | None:
+    p = data_dir / path_str if not Path(path_str).is_absolute() else Path(path_str)
+    if not p.exists():
+        missing.append(path_str)
+        return None
+    if (sha := _compute_sha256(p)) != expected_sha:
+        errors.append(f"{path_str}: sha mismatch ({expected_sha[:8]} != {sha[:8]})")
+        return None
+    return p
+
+
+def _find_dir_orphans(target: Path, data_dir: Path, known: set[str], orphans: list[str]) -> None:
+    if not target.exists():
+        return
+    for p in target.rglob("*.parquet"):
+        try:
+            rel = str(p.relative_to(data_dir))
+        except ValueError:
+            rel = str(p)
+        if rel not in known:
+            orphans.append(rel)
+
+
+def _adopt_bar(
+    manifest: Any, key: Any, o_rel: str, o_path: Path, bars: list[Any], now_iso: str
+) -> None:
+    ds_id = dataset_id_for_key(key)
+    manifest.record_dataset(
+        DatasetRecord(
+            ds_id,
+            str(key.instrument),
+            key.kind,
+            key.timeframe,
+            key.adjustment,
+            key.source,
+            1,
+            now_iso,
+        )
+    )
+    sha, f_bytes = _compute_sha256(o_path), o_path.stat().st_size
+    manifest.record_part(
+        PartRecord(
+            o_rel,
+            ds_id,
+            len(bars),
+            f_bytes,
+            bars[0].start_ts.isoformat(),
+            bars[-1].start_ts.isoformat(),
+            sha,
+            key.source,
+            "1.0",
+            now_iso,
+        )
+    )
+    cov_index = CoverageIndex(manifest=manifest)
+    for d_val, day_bars_iter in groupby(bars, key=lambda b: b.start_ts.date()):
+        day_bars = list(day_bars_iter)
+        st = cov_index.evaluate_day_status(ds_id, d_val, has_bars=True)
+        manifest.record_coverage_day(
+            CoverageDayRecord(
+                ds_id, d_val.isoformat(), st, len(day_bars), len(day_bars), o_rel, now_iso
+            )
+        )
 
 
 @data_app.command("verify")
 @handle_cli_errors
 def data_verify(
     ctx: typer.Context,
-    only: str = typer.Option("all", "--only", help="Verify only 'ticks', 'bars', or 'all'"),
+    only: str = typer.Option("all", "--only", help="Verify 'ticks', 'bars', 'actions', 'all'"),
     adopt: bool = typer.Option(False, "--adopt", help="Adopt orphan bar files into manifest"),
     json_out: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
 ) -> None:
@@ -530,6 +567,7 @@ def data_verify(
 
         check_ticks = only.lower() in ("all", "ticks")
         check_bars = only.lower() in ("all", "bars")
+        check_actions = only.lower() in ("all", "actions")
 
         files_checked = 0
         missing_files: list[str] = []
@@ -540,84 +578,109 @@ def data_verify(
 
         known_tick_paths: set[str] = set()
         known_bar_paths: set[str] = set()
+        known_action_paths: set[str] = set()
 
         if check_ticks:
             for f in manifest.get_files():
+                if f.kind == "actions":
+                    continue
                 files_checked += 1
                 known_tick_paths.add(f.path)
                 try:
-                    rel_f = str(Path(f.path).relative_to(data_dir))
-                    known_tick_paths.add(rel_f)
+                    known_tick_paths.add(str(Path(f.path).relative_to(data_dir)))
                 except ValueError:
                     pass
-                f_path = data_dir / f.path if not Path(f.path).is_absolute() else Path(f.path)
-                if not f_path.exists():
-                    missing_files.append(f.path)
-                    continue
-                actual_sha = _compute_sha256(f_path)
-                if actual_sha != f.sha256:
-                    checksum_errors.append(
-                        f"{f.path}: sha mismatch (expected {f.sha256[:8]}, got {actual_sha[:8]})"
-                    )
+                _check_manifest_file(f.path, f.sha256, data_dir, missing_files, checksum_errors)
+
+        if check_actions:
+            import pyarrow.parquet as pq
+
+            for f in manifest.get_files(kind="actions"):
+                files_checked += 1
+                known_action_paths.add(f.path)
+                try:
+                    known_action_paths.add(str(Path(f.path).relative_to(data_dir)))
+                except ValueError:
+                    pass
+                p = _check_manifest_file(f.path, f.sha256, data_dir, missing_files, checksum_errors)
+                if p is not None:
+                    try:
+                        pq.read_table(p)
+                    except Exception as exc:
+                        rule_violations.append(f"{f.path}: read error ({exc})")
+            _find_dir_orphans(data_dir / "actions", data_dir, known_action_paths, orphans)
 
         if check_bars:
             datasets = {d.dataset_id: d for d in manifest.list_datasets()}
-            for p in manifest.get_parts():
+            for part in manifest.get_parts():
                 files_checked += 1
-                known_bar_paths.add(p.path)
+                known_bar_paths.add(part.path)
                 try:
-                    rel_p = str(Path(p.path).relative_to(data_dir))
-                    known_bar_paths.add(rel_p)
+                    known_bar_paths.add(str(Path(part.path).relative_to(data_dir)))
                 except ValueError:
                     pass
-                p_path = data_dir / p.path if not Path(p.path).is_absolute() else Path(p.path)
-                if not p_path.exists():
-                    missing_files.append(p.path)
-                    continue
-                actual_sha = _compute_sha256(p_path)
-                if actual_sha != p.sha256:
-                    checksum_errors.append(
-                        f"{p.path}: sha mismatch (expected {p.sha256[:8]}, got {actual_sha[:8]})"
-                    )
-                else:
-                    ds = datasets.get(p.dataset_id)
+                p = _check_manifest_file(
+                    part.path, part.sha256, data_dir, missing_files, checksum_errors
+                )
+                if p is not None:
+                    ds = datasets.get(part.dataset_id)
                     if ds is not None:
                         try:
-                            bars = read_bars_parquet(
-                                p_path, InstrumentId(ds.instrument), ds.timeframe
-                            )
+                            bars = read_bars_parquet(p, InstrumentId(ds.instrument), ds.timeframe)
                             for idx in range(len(bars) - 1):
                                 if bars[idx].start_ts >= bars[idx + 1].start_ts:
                                     rule_violations.append(
-                                        f"{p.path}: non-increasing timestamps at row {idx}"
+                                        f"{part.path}: non-increasing timestamps at row {idx}"
                                     )
                                     break
                         except Exception as exc:
-                            rule_violations.append(f"{p.path}: read error ({exc})")
+                            rule_violations.append(f"{part.path}: read error ({exc})")
+            _find_dir_orphans(data_dir / "bars", data_dir, known_bar_paths, orphans)
 
-        if check_ticks and (data_dir / "ticks").exists():
-            for path_obj in (data_dir / "ticks").rglob("*.parquet"):
-                try:
-                    rel = str(path_obj.relative_to(data_dir))
-                except ValueError:
-                    rel = str(path_obj)
-                if rel not in known_tick_paths:
-                    orphans.append(rel)
-
-        if check_bars and (data_dir / "bars").exists():
-            for path_obj in (data_dir / "bars").rglob("*.parquet"):
-                try:
-                    rel = str(path_obj.relative_to(data_dir))
-                except ValueError:
-                    rel = str(path_obj)
-                if rel not in known_bar_paths:
-                    orphans.append(rel)
+        if check_ticks:
+            _find_dir_orphans(data_dir / "ticks", data_dir, known_tick_paths, orphans)
 
         if adopt and orphans:
             remaining_orphans: list[str] = []
             val = BarValidator(data_dir=data_dir, manifest=manifest)
             now_iso = datetime.now(UTC).isoformat()
             for o_rel in orphans:
+                if o_rel.startswith("actions/"):
+                    o_path = data_dir / o_rel
+                    try:
+                        import pyarrow.parquet as pq
+
+                        tbl = pq.read_table(o_path)
+                        sha = _compute_sha256(o_path)
+                        parts = o_rel.split("/")
+                        exch = "NSE"
+                        sym = "UNKNOWN"
+                        for part_seg in parts:
+                            if part_seg.startswith("exchange="):
+                                exch = part_seg.split("=")[1].upper()
+                            elif part_seg.startswith("symbol="):
+                                sym = part_seg.split("=")[1].upper()
+                        rec = FileRecord(
+                            o_rel,
+                            f"{exch}:EQ:{sym}",
+                            "actions",
+                            "actions",
+                            datetime.now(UTC).date().isoformat(),
+                            len(tbl),
+                            o_path.stat().st_size,
+                            "",
+                            "",
+                            sha,
+                            "adopted",
+                            "ready",
+                            now_iso,
+                        )
+                        manifest.record_file(rec)
+                        adopted.append(o_rel)
+                    except Exception:
+                        remaining_orphans.append(o_rel)
+                    continue
+
                 if not o_rel.startswith("bars/"):
                     remaining_orphans.append(o_rel)
                     continue
@@ -637,52 +700,8 @@ def data_verify(
                 )
                 try:
                     bars = read_bars_parquet(o_path, inst_id, info["timeframe"])
-                    rep = val.validate_chunk(bars, key)
-                    if rep.is_valid:
-                        ds_id = dataset_id_for_key(key)
-                        manifest.record_dataset(
-                            DatasetRecord(
-                                dataset_id=ds_id,
-                                instrument=str(inst_id),
-                                kind=key.kind,
-                                timeframe=key.timeframe,
-                                adjustment=key.adjustment,
-                                source=key.source,
-                                schema_version=1,
-                                created_at=now_iso,
-                            )
-                        )
-                        sha = _compute_sha256(o_path)
-                        f_bytes = o_path.stat().st_size
-                        manifest.record_part(
-                            PartRecord(
-                                path=o_rel,
-                                dataset_id=ds_id,
-                                rows=len(bars),
-                                bytes=f_bytes,
-                                first_ts=bars[0].start_ts.isoformat(),
-                                last_ts=bars[-1].start_ts.isoformat(),
-                                sha256=sha,
-                                source=key.source,
-                                source_version="1.0",
-                                fetched_at=now_iso,
-                            )
-                        )
-                        cov_index = CoverageIndex(manifest=manifest)
-                        for d_val, day_bars_iter in groupby(bars, key=lambda b: b.start_ts.date()):
-                            day_bars = list(day_bars_iter)
-                            st = cov_index.evaluate_day_status(ds_id, d_val, has_bars=True)
-                            manifest.record_coverage_day(
-                                CoverageDayRecord(
-                                    dataset_id=ds_id,
-                                    day=d_val.isoformat(),
-                                    status=st,
-                                    rows=len(day_bars),
-                                    expected_rows=len(day_bars),
-                                    part_path=o_rel,
-                                    fetched_at=now_iso,
-                                )
-                            )
+                    if val.validate_chunk(bars, key).is_valid:
+                        _adopt_bar(manifest, key, o_rel, o_path, bars, now_iso)
                         adopted.append(o_rel)
                     else:
                         remaining_orphans.append(o_rel)
@@ -709,18 +728,15 @@ def data_verify(
 
         if not is_ok:
             typer.secho("VERIFY: FAILED", fg=typer.colors.RED, bold=True)
-            if missing_files:
-                preview = ", ".join(missing_files[:5])
-                typer.echo(f"  Missing files ({len(missing_files)}): {preview}")
-            if checksum_errors:
-                preview = ", ".join(checksum_errors[:5])
-                typer.echo(f"  Checksum mismatches ({len(checksum_errors)}): {preview}")
-            if rule_violations:
-                preview = ", ".join(rule_violations[:5])
-                typer.echo(f"  Rule violations ({len(rule_violations)}): {preview}")
-            if orphans:
-                preview = ", ".join(orphans[:5])
-                typer.echo(f"  Orphans ({len(orphans)}): {preview} (use --adopt to register)")
+            for lbl, items in [
+                ("Missing files", missing_files),
+                ("Checksum mismatches", checksum_errors),
+                ("Rule violations", rule_violations),
+                ("Orphans", orphans),
+            ]:
+                if items:
+                    sfx = " (use --adopt to register)" if lbl == "Orphans" else ""
+                    typer.echo(f"  {lbl} ({len(items)}): {', '.join(items[:5])}{sfx}")
             raise typer.Exit(code=1)
 
         msg = f"VERIFY: OK (checked {files_checked} files, {len(orphans)} orphans, 0 errors)"
@@ -749,31 +765,9 @@ def data_status(
                 typer.echo(json.dumps([asdict(r) for r in rows], indent=2))
                 return
             headers = [
-                "GROUP",
-                "KIND",
-                "TIMEFRAME",
-                "FIRST DATE",
-                "LAST DATE",
-                "DAYS",
-                "ROWS",
-                "BYTES",
-                "SOURCE",
-            ]
-            t_rows = [
-                [
-                    r.target,
-                    r.kind,
-                    r.timeframe,
-                    r.first_date,
-                    r.last_date,
-                    str(r.days),
-                    str(r.rows),
-                    str(r.bytes),
-                    r.source,
-                ]
-                for r in rows
-            ]
-            typer.echo(format_table(headers, t_rows))
+                "GROUP"
+            ] + "KIND|TIMEFRAME|FIRST DATE|LAST DATE|DAYS|ROWS|BYTES|SOURCE".split("|")
+            typer.echo(format_table(headers, [_coverage_row(r) for r in rows]))
             return
 
         datasets = manifest.list_datasets()
@@ -799,16 +793,17 @@ def data_status(
             return
 
         headers = ["METRIC", "VALUE"]
-        metric_rows = [
-            ["Datasets", str(len(datasets))],
-            ["Bar Files (parts)", str(len(parts))],
-            ["Tick Files", str(len(files))],
-            ["Total Rows", f"{total_rows:,}"],
-            ["Total Storage", f"{total_bytes / (1024**2):.2f} MB" if total_bytes > 0 else "0 B"],
-            ["Quarantined Chunks", str(len(quarantined))],
-            ["Trash Entries", str(len(trash_items))],
+        size_str = f"{total_bytes / (1024**2):.2f} MB" if total_bytes > 0 else "0 B"
+        pairs = [
+            ("Datasets", len(datasets)),
+            ("Bar Files (parts)", len(parts)),
+            ("Tick Files", len(files)),
+            ("Total Rows", f"{total_rows:,}"),
+            ("Total Storage", size_str),
+            ("Quarantined Chunks", len(quarantined)),
+            ("Trash Entries", len(trash_items)),
         ]
-        typer.echo(format_table(headers, metric_rows))
+        typer.echo(format_table(headers, [[m, str(v)] for m, v in pairs]))
 
 
 @data_app.command("gaps")
@@ -847,16 +842,10 @@ def data_gaps(
         all_gaps: list[dict[str, str]] = []
 
         for inst in instruments:
-            key = SeriesKey(
-                instrument=InstrumentId(inst),
-                kind="bars",
-                timeframe=timeframe,
-                adjustment="raw",
-                source=source,
+            ds_id = dataset_id_for_key(
+                SeriesKey(InstrumentId(inst), "bars", timeframe, "raw", source)
             )
-            ds_id = dataset_id_for_key(key)
-            gaps = cov_index.detect_gaps(ds_id, start_d, end_d)
-            for g in gaps:
+            for g in cov_index.detect_gaps(ds_id, start_d, end_d):
                 all_gaps.append(
                     {
                         "instrument": inst,
@@ -925,15 +914,12 @@ def quarantine_release(
     """Release and commit quarantined bars to the historical store."""
     with _open_rt(ctx, ensure=False) as rt:
         manifest = _get_manifest(rt)
-        store = BarStore(data_dir=rt.paths.data, manifest=manifest, params=rt.params)
-        qm = QuarantineManager(
-            data_dir=rt.paths.data, manifest=manifest, store=store, params=rt.params
+        store = BarStore(rt.paths.data, manifest, params=rt.params)
+        QuarantineManager(rt.paths.data, manifest, store=store, params=rt.params).release(
+            id, reason=reason
         )
-        qm.release(id, reason=reason)
-        typer.secho(
-            f"Released quarantined chunk '{id}' and committed to store.",
-            fg=typer.colors.GREEN,
-        )
+        msg = f"Released quarantined chunk '{id}' and committed to store."
+        typer.secho(msg, fg=typer.colors.GREEN)
 
 
 @quarantine_app.command("purge")
@@ -952,15 +938,15 @@ def quarantine_purge(
             fix="Specify --id <id> or --all",
         )
     if not yes:
-        confirm = typer.prompt("Type 'PURGE' to confirm deletion of quarantined data")
-        if confirm.strip() != "PURGE":
+        if typer.prompt("Type 'PURGE' to confirm deletion of quarantined data").strip() != "PURGE":
             typer.echo("Aborted.")
             return
 
     with _open_rt(ctx, ensure=False) as rt:
         manifest = _get_manifest(rt)
-        qm = QuarantineManager(data_dir=rt.paths.data, manifest=manifest, params=rt.params)
-        purged = qm.purge(id=id, all_items=all_items)
+        purged = QuarantineManager(rt.paths.data, manifest, params=rt.params).purge(
+            id=id, all_items=all_items
+        )
         typer.echo(f"Purged {purged} quarantined item(s).")
 
 
@@ -972,6 +958,289 @@ def session_bars_purge(
 ) -> None:
     """Purge live session bar partitions older than keep_days retention."""
     with _open_rt(ctx, ensure=False) as rt:
-        sbs = SessionBarStore(data_dir=rt.paths.data, params=rt.params)
-        purged = sbs.purge_older_than(days=days)
+        purged = SessionBarStore(rt.paths.data, params=rt.params).purge_older_than(days=days)
         typer.echo(f"Purged {purged} session bar date partition(s).")
+
+
+def _build_action_sources(rt: Runtime, requested_source: str | None) -> dict[str, Any]:
+    sources: dict[str, Any] = {}
+    p_ctx = build_context(Mode.RESEARCH, run_id="data_actions")
+    names = [requested_source] if requested_source else ["upstox", "yfinance"]
+    for name in names:
+        try:
+            sources[name] = rt.plugins.create("broker", name, config={}, ctx=p_ctx)
+        except Exception:
+            if requested_source:
+                raise
+    return sources
+
+
+@actions_app.command("refresh")
+@handle_cli_errors
+def actions_refresh(
+    ctx: typer.Context,
+    selector: str = typer.Argument(..., help="Symbol, ID, or @group selector"),
+    source: str | None = typer.Option(None, "--source", help="Data source broker plugin"),
+    force: bool = typer.Option(False, "--force", help="Force refresh even if within TTL"),
+) -> None:
+    """Refresh corporate actions for selector symbols older than data.actions_ttl_hours."""
+    with _open_rt(ctx, ensure=False) as rt:
+        mgr = CorporateActionsManager(
+            ActionsStore(rt.paths.data, _get_manifest(rt)),
+            _build_action_sources(rt, source),
+            params=rt.params,
+            journal=getattr(rt, "journal", None),
+            groups_dir=Path("config/groups"),
+        )
+        res = mgr.refresh(selector, source=source, force=force)
+        typer.echo(
+            f"Actions refresh complete: {len(res['refreshed'])} refreshed, "
+            f"{len(res['skipped'])} cached, {res['actions_count']} events."
+        )
+
+
+def _get_project_root(ctx: typer.Context) -> Path:
+    from algodesk.cli.common import _get_cli_state
+    from algodesk.ops.paths import find_project_root
+
+    return Path(_get_cli_state(ctx).root or find_project_root()).resolve()
+
+
+def _resolve_action_symbols(
+    rt: Runtime, manifest: DataManifest, selector: str | None, exchange: str
+) -> list[str]:
+    if selector:
+        try:
+            res = resolve_selector(selector, manifest, groups_dir=Path("config/groups"))
+            syms = [str(it).split(":")[-1].upper() for it in res]
+            return list(dict.fromkeys(syms)) or [selector.upper()]
+        except Exception:
+            return [selector.upper()]
+    p = rt.paths.data / "actions" / f"exchange={exchange.upper()}"
+    if not p.exists():
+        return []
+    items = {f.parent.name.split("=")[-1].upper() for f in p.glob("symbol=*/actions.parquet")}
+    return sorted(items)
+
+
+def _build_reconciler(ctx: typer.Context, p: Any) -> CorporateActionsReconciler:
+    return CorporateActionsReconciler(
+        primary_source=str(p.get("corp.primary_source", "upstox")) if p else "upstox",
+        dividend_tolerance_pct=float(p.get("corp.dividend_tolerance_pct", "1.0")) if p else 1.0,
+        overrides_path=_get_project_root(ctx) / "config" / "corporate_actions_overrides.toml",
+    )
+
+
+@actions_app.command("list")
+@handle_cli_errors
+def actions_list(
+    ctx: typer.Context,
+    selector: str | None = typer.Argument(None, help="Optional symbol, ID, or @group selector"),
+    raw: bool = typer.Option(False, "--raw", help="Show raw un-reconciled actions"),
+    exchange: str = typer.Option("NSE", "--exchange", help="Exchange code"),
+) -> None:
+    """List recorded or reconciled corporate actions."""
+    with _open_rt(ctx, ensure=False) as rt:
+        manifest = _get_manifest(rt)
+        store = ActionsStore(data_dir=rt.paths.data, manifest=manifest)
+        symbols = _resolve_action_symbols(rt, manifest, selector, exchange)
+        if not symbols:
+            typer.echo("No corporate actions found.")
+            return
+
+        reconciler = _build_reconciler(ctx, rt.params)
+
+        def _act_row(a: Any) -> list[str]:
+            r_str = f"{a.ratio:.4f}" if a.ratio is not None else "-"
+            amt_str = str(a.amount) if a.amount is not None else "-"
+            return [
+                a.symbol,
+                a.ex_date.isoformat(),
+                a.type,
+                r_str,
+                amt_str,
+                a.source,
+                a.status,
+                a.reason or a.text,
+            ]
+
+        def _get_raw(s: str) -> Sequence[ActionRecord]:
+            return store.read(exchange, s)
+
+        def _get_reconciled(s: str) -> Sequence[ActionRecord]:
+            return reconciler.reconcile(exchange, s, store.read(exchange, s))
+
+        fetch_fn = _get_raw if raw else _get_reconciled
+        rows = [_act_row(a) for s in symbols for a in fetch_fn(s)]
+        if not rows:
+            typer.echo("No corporate actions found.")
+            return
+
+        headers = ["Symbol", "Ex-Date", "Type", "Ratio", "Amount", "Source", "Status", "Notes"]
+        typer.echo(format_table(headers, rows))
+
+
+@actions_app.command("check")
+@handle_cli_errors
+def actions_check(
+    ctx: typer.Context,
+    selector: str | None = typer.Argument(None, help="Optional symbol, ID, or @group selector"),
+    exchange: str = typer.Option("NSE", "--exchange", help="Exchange code"),
+) -> None:
+    """Check corporate actions for conflicts, unverified records, and price anomalies."""
+    with _open_rt(ctx, ensure=False) as rt:
+        manifest = _get_manifest(rt)
+        store = ActionsStore(data_dir=rt.paths.data, manifest=manifest)
+        symbols = _resolve_action_symbols(rt, manifest, selector, exchange)
+        if not symbols:
+            typer.echo("No corporate actions found to check.")
+            return
+
+        p = rt.params
+        reconciler = _build_reconciler(ctx, p)
+        jump_pct = float(p.get("corp.detect_jump_pct", "20.0")) if p else 20.0
+        issue_rows: list[list[str]] = []
+        for sym in symbols:
+            raw_acts = store.read(exchange, sym)
+            reconciled = reconciler.reconcile(exchange, sym, raw_acts)
+            for a in reconciled:
+                if a.status in ("conflict", "manual_required", "unverified"):
+                    issue_rows.append(
+                        [sym, a.ex_date.isoformat(), a.status, a.reason or f"Status {a.status}"]
+                    )
+
+            exch_u = exchange.upper()
+            day_p = rt.paths.data / "bars/1d" / f"exchange={exch_u}/symbol={sym}/day.parquet"
+            if day_p.exists():
+                bars = read_bars_parquet(day_p, InstrumentId(f"{exch_u}:EQ:{sym}"), "1d")
+                for it in detect_price_anomalies(sym, bars, reconciled, detect_jump_pct=jump_pct):
+                    issue_rows.append([sym, it.date.isoformat(), it.kind, it.details])
+
+        if not issue_rows:
+            typer.echo(f"Checked {len(symbols)} symbol(s): all corporate actions verified clean.")
+            return
+
+        typer.echo(format_table(["Symbol", "Date", "Kind / Status", "Details"], issue_rows))
+        typer.echo(
+            "\nAction required: resolve issues with 'algodesk data actions override add ...'"
+        )
+
+
+@actions_app.command("audit")
+@handle_cli_errors
+def actions_audit(
+    ctx: typer.Context,
+    selector: str = typer.Argument(..., help="Symbol, ID, or @group selector"),
+    from_date: str = typer.Option(..., "--from", help="Start date (YYYY-MM-DD)"),
+    to_date: str = typer.Option(..., "--to", help="End date (YYYY-MM-DD)"),
+    exchange: str = typer.Option("NSE", "--exchange", help="Exchange code"),
+) -> None:
+    """Audit derived adjusted series vs source-adjusted series for symbols."""
+    import statistics
+
+    with _open_rt(ctx, ensure=False) as rt:
+        manifest = _get_manifest(rt)
+        symbols = _resolve_action_symbols(rt, manifest, selector, exchange)
+        if not symbols:
+            typer.echo(f"No symbols found for selector '{selector}'.")
+            return
+        tol = float(rt.params.get("corp.audit_tolerance_pct", "0.5")) if rt.params else 0.5
+        start_dt = _parse_data_cli_dt(from_date, is_end=False)
+        end_dt = _parse_data_cli_dt(to_date, is_end=True)
+        ds = _build_data_service(rt, "yfinance")
+        rows: list[list[str]] = []
+        flagged = 0
+
+        for sym in symbols:
+            inst = f"{exchange.upper()}:EQ:{sym.upper()}"
+            try:
+                kw = dict(download="raw", adjust="total", source="yfinance", accept_unverified=True)
+                d_slice = ds.get(inst, start_dt, end_dt, **kw)  # type: ignore[arg-type]
+                kw["download"], kw["adjust"] = "adjusted", "none"
+                s_slice = ds.get(inst, start_dt, end_dt, **kw)  # type: ignore[arg-type]
+            except Exception as exc:
+                rows.append([sym, "0", "N/A", "N/A", f"ERROR: {exc}"])
+                flagged += 1
+                continue
+
+            d_map = {b.start_ts.date(): b.close for b in d_slice.bars}
+            s_map = {b.start_ts.date(): b.close for b in s_slice.bars}
+            common = sorted(set(d_map.keys()) & set(s_map.keys()))
+            if not common:
+                rows.append([sym, "0", "0.00%", "0.00%", "NO DATA"])
+                continue
+
+            diffs = [
+                abs(float(d_map[d]) - float(s_map[d])) / float(s_map[d]) * 100.0
+                for d in common
+                if float(s_map[d]) > 0
+            ]
+            max_d = max(diffs) if diffs else 0.0
+            med_d = statistics.median(diffs) if diffs else 0.0
+            is_flagged = max_d > tol
+            if is_flagged:
+                flagged += 1
+            st = f"FLAG (> {tol}%)" if is_flagged else "OK"
+            rows.append([sym, str(len(common)), f"{max_d:.2f}%", f"{med_d:.2f}%", st])
+
+        typer.echo(format_table(["Symbol", "Bars", "Max Diff", "Median Diff", "Status"], rows))
+        if flagged:
+            typer.echo(
+                f"\nAudit completed: {flagged} symbol(s) flagged exceeding tolerance {tol}%."
+            )
+        else:
+            typer.echo(f"\nAudit completed clean: all symbols within {tol}% tolerance.")
+
+
+@override_app.command("add")
+@handle_cli_errors
+def actions_override_add(
+    ctx: typer.Context,
+    symbol: str = typer.Option(..., "--symbol", "-s", help="Instrument symbol (e.g. RELIANCE)"),
+    ex_date: str = typer.Option(..., "--ex-date", "-d", help="Ex-date in YYYY-MM-DD format"),
+    type: str = typer.Option(..., "--type", "-t", help="Action type (split, bonus, dividend)"),
+    reason: str = typer.Option(..., "--reason", "-r", help="Operator rationale (required)"),
+    source: str = typer.Option("operator", "--source", help="Data source party"),
+    verified_on: str | None = typer.Option(None, "--verified-on", help="Verification date"),
+    ratio: float | None = typer.Option(None, "--ratio", help="Adjustment ratio"),
+    ratio_old: float | None = typer.Option(None, "--ratio-old", help="Old ratio value"),
+    ratio_new: float | None = typer.Option(None, "--ratio-new", help="New ratio value"),
+    amount: str | None = typer.Option(None, "--amount", help="Dividend cash amount"),
+    issue_price: str | None = typer.Option(None, "--issue-price", help="Rights issue price"),
+    exchange: str = typer.Option("NSE", "--exchange", help="Exchange code"),
+) -> None:
+    """Add a verified operator override to config/corporate_actions_overrides.toml."""
+    if not reason or not reason.strip():
+        raise typer.BadParameter("--reason must not be empty")
+
+    with _open_rt(ctx, ensure=False) as rt:
+        root = _get_project_root(ctx)
+        ov = ActionOverride(
+            symbol=symbol.strip().upper(),
+            exchange=exchange.strip().upper(),
+            ex_date=date.fromisoformat(ex_date.strip()[:10]),
+            type=type.strip().lower(),
+            source=source.strip(),
+            reason=reason.strip(),
+            verified_on=verified_on.strip() if verified_on else date.today().isoformat(),
+            ratio=ratio,
+            ratio_old=ratio_old,
+            ratio_new=ratio_new,
+            amount=Decimal(amount.strip()) if amount is not None else None,
+            issue_price=Decimal(issue_price.strip()) if issue_price is not None else None,
+        )
+        add_override(ov, root / "config" / "corporate_actions_overrides.toml")
+        j_payload: dict[str, Any] = {
+            "symbol": ov.symbol,
+            "exchange": ov.exchange,
+            "type": ov.type,
+            "source": ov.source,
+            "verified_on": ov.verified_on,
+            "reason": ov.reason,
+            "ratio": ov.ratio,
+            "ex_date": ov.ex_date.isoformat(),
+            "amount": str(ov.amount) if ov.amount is not None else None,
+            "issue_price": str(ov.issue_price) if ov.issue_price is not None else None,
+        }
+        _journal_data_event(rt, "data.override", j_payload, "data_override")
+        typer.echo(f"Added override for {ov.symbol} on {ov.ex_date.isoformat()} ({ov.type}).")

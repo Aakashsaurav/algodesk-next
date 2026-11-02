@@ -160,7 +160,7 @@ def test_adjust_other_than_none_raises_notsupported(test_setup: dict[str, Any]) 
     now = datetime(2026, 10, 26, 10, 0, tzinfo=UTC)
 
     with pytest.raises(NotSupported) as exc:
-        ds.get(key, now, now + timedelta(hours=1), adjust="splits")
+        ds.get(key, now, now + timedelta(hours=1), adjust="dividends")
     assert "Dynamic adjustment" in exc.value.what
 
 

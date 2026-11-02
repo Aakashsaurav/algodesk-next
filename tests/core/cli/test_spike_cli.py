@@ -182,3 +182,129 @@ def test_spike_upstox_actions(
     content = report_file.read_text()
     assert "## Summary" in content
     assert "RELIANCE" in content
+
+
+def test_spike_compare_adjustment(
+    runner: CliRunner,
+    monkeypatch: Any,
+    tmp_project: Path,
+) -> None:
+    class CompareUpstoxBroker(FakeUpstoxBroker):
+        def history(self, key: SeriesKey, start: datetime, end: datetime) -> list[Bar]:
+            t1 = datetime(2024, 10, 25, 9, 15, tzinfo=UTC)
+            t2 = datetime(2024, 10, 28, 9, 15, tzinfo=UTC)
+            return [
+                Bar(
+                    key.instrument,
+                    key.timeframe,
+                    t1,
+                    t1 + timedelta(days=1),
+                    1350.0,
+                    1360.0,
+                    1340.0,
+                    1355.0,
+                    1000,
+                    True,
+                ),
+                Bar(
+                    key.instrument,
+                    key.timeframe,
+                    t2,
+                    t2 + timedelta(days=1),
+                    1360.0,
+                    1370.0,
+                    1350.0,
+                    1365.0,
+                    1200,
+                    True,
+                ),
+            ]
+
+    class CompareYFinanceBroker(FakeYFinanceBroker):
+        def history(self, key: SeriesKey, start: datetime, end: datetime) -> list[Bar]:
+            t1 = datetime(2024, 10, 25, 9, 15, tzinfo=UTC)
+            t2 = datetime(2024, 10, 28, 9, 15, tzinfo=UTC)
+            # If raw, close before bonus is 2710.0; if adjusted, close is 1355.0
+            p1 = 1355.0 if key.adjustment == "adjusted" else 2710.0
+            p2 = 1365.0
+            return [
+                Bar(
+                    key.instrument,
+                    key.timeframe,
+                    t1,
+                    t1 + timedelta(days=1),
+                    p1,
+                    p1 + 10.0,
+                    p1 - 10.0,
+                    p1,
+                    1000,
+                    True,
+                ),
+                Bar(
+                    key.instrument,
+                    key.timeframe,
+                    t2,
+                    t2 + timedelta(days=1),
+                    p2,
+                    p2 + 10.0,
+                    p2 - 10.0,
+                    p2,
+                    1200,
+                    True,
+                ),
+            ]
+
+        def actions(self, symbol: str) -> list[Any]:
+            from datetime import date
+
+            from algodesk.api.market import ActionRecord
+
+            return [
+                ActionRecord(
+                    ex_date=date(2024, 10, 28),
+                    type="bonus",
+                    ratio=2.0,
+                    source="yfinance",
+                    symbol=symbol,
+                    exchange="NSE",
+                )
+            ]
+
+    orig_create = PluginRegistry.create
+
+    def fake_create(self: Any, kind: str, name: str, **kwargs: Any) -> Any:
+        if kind == "broker" and name == "upstox":
+            return CompareUpstoxBroker()
+        if kind == "broker" and name == "yfinance":
+            return CompareYFinanceBroker()
+        return orig_create(self, kind, name, **kwargs)
+
+    monkeypatch.setattr(PluginRegistry, "create", fake_create)
+
+    res = runner.invoke(
+        app,
+        [
+            "--root",
+            str(tmp_project),
+            "spike",
+            "compare-adjustment",
+            "--symbol",
+            "RELIANCE",
+            "--from",
+            "2024-10-01",
+            "--to",
+            "2024-11-01",
+        ],
+    )
+    assert res.exit_code == 0
+    assert "Adjustment Basis Comparison" in res.output
+    assert "RELIANCE" in res.output
+    assert "Detected Basis" in res.output
+    assert "token" not in res.output.lower() or "not disclosing tokens" in res.output
+
+    report_file = tmp_project / "_workbench" / "spike_compare-adjustment.md"
+    assert report_file.exists()
+    content = report_file.read_text()
+    assert "## Summary" in content
+    assert "RELIANCE" in content
+    assert "Detected Upstox Candle Basis" in content

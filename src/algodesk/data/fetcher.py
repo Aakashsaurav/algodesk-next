@@ -74,25 +74,16 @@ class Fetcher:
                 journal=journal,
             )
 
-        if max_workers is not None:
-            self._workers = max(1, max_workers)
-        elif params is not None:
+        def _p_int(k: str, default: int) -> int:
             try:
-                self._workers = max(1, int(params.get("data.fetch_max_workers")))
+                return int(params.get(k)) if params else default
             except Exception:
-                self._workers = 1
-        else:
-            self._workers = 1
+                return default
 
-        if retries is not None:
-            self._attempts = max(0, retries)
-        elif params is not None:
-            try:
-                self._attempts = max(0, int(params.get("data.fetch_retries")))
-            except Exception:
-                self._attempts = 1
-        else:
-            self._attempts = 1
+        self._workers = max(
+            1, max_workers if max_workers is not None else _p_int("data.fetch_max_workers", 1)
+        )
+        self._attempts = max(0, retries if retries is not None else _p_int("data.fetch_retries", 1))
 
     def _resolve_source(self, name: str) -> DataSource:
         if name not in self._sources:

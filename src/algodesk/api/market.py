@@ -379,6 +379,57 @@ class FeedStatus:
 MarketEvent = Tick | Quote | FeedStatus
 
 
+@dataclass(frozen=True, slots=True)
+class ActionRecord:
+    """Corporate action event record."""
+
+    ex_date: date
+    type: str
+    ratio: float | None = None
+    ratio_old: float | None = None
+    ratio_new: float | None = None
+    amount: Decimal | None = None
+    record_date: date | None = None
+    text: str = ""
+    source: str = ""
+    source_ref: str = ""
+    fetched_at: str = ""
+    symbol: str = ""
+    exchange: str = "NSE"
+    status: str = "unverified"
+    id: str = ""
+    issue_price: Decimal | None = None
+    reason: str = ""
+    verified_on: str = ""
+
+    def __post_init__(self) -> None:
+        if isinstance(self.ex_date, str):
+            object.__setattr__(self, "ex_date", date.fromisoformat(self.ex_date))
+        elif isinstance(self.ex_date, datetime):
+            object.__setattr__(self, "ex_date", self.ex_date.date())
+        elif not isinstance(self.ex_date, date):
+            raise TypeError(f"ex_date must be a date, got {type(self.ex_date).__name__}")
+
+        if isinstance(self.record_date, str):
+            object.__setattr__(self, "record_date", date.fromisoformat(self.record_date))
+        elif isinstance(self.record_date, datetime):
+            object.__setattr__(self, "record_date", self.record_date.date())
+
+        for fld in ("amount", "issue_price"):
+            val = getattr(self, fld)
+            if val is not None and not isinstance(val, Decimal):
+                object.__setattr__(self, fld, Decimal(str(val)))
+
+        t = self.type.lower().strip()
+        object.__setattr__(self, "type", t)
+
+        if not self.id:
+            sym = self.symbol.upper() if self.symbol else "UNKNOWN"
+            src = self.source.lower() if self.source else "manual"
+            exch = self.exchange.upper() if self.exchange else "NSE"
+            object.__setattr__(self, "id", f"{src}:{exch}:{sym}:{self.ex_date.isoformat()}:{t}")
+
+
 def to_price(value: float, tick: Decimal) -> Decimal:
     """Round a float price to the nearest tick grid using Decimal ROUND_HALF_UP."""
     if not isinstance(tick, Decimal) or tick <= Decimal(0):

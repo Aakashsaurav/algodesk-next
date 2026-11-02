@@ -7,8 +7,9 @@ import shutil
 import sqlite3
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from algodesk.api.checks import CheckResult, DoctorCheck, Severity
 from algodesk.api.errors import ConfigError
@@ -21,29 +22,20 @@ if TYPE_CHECKING:
 
 
 def _satisfies_requires_python(ver: tuple[int, int, int], spec: str) -> bool:
-    clauses = [c.strip() for c in spec.split(",") if c.strip()]
-    for clause in clauses:
-        if clause.startswith(">="):
-            target = tuple(int(x) for x in clause[2:].split("."))
-            if ver[: len(target)] < target:
-                return False
-        elif clause.startswith("<="):
-            target = tuple(int(x) for x in clause[2:].split("."))
-            if ver[: len(target)] > target:
-                return False
-        elif clause.startswith("<"):
-            target = tuple(int(x) for x in clause[1:].split("."))
-            if ver[: len(target)] >= target:
-                return False
-        elif clause.startswith(">"):
-            target = tuple(int(x) for x in clause[1:].split("."))
-            if ver[: len(target)] <= target:
-                return False
-        elif clause.startswith("=="):
-            raw = clause[2:].rstrip(".*")
-            target = tuple(int(x) for x in raw.split("."))
-            if ver[: len(target)] != target:
-                return False
+    ops: dict[str, Callable[[tuple[int, ...]], bool]] = {
+        ">=": lambda t: ver[: len(t)] >= t,
+        "<=": lambda t: ver[: len(t)] <= t,
+        "<": lambda t: ver[: len(t)] < t,
+        ">": lambda t: ver[: len(t)] > t,
+        "==": lambda t: ver[: len(t)] == t,
+    }
+    for clause in (c.strip() for c in spec.split(",") if c.strip()):
+        for op, fn in ops.items():
+            if clause.startswith(op):
+                t = tuple(int(x) for x in clause[len(op) :].rstrip(".*").split("."))
+                if not fn(t):
+                    return False
+                break
     return True
 
 
@@ -250,58 +242,45 @@ def _find_shipped_core_toml() -> Path | None:
     return None
 
 
+def _read_toml_param(path: Path, name: str) -> Any:
+    if path.is_file():
+        try:
+            for item in tomllib.loads(path.read_text("utf-8")).get("param", []):
+                if item.get("name") == name:
+                    return item.get("default")
+        except Exception:
+            pass
+    return None
+
+
 def _resolve_min_free_disk_gb(runtime: Runtime) -> float:
     if runtime.params is not None:
         try:
-            val = runtime.params.get("ops.min_free_disk_gb")
-            if val is not None:
+            if (val := runtime.params.get("ops.min_free_disk_gb")) is not None:
                 return float(val)
         except Exception:
             pass
-
-    core_toml = runtime.root / "config" / "params" / "core.toml"
-    if not core_toml.is_file():
-        candidate = _find_shipped_core_toml()
-        if candidate and candidate.is_file():
-            core_toml = candidate
-    if core_toml.is_file():
-        try:
-            with open(core_toml, "rb") as f:
-                data = tomllib.load(f)
-            for item in data.get("param", []):
-                if item.get("name") == "ops.min_free_disk_gb":
-                    return float(item["default"])
-        except Exception:
-            pass
-
+    core = runtime.root / "config" / "params" / "core.toml"
+    p = core if core.is_file() else (_find_shipped_core_toml() or core)
+    if (v := _read_toml_param(p, "ops.min_free_disk_gb")) is not None:
+        return float(v)
     raise ConfigError(
         what="Missing required parameter 'ops.min_free_disk_gb'",
         where="ops.disk",
-        fix="Define ops.min_free_disk_gb in config/params/core.toml or via algodesk param set",
+        fix="Define ops.min_free_disk_gb in config/params/core.toml",
     )
 
 
 def _resolve_max_clock_offset_ms(runtime: Runtime) -> int:
     if runtime.params is not None:
         try:
-            val = runtime.params.get("ops.max_clock_offset_ms")
-            if val is not None:
+            if (val := runtime.params.get("ops.max_clock_offset_ms")) is not None:
                 return int(val)
         except Exception:
             pass
-
     rt_toml = runtime.root / "config" / "params" / "runtime.toml"
-    if rt_toml.is_file():
-        try:
-            with open(rt_toml, "rb") as f:
-                data = tomllib.load(f)
-            for item in data.get("param", []):
-                if item.get("name") == "ops.max_clock_offset_ms":
-                    return int(item["default"])
-        except Exception:
-            pass
-
-    return 500
+    v = _read_toml_param(rt_toml, "ops.max_clock_offset_ms")
+    return int(v) if v is not None else 500
 
 
 def _check_disk_free(runtime: Runtime) -> CheckResult:
@@ -369,50 +348,28 @@ def _check_journal_closed_cleanly(runtime: Runtime) -> CheckResult:
 
 
 def _build_env_checks(runtime: Runtime) -> list[DoctorCheck]:
+    C = Severity.CRITICAL
     return [
         DoctorCheck(
-            id="python.version",
-            severity=Severity.CRITICAL,
-            run=lambda: _check_python_version(runtime.root),
+            id="python.version", severity=C, run=lambda: _check_python_version(runtime.root)
         ),
-        DoctorCheck(
-            id="env.isolated",
-            severity=Severity.CRITICAL,
-            run=lambda: _check_env_isolated(runtime.root),
-        ),
-        DoctorCheck(
-            id="config.valid",
-            severity=Severity.CRITICAL,
-            run=lambda: _check_config_valid(runtime),
-        ),
-        DoctorCheck(
-            id="paths.ready",
-            severity=Severity.CRITICAL,
-            run=lambda: _check_paths_ready(runtime),
-        ),
-        DoctorCheck(
-            id="params.db",
-            severity=Severity.CRITICAL,
-            run=lambda: _check_params_db(runtime),
-        ),
+        DoctorCheck(id="env.isolated", severity=C, run=lambda: _check_env_isolated(runtime.root)),
+        DoctorCheck(id="config.valid", severity=C, run=lambda: _check_config_valid(runtime)),
+        DoctorCheck(id="paths.ready", severity=C, run=lambda: _check_paths_ready(runtime)),
+        DoctorCheck(id="params.db", severity=C, run=lambda: _check_params_db(runtime)),
     ]
 
 
 def _build_journal_and_disk_checks(runtime: Runtime) -> list[DoctorCheck]:
+    W, C = Severity.WARNING, Severity.CRITICAL
     return [
+        DoctorCheck(id="disk.free", severity=W, run=lambda: _check_disk_free(runtime)),
         DoctorCheck(
-            id="disk.free",
-            severity=Severity.WARNING,
-            run=lambda: _check_disk_free(runtime),
-        ),
-        DoctorCheck(
-            id="journal.integrity",
-            severity=Severity.CRITICAL,
-            run=lambda: _check_journal_integrity(runtime),
+            id="journal.integrity", severity=C, run=lambda: _check_journal_integrity(runtime)
         ),
         DoctorCheck(
             id="journal.closed_cleanly",
-            severity=Severity.WARNING,
+            severity=W,
             run=lambda: _check_journal_closed_cleanly(runtime),
         ),
     ]
@@ -478,6 +435,7 @@ def _check_data_warmup_source(runtime: Runtime) -> CheckResult:
     try:
         brokers = runtime.plugins.list("broker")
     except Exception:
+        # pyrefly: ignore[implicit-any-empty-container]
         brokers = []
     src: str | None = None
     if runtime.params is not None:
@@ -546,8 +504,6 @@ def build_core_checks(runtime: Runtime) -> list[DoctorCheck]:
 
 def build_run_checks(runtime: Runtime, run_name: str) -> list[DoctorCheck]:
     """Build diagnostic doctor checks for a specific run configuration."""
-    from typing import Any
-
     from algodesk.api.kinds import Mode
     from algodesk.config.snapshot import build_effective
     from algodesk.ops.context import build_context
@@ -574,89 +530,46 @@ def build_run_checks(runtime: Runtime, run_name: str) -> list[DoctorCheck]:
         return checks
 
     sec_plugin: Any = None
+
+    def _try_plugin(k: str, obj: Any, role: str, c_id: str) -> Any:
+        pn = obj.plugin
+        cfg = {k: v for k, v in obj.model_dump().items() if k != "plugin"}
+        try:
+            c = build_context(
+                Mode.RESEARCH, run_id=f"doc_{k}_{pn}", params=runtime.params, secrets=sec_plugin
+            )
+            p = runtime.plugins.create(k, pn, config=cfg, ctx=c)
+            if hasattr(p, "doctor_checks"):
+                checks.extend(p.doctor_checks())
+            return p
+        except Exception as exc:
+            err = str(exc)
+
+            def _fail() -> CheckResult:
+                return CheckResult(
+                    ok=False,
+                    message=f"Could not initialize {role}: {err}",
+                    fix=f"Check {role} configuration",
+                )
+
+            checks.append(DoctorCheck(id=c_id, severity=Severity.WARNING, run=_fail))
+            return None
+
     if getattr(eff.run, "secrets", None) is not None:
-        p_name = eff.run.secrets.plugin
-        sec_cfg = {k: v for k, v in eff.run.secrets.model_dump().items() if k != "plugin"}
-        try:
-            p_sec_ctx = build_context(
-                Mode.RESEARCH, run_id=f"doctor_sec_{run_name}", params=runtime.params
-            )
-            sec_plugin = runtime.plugins.create("secrets", p_name, config=sec_cfg, ctx=p_sec_ctx)
-            if hasattr(sec_plugin, "doctor_checks"):
-                checks.extend(sec_plugin.doctor_checks())
-        except Exception as exc:
-            err = str(exc)
-            checks.append(
-                DoctorCheck(
-                    id=f"run.secrets.{p_name}",
-                    severity=Severity.WARNING,
-                    run=lambda: CheckResult(
-                        ok=False,
-                        message=f"Could not initialize secrets provider: {err}",
-                        fix="Check secrets configuration",
-                    ),
-                )
-            )
-
+        sec_plugin = _try_plugin(
+            "secrets", eff.run.secrets, "secrets provider", f"run.secrets.{eff.run.secrets.plugin}"
+        )
     if getattr(eff.run, "data_source", None) is not None:
-        ds_name = eff.run.data_source.plugin
-        ds_cfg = {k: v for k, v in eff.run.data_source.model_dump().items() if k != "plugin"}
-        try:
-            p_ds_ctx = build_context(
-                Mode.RESEARCH,
-                run_id=f"doctor_ds_{run_name}",
-                params=runtime.params,
-                secrets=sec_plugin,
-            )
-            ds_plugin = runtime.plugins.create("broker", ds_name, config=ds_cfg, ctx=p_ds_ctx)
-            if hasattr(ds_plugin, "doctor_checks"):
-                checks.extend(ds_plugin.doctor_checks())
-        except Exception as exc:
-            err = str(exc)
-            checks.append(
-                DoctorCheck(
-                    id=f"run.data_source.{ds_name}",
-                    severity=Severity.WARNING,
-                    run=lambda: CheckResult(
-                        ok=False,
-                        message=f"Could not initialize data source plugin: {err}",
-                        fix="Check data source configuration",
-                    ),
-                )
-            )
-
-    # 3. Notifiers doctor checks
-    if getattr(eff.run, "notifiers", None):
-        for notif in eff.run.notifiers:
-            n_name = notif.plugin
-            n_cfg = {k: v for k, v in notif.model_dump().items() if k != "plugin"}
-            try:
-                p_n_ctx = build_context(
-                    Mode.RESEARCH,
-                    run_id=f"doctor_notif_{n_name}",
-                    params=runtime.params,
-                    secrets=sec_plugin,
-                )
-                notif_plugin = runtime.plugins.create("notifier", n_name, config=n_cfg, ctx=p_n_ctx)
-                if hasattr(notif_plugin, "doctor_checks"):
-                    checks.extend(notif_plugin.doctor_checks())
-            except Exception as exc:
-                err = str(exc)
-
-                def _make_notifier_fail(n: str = n_name, e: str = err) -> CheckResult:
-                    return CheckResult(
-                        ok=False,
-                        message=f"Could not initialize notifier plugin {n}: {e}",
-                        fix="Check notifier configuration",
-                    )
-
-                checks.append(
-                    DoctorCheck(
-                        id=f"run.notifiers.{n_name}",
-                        severity=Severity.WARNING,
-                        run=_make_notifier_fail,
-                    )
-                )
+        _try_plugin(
+            "broker",
+            eff.run.data_source,
+            "data source plugin",
+            f"run.data_source.{eff.run.data_source.plugin}",
+        )
+    for notif in getattr(eff.run, "notifiers", None) or []:
+        _try_plugin(
+            "notifier", notif, f"notifier plugin {notif.plugin}", f"run.notifiers.{notif.plugin}"
+        )
 
     # 4. Calendars coverage check (covers today and next 30 days)
     if getattr(eff.run, "calendars", None):

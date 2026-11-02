@@ -1,0 +1,3 @@
+# config/corporate_actions_overrides.toml — Operator overrides for corporate actions
+# Each entry requires: symbol, ex_date, type, source, verified_on, reason
+
