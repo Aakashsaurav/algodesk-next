@@ -22,10 +22,14 @@ def zerodha_schedule() -> Schedule:
     return Schedule.model_validate(data)
 
 
-def test_schedule_meta_unverified_and_source(zerodha_schedule: Schedule) -> None:
-    assert zerodha_schedule.meta.verified is False
+def test_schedule_meta_verified_and_source(zerodha_schedule: Schedule) -> None:
+    assert zerodha_schedule.meta.verified is True
     assert "zerodha.com/charges" in zerodha_schedule.meta.source
     assert "1 Apr 2026 STT notice" in zerodha_schedule.meta.source
+    assert (
+        "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+        in zerodha_schedule.meta.source
+    )
 
 
 def test_calendar_nse_verified() -> None:

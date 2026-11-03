@@ -196,12 +196,27 @@ def _resolve_bases(
     return src_basis, tgt_basis
 
 
+def _used_action_types(src_basis: str, tgt_basis: str) -> set[str]:
+    """Return set of action types actively used for a basis transition."""
+    if src_basis == "splits" and tgt_basis == "total":
+        return {"dividend", "rights", "other"}
+    if src_basis == "splits" and tgt_basis == "none":
+        return {"split", "bonus", "other"}
+    if src_basis == "none" and tgt_basis == "splits":
+        return {"split", "bonus", "other"}
+    if src_basis == "none" and tgt_basis == "total":
+        return {"split", "bonus", "dividend", "rights", "other"}
+    return set()
+
+
 def _check_action_policy(
     actions: Sequence[ActionRecord],
     allow_unverified_dividends: bool,
     accept_unverified: bool,
     tgt_basis: str = "",
+    src_basis: str = "",
 ) -> list[str]:
+    used_types = _used_action_types(src_basis, tgt_basis) if src_basis and tgt_basis else None
     warnings_list: list[str] = []
     for a in actions:
         d_iso = a.ex_date.isoformat()
@@ -217,6 +232,9 @@ def _check_action_policy(
                 fix=f"Resolve with 'algodesk data actions override add --symbol {sym} ...'",
             )
         if a.status == "unverified":
+            if used_types is not None and t not in used_types:
+                continue
+            action_desc = f" (id: {a.id})" if a.id else ""
             if t == "dividend":
                 if not allow_unverified_dividends and not accept_unverified:
                     raise DataError(
@@ -224,7 +242,9 @@ def _check_action_policy(
                         where="AdjustmentView",
                         fix="Pass accept_unverified=True or add operator override",
                     )
-                warnings_list.append(f"Unverified dividend on {d_iso} for {sym} applied")
+                warnings_list.append(
+                    f"Unverified dividend on {d_iso} for {sym}{action_desc} applied"
+                )
             else:
                 if not accept_unverified:
                     raise DataError(
@@ -232,7 +252,9 @@ def _check_action_policy(
                         where="AdjustmentView",
                         fix="Pass accept_unverified=True or add operator override",
                     )
-                warnings_list.append(f"Unverified {a.type} on {d_iso} for {sym} applied")
+                warnings_list.append(
+                    f"Unverified {a.type} on {d_iso} for {sym}{action_desc} applied"
+                )
     return warnings_list
 
 
@@ -341,7 +363,11 @@ class AdjustmentView:
         relevant_actions = [a for a in actions if a.ex_date > first_bar_date]
 
         warnings_list = _check_action_policy(
-            relevant_actions, allow_unverified_dividends, accept_unverified, tgt_basis=tgt_basis
+            relevant_actions,
+            allow_unverified_dividends,
+            accept_unverified,
+            tgt_basis=tgt_basis,
+            src_basis=src_basis,
         )
 
         factors, applied_ids, hash_parts, factor_kinds = _collect_factors(

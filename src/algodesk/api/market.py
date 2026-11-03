@@ -160,6 +160,7 @@ class CoverageStatus(StrEnum):
     PARTIAL = "PARTIAL"
     CLOSED = "CLOSED"
     EMPTY = "EMPTY"
+    MISSING = "MISSING"
     QUARANTINED = "QUARANTINED"
     UNAVAILABLE = "UNAVAILABLE"
 

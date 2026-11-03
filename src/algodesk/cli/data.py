@@ -14,10 +14,11 @@ from zoneinfo import ZoneInfo
 
 import typer
 
-from algodesk.api import ActionRecord, InstrumentId, SeriesKey
+from algodesk.api import ActionRecord, Bar, InstrumentId, SeriesKey
 from algodesk.api.errors import ConfigError, DataError
 from algodesk.api.kinds import Mode
 from algodesk.cli.common import _open_rt, format_table, handle_cli_errors
+from algodesk.cli.secrets import _resolve_secrets_provider
 from algodesk.data.actions_store import ActionsStore, CorporateActionsManager
 from algodesk.data.catalog import (
     coverage,
@@ -45,7 +46,7 @@ from algodesk.data.overrides import (
 from algodesk.data.quarantine import QuarantineManager
 from algodesk.data.reconciler import CorporateActionsReconciler
 from algodesk.data.recorder import MarketRecorder
-from algodesk.data.schema import read_bars_parquet
+from algodesk.data.schema import read_bars_parquet, write_bars_parquet
 from algodesk.data.service import DataService
 from algodesk.data.session_bars import SessionBarStore
 from algodesk.data.store import BarStore, _compute_sha256
@@ -123,7 +124,8 @@ def _parse_data_cli_dt(val: str, is_end: bool) -> datetime:
 
 
 def _build_data_service(rt: Runtime, source: str = "yfinance") -> DataService:
-    p_ctx = build_context(Mode.RESEARCH, run_id=f"data_ds_{source}")
+    sec_prov = _resolve_secrets_provider(rt)
+    p_ctx = build_context(Mode.RESEARCH, run_id=f"data_ds_{source}", secrets=sec_prov)
     broker: Any = rt.plugins.create("broker", source, config={}, ctx=p_ctx)
     manifests = {p.manifest.name: p.manifest for p in rt.plugins.list() if hasattr(p, "manifest")}
     store = BarStore(
@@ -209,6 +211,10 @@ def data_get(
         for b in bars
     ]
     typer.echo(format_table(headers, rows))
+    if data_slice.provenance and (warns := data_slice.provenance.get("warnings")):
+        typer.echo("\nWarnings:")
+        for w in warns:
+            typer.echo(f"  - {w}")
     if data_slice.gaps:
         empty_cnt = sum(1 for g in data_slice.gaps if str(g.status) == "EMPTY")
         typer.echo(
@@ -595,6 +601,7 @@ def data_verify(
     ctx: typer.Context,
     only: str = typer.Option("all", "--only", help="Verify 'ticks', 'bars', 'actions', 'all'"),
     adopt: bool = typer.Option(False, "--adopt", help="Adopt orphan bar files into manifest"),
+    fix: bool = typer.Option(False, "--fix", help="Move offending bars to quarantine"),
     json_out: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
 ) -> None:
     """Verify integrity of files, checksums, manifest, rules, and orphans."""
@@ -613,6 +620,7 @@ def data_verify(
         rule_violations: list[str] = []
         orphans: list[str] = []
         adopted: list[str] = []
+        quarantined_bars_count = 0
 
         known_tick_paths: set[str] = set()
         known_bar_paths: set[str] = set()
@@ -649,7 +657,16 @@ def data_verify(
             _find_dir_orphans(data_dir / "actions", data_dir, known_action_paths, orphans)
 
         if check_bars:
+            val = BarValidator(
+                data_dir=data_dir,
+                manifest=manifest,
+                params=getattr(rt, "params", None),
+                journal=getattr(rt, "journal", None),
+            )
             datasets = {d.dataset_id: d for d in manifest.list_datasets()}
+            now_iso = datetime.now(UTC).isoformat()
+            quarantined_bars_count = 0
+
             for part in manifest.get_parts():
                 files_checked += 1
                 known_bar_paths.add(part.path)
@@ -665,12 +682,121 @@ def data_verify(
                     if ds is not None:
                         try:
                             bars = read_bars_parquet(p, InstrumentId(ds.instrument), ds.timeframe)
-                            for idx in range(len(bars) - 1):
-                                if bars[idx].start_ts >= bars[idx + 1].start_ts:
-                                    rule_violations.append(
+                            key = SeriesKey(
+                                instrument=InstrumentId(ds.instrument),
+                                kind="bars",
+                                timeframe=ds.timeframe,
+                                adjustment=ds.adjustment,
+                                source=ds.source,
+                            )
+                            part_violations: list[str] = []
+                            offending_indices: set[int] = set()
+                            seen_ts: set[datetime] = set()
+                            prev_b: Bar | None = None
+
+                            for idx, b in enumerate(bars):
+                                is_flat = val._is_flat_zero_bar(b)
+                                if is_flat:
+                                    offending_indices.add(idx)
+                                    part_violations.append(
+                                        f"{part.path}: flat zero-volume bar on {b.start_ts.date()}"
+                                    )
+                                if prev_b is not None and b.start_ts <= prev_b.start_ts:
+                                    offending_indices.add(idx)
+                                    part_violations.append(
                                         f"{part.path}: non-increasing timestamps at row {idx}"
                                     )
-                                    break
+                                if b.start_ts in seen_ts:
+                                    offending_indices.add(idx)
+                                    part_violations.append(
+                                        f"{part.path}: duplicate timestamp at row {idx}"
+                                    )
+                                seen_ts.add(b.start_ts)
+                                if not is_flat:
+                                    prev_b = b
+
+                            if offending_indices and fix:
+                                offending_bars = [bars[i] for i in sorted(offending_indices)]
+                                clean_bars = [
+                                    bars[i] for i in range(len(bars)) if i not in offending_indices
+                                ]
+                                q_id = val._quarantine_chunk(
+                                    offending_bars,
+                                    key,
+                                    errors=part_violations
+                                    or ["Offending bars quarantined by verify --fix"],
+                                    warnings=[],
+                                )
+                                quarantined_bars_count += len(offending_bars)
+                                _journal_data_event(
+                                    rt,
+                                    "data.quarantine",
+                                    {
+                                        "id": q_id,
+                                        "action": "quarantined",
+                                        "instrument": str(key.instrument),
+                                        "reason": part_violations[0]
+                                        if part_violations
+                                        else "Offending bars quarantined",
+                                        "errors_count": len(offending_bars),
+                                    },
+                                    caller="data_verify",
+                                )
+
+                                if clean_bars:
+                                    write_bars_parquet(p, clean_bars)
+                                    new_sha = _compute_sha256(p)
+                                    new_size = p.stat().st_size
+                                    manifest.record_part(
+                                        PartRecord(
+                                            part.path,
+                                            part.dataset_id,
+                                            len(clean_bars),
+                                            new_size,
+                                            clean_bars[0].start_ts.isoformat(),
+                                            clean_bars[-1].start_ts.isoformat(),
+                                            new_sha,
+                                            part.source,
+                                            part.source_version,
+                                            now_iso,
+                                        )
+                                    )
+                                else:
+                                    p.unlink(missing_ok=True)
+                                    known_bar_paths.discard(part.path)
+                                    try:
+                                        known_bar_paths.discard(
+                                            str(Path(part.path).relative_to(data_dir))
+                                        )
+                                    except ValueError:
+                                        pass
+                                    manifest.delete_part(part.path)
+
+                                offending_days = {b.start_ts.date() for b in offending_bars}
+                                cov_index = CoverageIndex(manifest=manifest)
+                                for o_day in offending_days:
+                                    day_clean_bars = [
+                                        b for b in clean_bars if b.start_ts.date() == o_day
+                                    ]
+                                    st = cov_index.evaluate_day_status(
+                                        ds.dataset_id, o_day, has_bars=bool(day_clean_bars)
+                                    )
+                                    manifest.record_coverage_day(
+                                        CoverageDayRecord(
+                                            ds.dataset_id,
+                                            o_day.isoformat(),
+                                            st,
+                                            len(day_clean_bars),
+                                            len(day_clean_bars),
+                                            part.path if day_clean_bars else "",
+                                            now_iso,
+                                            note="Quarantined offending bars"
+                                            if not day_clean_bars
+                                            else "",
+                                        )
+                                    )
+                            else:
+                                rule_violations.extend(part_violations)
                         except Exception as exc:
                             rule_violations.append(f"{part.path}: read error ({exc})")
             _find_dir_orphans(data_dir / "bars", data_dir, known_bar_paths, orphans)
@@ -758,6 +884,7 @@ def data_verify(
                 "rule_violations": rule_violations,
                 "orphans": orphans,
                 "adopted": adopted,
+                "quarantined_bars": quarantined_bars_count,
             }
             typer.echo(json.dumps(res_dict, indent=2))
             if not is_ok:
@@ -780,6 +907,8 @@ def data_verify(
         msg = f"VERIFY: OK (checked {files_checked} files, {len(orphans)} orphans, 0 errors)"
         if adopted:
             msg += f" [Adopted {len(adopted)} orphan(s)]"
+        if quarantined_bars_count > 0:
+            msg += f" [Quarantined {quarantined_bars_count} offending bar(s)]"
         typer.secho(msg, fg=typer.colors.GREEN)
 
 
@@ -852,7 +981,8 @@ def data_gaps(
     from_date: str | None = typer.Option(None, "--from", help="Start date (YYYY-MM-DD)"),
     to_date: str | None = typer.Option(None, "--to", help="End date (YYYY-MM-DD)"),
     timeframe: str = typer.Option("1m", "--timeframe", "-t", help="Bar timeframe"),
-    source: str = typer.Option("upstox", "--source", help="Data source"),
+    source: str | None = typer.Option(None, "--source", help="Data source"),
+    adj: str | None = typer.Option(None, "--adj", help="Adjustment: raw or adjusted"),
     json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Inspect and report missing trading day gaps across instruments."""
@@ -865,9 +995,10 @@ def data_gaps(
         except DataError:
             from algodesk.api.market import parse_id
 
+            clean_sel = selector if ":" in selector else f"NSE:EQ:{selector}"
             try:
-                parse_id(selector)
-                instruments = [selector]
+                parse_id(clean_sel)
+                instruments = [clean_sel]
             except Exception:
                 raise
 
@@ -878,34 +1009,47 @@ def data_gaps(
 
         cov_index = CoverageIndex(manifest=manifest)
         all_gaps: list[dict[str, str]] = []
+        datasets_list = manifest.list_datasets(kind="bars")
 
         for inst in instruments:
-            found_for_inst = False
             i_id = InstrumentId(inst)
-            for adj in ("raw", "adjusted"):
-                ds_id = dataset_id_for_key(SeriesKey(i_id, "bars", timeframe, adj, source))
-                if manifest.get_dataset(ds_id) is not None:
-                    found_for_inst = True
-                    for g in cov_index.detect_gaps(ds_id, start_d, end_d):
-                        all_gaps.append(
-                            {
-                                "instrument": inst,
-                                "day": g.day.isoformat(),
-                                "status": str(g.status),
-                                "reason": g.reason,
-                            }
-                        )
-            if not found_for_inst:
-                ds_id = dataset_id_for_key(SeriesKey(i_id, "bars", timeframe, "raw", source))
-                for g in cov_index.detect_gaps(ds_id, start_d, end_d):
-                    all_gaps.append(
-                        {
-                            "instrument": inst,
-                            "day": g.day.isoformat(),
-                            "status": str(g.status),
-                            "reason": g.reason,
-                        }
-                    )
+            candidates = [
+                d
+                for d in datasets_list
+                if d.instrument == inst
+                and d.timeframe == timeframe
+                and (source is None or d.source == source)
+                and (adj is None or d.adjustment == adj)
+            ]
+            if candidates:
+                candidates.sort(
+                    key=lambda d: (
+                        len(manifest.get_coverage_days(d.dataset_id)),
+                        len(manifest.get_parts(d.dataset_id)),
+                    ),
+                    reverse=True,
+                )
+                selected_ds_id = candidates[0].dataset_id
+            else:
+                sel_src = source or "upstox"
+                sel_adj = adj or "raw"
+                selected_ds_id = dataset_id_for_key(
+                    SeriesKey(i_id, "bars", timeframe, sel_adj, sel_src)
+                )
+
+            if not json_out:
+                typer.echo(f"Checked series: {selected_ds_id}")
+
+            for g in cov_index.detect_gaps(selected_ds_id, start_d, end_d):
+                all_gaps.append(
+                    {
+                        "instrument": inst,
+                        "series": selected_ds_id,
+                        "day": g.day.isoformat(),
+                        "status": str(g.status),
+                        "reason": g.reason,
+                    }
+                )
 
         if json_out:
             typer.echo(json.dumps(all_gaps, indent=2))
@@ -1019,7 +1163,8 @@ def session_bars_purge(
 
 def _build_action_sources(rt: Runtime, requested_source: str | None) -> dict[str, Any]:
     sources: dict[str, Any] = {}
-    p_ctx = build_context(Mode.RESEARCH, run_id="data_actions")
+    sec_prov = _resolve_secrets_provider(rt)
+    p_ctx = build_context(Mode.RESEARCH, run_id="data_actions", secrets=sec_prov)
     names = [requested_source] if requested_source else ["upstox", "yfinance"]
     for name in names:
         try:

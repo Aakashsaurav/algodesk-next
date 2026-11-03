@@ -21,7 +21,7 @@ def _format_function(
 
 
 def _format_class(node: ast.ClassDef, rel_path: str = "") -> str:
-    """Format a class with its bases, fields, or primary methods as a single line with line range."""
+    """Format a class with its bases, fields, or primary methods as a line with line range."""
     bases_str = f"({', '.join(ast.unparse(b) for b in node.bases)})" if node.bases else ""
     fields: list[str] = []
     for item in node.body:

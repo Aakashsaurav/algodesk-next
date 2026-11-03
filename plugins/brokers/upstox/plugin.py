@@ -292,6 +292,26 @@ class UpstoxBrokerPlugin(PluginBase):
                     pass
         return None
 
+    def resolve_active_token_type(self) -> str:
+        """Return the active token type: 'oauth', 'analytics', or 'none'."""
+        if self._session is not None and self._session.token:
+            return "oauth"
+        reader = self.ctx.secrets if self.ctx is not None else None
+        for kind in self._cfg.auth_priority:
+            if kind == "oauth":
+                try:
+                    if resolve_secret_ref(self._cfg.access_token, reader):
+                        return "oauth"
+                except Exception:
+                    pass
+            elif kind == "analytics":
+                try:
+                    if resolve_secret_ref(self._cfg.analytics_token, reader):
+                        return "analytics"
+                except Exception:
+                    pass
+        return "none"
+
     def instruments(self) -> Iterable[Instrument]:
         """Return sequence of tradable instruments."""
         self.require("stream")
@@ -422,6 +442,30 @@ class UpstoxBrokerPlugin(PluginBase):
             if token:
                 token_type = "analytics"
 
+        sec_names: list[str] = []
+        reader = self.ctx.secrets if self.ctx is not None else None
+        if reader is not None and hasattr(reader, "names"):
+            try:
+                sec_names = [n for n in reader.names() if "upstox" in n.lower()]
+            except Exception:
+                pass
+        if reader is not None:
+            for k in [
+                "upstox_access_token",
+                "upstox_analytics_token",
+                "upstox_client_id",
+                "upstox_client_secret",
+                "upstox_api_key",
+                "upstox_api_secret",
+            ]:
+                if k not in sec_names:
+                    try:
+                        if reader.get(k):
+                            sec_names.append(k)
+                    except Exception:
+                        pass
+        sec_names = sorted(set(sec_names))
+
         headers = {"Accept": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -440,18 +484,11 @@ class UpstoxBrokerPlugin(PluginBase):
                 "symbol": sym_str,
                 "isin": isin,
                 "token_type": token_type,
+                "secrets_present": sec_names,
                 "status_code": 0,
+                "top_level_keys": [],
+                "first_item_keys": [],
                 "error": str(exc),
-            }
-
-        if status_code != 200:
-            msg = payload.get("message") or f"HTTP {status_code}"
-            return {
-                "symbol": sym_str,
-                "isin": isin,
-                "token_type": token_type,
-                "status_code": status_code,
-                "error": str(msg),
             }
 
         top_keys = list(payload.keys()) if isinstance(payload, dict) else []
@@ -460,13 +497,29 @@ class UpstoxBrokerPlugin(PluginBase):
             items = payload.get("events")
         item_list = items if isinstance(items, list) else []
         first_item = item_list[0] if item_list and isinstance(item_list[0], dict) else {}
+        first_item_keys = list(first_item.keys()) if isinstance(first_item, dict) else []
+
+        if status_code != 200:
+            msg = payload.get("message") or f"HTTP {status_code}"
+            return {
+                "symbol": sym_str,
+                "isin": isin,
+                "token_type": token_type,
+                "secrets_present": sec_names,
+                "status_code": status_code,
+                "top_level_keys": top_keys,
+                "first_item_keys": first_item_keys,
+                "error": str(msg),
+            }
 
         return {
             "symbol": sym_str,
             "isin": isin,
             "token_type": token_type,
+            "secrets_present": sec_names,
             "status_code": status_code,
             "top_level_keys": top_keys,
+            "first_item_keys": first_item_keys,
             "item_count": len(item_list),
             "first_item": first_item,
         }

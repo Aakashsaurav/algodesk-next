@@ -141,8 +141,9 @@ Inspect datasets, file parts, checksums, and detect trading day gaps:
 - Read-only data verification: `algodesk data verify` (checks ticks, bars, checksums, manifest, rules, orphans)
 - Verification JSON report: `algodesk data verify --json`
 - Adopt orphaned disk files into manifest: `algodesk data verify --adopt`
+- Fix and quarantine offending bars (e.g. flat zero-volume phantom bars): `algodesk data verify --fix`
 - Verify only bars or ticks: `algodesk data verify --only bars` / `algodesk data verify --only ticks`
-- Missing trading day gaps: `algodesk data gaps NSE:EQ:INFY --from 2026-10-01 --to 2026-10-26`
+- Missing trading day gaps: `algodesk data gaps NSE:EQ:INFY --from 2026-10-01 --to 2026-10-26 --source upstox --adj raw` (reports `MISSING` for unfetched sessions vs `EMPTY` for fetched sessions with 0 rows; defaults to series with most coverage)
 
 ### 8. Spike inspection commands
 Probe live/research broker data characteristics without exposing credentials:

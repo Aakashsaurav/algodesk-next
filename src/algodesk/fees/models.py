@@ -51,6 +51,8 @@ class ScheduleComponent(BaseModel):
     exchange: str | None = None
     instrument_type: str | None = None
     note: str | None = None
+    source: str | None = None
+    rounding: str | None = None
     verified: bool = True
 
     @field_validator("rate", "amount", "cap", "minimum", mode="before")

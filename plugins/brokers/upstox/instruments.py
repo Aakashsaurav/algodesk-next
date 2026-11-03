@@ -17,8 +17,6 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-IST = ZoneInfo("Asia/Kolkata")
-
 from algodesk.api import (
     AlgoDeskError,
     ConfigError,
@@ -26,6 +24,8 @@ from algodesk.api import (
     InstrumentId,
     PluginContext,
 )
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class UpstoxInstrumentManager:

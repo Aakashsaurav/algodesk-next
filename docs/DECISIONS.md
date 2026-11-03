@@ -106,6 +106,12 @@ Short decision records (context, decision, reason) in the order they were taken.
 
 **ADR-049 Agent dev-loop latency and token reduction tooling.** Agent development speed and token usage are optimized through targeted tooling without weakening any quality gates: parallel test runner (`pytest -n auto`), diff-based test target resolution (`scripts/t.sh`), foreground command runner with timeout (`scripts/run.sh`), IST-day cached instrument master reuse across preparation and doctor commands, plugin conformance caching with `skipped (current)` short-circuiting, handoff rotation keeping the last 25 lines, and AST API index line ranges (`file:start-end`) for surgical symbol reads.
 
+**ADR-050 Real-data defect remediation: adjustment scope, Upstox secret context, gap semantics, and flat zero-volume quarantine.** Fixes real-market data defects identified after initial corporate actions and basis implementation:
+1. *Adjustment conversion scope*: Conversion between basis states enforces verified status only on the action types actually utilized by that transition (splits-to-total uses dividends only; splits-to-none uses splits and bonus; none-to-splits uses splits and bonus; none-to-total uses both). Unverified actions outside the active transition path do not block adjustment. When `--accept-unverified` is specified, provenance warnings explicitly name every unverified action applied.
+2. *Upstox secrets provider wiring*: CLI commands `spike upstox-actions`, `spike upstox-adjustments`, `data actions refresh`, and `data get` construct broker plugins passing the resolved secrets provider in the plugin context, enabling OAuth and analytics token resolution. Raw diagnostics probe and display secret names present without disclosing secret values.
+3. *Data gap semantics*: `data gaps` strictly distinguishes `MISSING` (no coverage record in manifest) from `EMPTY` (session fetched and source returned 0 bars). Series selection accepts `--source` and `--adj` flags, defaulting to the series with the most coverage days in the manifest, and explicitly prints the checked series.
+4. *Flat zero-volume bar quarantine*: `data verify` re-validates stored bars with the current validator rules, identifying phantom flat zero-volume bars on trading days. Passing `--fix` moves offending bars to quarantine (journaled with `data.quarantine`), rewrites or deletes part files on disk, and updates manifest coverage records.
+
 
 
 

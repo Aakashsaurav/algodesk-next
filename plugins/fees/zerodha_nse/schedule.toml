@@ -1,8 +1,8 @@
 [meta]
 name = "zerodha_nse"
-source = "zerodha.com/charges (checked 30 Oct 2026) and 1 Apr 2026 STT notice"
-verified_on = "2026-10-30"
-verified = false
+source = "zerodha.com/charges (checked 30 Oct 2026), 1 Apr 2026 STT notice, and owner check against Zerodha brokerage calculator, 2 Nov 2026"
+verified_on = "2026-11-02"
+verified = true
 
 # ==============================================================================
 # Equity Delivery (segment: eq, product: CNC)
@@ -36,6 +36,20 @@ segment = "eq"
 product = "CNC"
 side = "buy"
 effective_from = 2020-01-01
+effective_to = 2026-11-01
+verified = true
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00015
+segment = "eq"
+product = "CNC"
+side = "buy"
+effective_from = 2026-11-02
+rounding = "whole_rupee_half_up"
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+note = "half-up versus always-up is not yet distinguished"
 verified = true
 
 # Prior equity delivery txn charge (pre-2026-10-30)
@@ -60,8 +74,8 @@ product = "CNC"
 side = "both"
 exchange = "nse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+verified = true
 
 # BSE equity delivery txn charge (from 2026-10-30)
 [[component]]
@@ -73,8 +87,8 @@ product = "CNC"
 side = "both"
 exchange = "bse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+verified = true
 
 [[component]]
 name = "sebi"
@@ -129,6 +143,20 @@ segment = "eq"
 product = "MIS"
 side = "buy"
 effective_from = 2020-01-01
+effective_to = 2026-11-01
+verified = true
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00003
+segment = "eq"
+product = "MIS"
+side = "buy"
+effective_from = 2026-11-02
+rounding = "whole_rupee_half_up"
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+note = "half-up versus always-up is not yet distinguished"
 verified = true
 
 # Prior equity intraday txn charge (pre-2026-10-30)
@@ -153,8 +181,8 @@ product = "MIS"
 side = "both"
 exchange = "nse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "zerodha.com/charges (checked 30 Oct 2026)"
+verified = true
 
 # BSE equity intraday txn charge (from 2026-10-30)
 [[component]]
@@ -166,8 +194,8 @@ product = "MIS"
 side = "both"
 exchange = "bse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "zerodha.com/charges (checked 30 Oct 2026)"
+verified = true
 
 [[component]]
 name = "sebi"
@@ -264,7 +292,22 @@ product = "NRML"
 instrument_type = "fut"
 side = "buy"
 effective_from = 2020-01-01
+effective_to = 2026-11-01
 verified = false
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00002
+segment = "fno"
+product = "NRML"
+instrument_type = "fut"
+side = "buy"
+effective_from = 2026-11-02
+rounding = "whole_rupee_half_up"
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+note = "half-up versus always-up is not yet distinguished"
+verified = true
 
 [[component]]
 name = "stamp"
@@ -275,7 +318,22 @@ product = "MIS"
 instrument_type = "fut"
 side = "buy"
 effective_from = 2020-01-01
+effective_to = 2026-11-01
 verified = false
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00002
+segment = "fno"
+product = "MIS"
+instrument_type = "fut"
+side = "buy"
+effective_from = 2026-11-02
+rounding = "whole_rupee_half_up"
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+note = "half-up versus always-up is not yet distinguished"
+verified = true
 
 # Prior futures txn charge (pre-2026-10-30)
 [[component]]
@@ -313,8 +371,8 @@ instrument_type = "fut"
 side = "both"
 exchange = "nse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "zerodha.com/charges (checked 30 Oct 2026)"
+verified = true
 
 [[component]]
 name = "exchange_txn"
@@ -326,8 +384,8 @@ instrument_type = "fut"
 side = "both"
 exchange = "nse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "zerodha.com/charges (checked 30 Oct 2026)"
+verified = true
 
 # BSE futures txn charge (from 2026-10-30: 0.0%)
 [[component]]
@@ -340,8 +398,8 @@ instrument_type = "fut"
 side = "both"
 exchange = "bse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "zerodha.com/charges (checked 30 Oct 2026)"
+verified = true
 
 [[component]]
 name = "exchange_txn"
@@ -353,8 +411,8 @@ instrument_type = "fut"
 side = "both"
 exchange = "bse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "zerodha.com/charges (checked 30 Oct 2026)"
+verified = true
 
 [[component]]
 name = "sebi"
@@ -392,8 +450,8 @@ product = "NRML"
 instrument_type = "opt"
 side = "both"
 effective_from = 2020-01-01
-note = "change date not verified"
-verified = false
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+verified = true
 
 [[component]]
 name = "brokerage"
@@ -404,8 +462,8 @@ product = "MIS"
 instrument_type = "opt"
 side = "both"
 effective_from = 2020-01-01
-note = "change date not verified"
-verified = false
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+verified = true
 
 # Prior options STT (pre-2026-04-01: 0.0625% sell on premium)
 [[component]]
@@ -465,6 +523,34 @@ product = "NRML"
 instrument_type = "opt"
 side = "buy"
 effective_from = 2020-01-01
+effective_to = 2026-11-01
+note = "change date not verified"
+verified = false
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00003
+segment = "fno"
+product = "NRML"
+instrument_type = "opt"
+side = "buy"
+effective_from = 2026-11-02
+rounding = "whole_rupee_half_up"
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+note = "half-up versus always-up is not yet distinguished"
+verified = true
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00003
+segment = "fno"
+product = "MIS"
+instrument_type = "opt"
+side = "buy"
+effective_from = 2020-01-01
+effective_to = 2026-11-01
 note = "change date not verified"
 verified = false
 
@@ -476,9 +562,11 @@ segment = "fno"
 product = "MIS"
 instrument_type = "opt"
 side = "buy"
-effective_from = 2020-01-01
-note = "change date not verified"
-verified = false
+effective_from = 2026-11-02
+rounding = "whole_rupee_half_up"
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+note = "half-up versus always-up is not yet distinguished"
+verified = true
 
 # NSE options txn charge (from 2026-10-30: 0.03553% of premium)
 [[component]]
@@ -491,8 +579,8 @@ instrument_type = "opt"
 side = "both"
 exchange = "nse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+verified = true
 
 [[component]]
 name = "exchange_txn"
@@ -504,8 +592,8 @@ instrument_type = "opt"
 side = "both"
 exchange = "nse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+verified = true
 
 # BSE options txn charge (from 2026-10-30: 0.0325% of premium)
 [[component]]
@@ -518,8 +606,8 @@ instrument_type = "opt"
 side = "both"
 exchange = "bse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+verified = true
 
 [[component]]
 name = "exchange_txn"
@@ -531,8 +619,8 @@ instrument_type = "opt"
 side = "both"
 exchange = "bse"
 effective_from = 2026-10-30
-note = "change date not verified"
-verified = false
+source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
+verified = true
 
 # Options SEBI 10 per crore
 [[component]]

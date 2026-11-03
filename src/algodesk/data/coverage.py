@@ -104,8 +104,16 @@ class CoverageIndex:
                     gaps.append(
                         DataGap(
                             day=cur,
-                            status=CoverageStatus.EMPTY,
+                            status=CoverageStatus.MISSING,
                             reason="No coverage record in manifest",
+                        )
+                    )
+                elif rec.status == CoverageStatus.EMPTY:
+                    gaps.append(
+                        DataGap(
+                            day=cur,
+                            status=CoverageStatus.EMPTY,
+                            reason=rec.note or "Fetched and the source returned nothing",
                         )
                     )
                 elif rec.status not in (CoverageStatus.COMPLETE, CoverageStatus.CLOSED):

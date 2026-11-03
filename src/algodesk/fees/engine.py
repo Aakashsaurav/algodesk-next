@@ -18,6 +18,22 @@ def _round_half_up(val: Decimal) -> Decimal:
     return val.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def _round_component(val: Decimal, rounding: str | None = None) -> Decimal:
+    """Round a component charge according to its schedule rounding rule.
+
+    Default is standard currency rounding to 2 decimal places (ROUND_HALF_UP).
+    If rounding is whole rupee half up, rounds to nearest whole rupee, half up.
+    """
+    if rounding in (
+        "whole_rupee_half_up",
+        "nearest_whole_rupee_half_up",
+        "whole_rupee",
+        "round_half_up_rupee",
+    ):
+        return val.quantize(Decimal("1"), rounding=ROUND_HALF_UP).quantize(Decimal("0.01"))
+    return _round_half_up(val)
+
+
 class ChargesList(list[Charges]):
     """A list of Charges for individual fills with aggregate convenience properties."""
 
@@ -252,7 +268,10 @@ class FeeEngine:
             if c.side != "both" and c.side.lower() != side_str:
                 continue
             raw = _compute_component_raw(c, turnover, is_first_scrip_day)
-            items[c.name] = items.get(c.name, Decimal("0.00")) + _round_half_up(raw)
+            rounding_rule = getattr(c, "rounding", None)
+            items[c.name] = items.get(c.name, Decimal("0.00")) + _round_component(
+                raw, rounding_rule
+            )
 
         tax_items = _calculate_taxes(sch.taxes, items, trade_date)
         all_items: dict[str, Decimal] = {**items, **tax_items}

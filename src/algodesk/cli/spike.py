@@ -16,6 +16,7 @@ from rich.table import Table
 from algodesk.api.kinds import Mode
 from algodesk.api.market import Bar, InstrumentId, SeriesKey
 from algodesk.cli.common import handle_cli_errors
+from algodesk.cli.secrets import _resolve_secrets_provider  # noqa: F401
 from algodesk.logs.formatting import format_ist
 from algodesk.ops.context import build_context
 from algodesk.ops.runtime import Runtime
@@ -207,12 +208,14 @@ def _print_raw_diagnosis(broker: Any, symbols: str) -> None:
         typer.echo(f"Symbol: {s}")
         typer.echo(f"ISIN: {diag.get('isin', s)}")
         typer.echo(f"Token type: {diag.get('token_type', 'none')}")
+        secrets_present = diag.get("secrets_present", [])
+        typer.echo(f"Upstox secrets present: {secrets_present}")
+        typer.echo(f"HTTP status: {diag.get('status_code', 0)}")
+        typer.echo(f"Top-level JSON keys: {diag.get('top_level_keys', [])}")
+        typer.echo(f"First item keys: {diag.get('first_item_keys', [])}")
         if diag.get("error"):
-            typer.echo(f"Status: {diag.get('status_code', 0)}")
             typer.echo(f"Message: {diag.get('error')}")
         else:
-            typer.echo(f"HTTP status: {diag.get('status_code', 200)}")
-            typer.echo(f"Top-level JSON keys: {diag.get('top_level_keys', [])}")
             typer.echo(f"Item count: {diag.get('item_count', 0)}")
             typer.echo(f"First item keys and values: {diag.get('first_item', {})}")
         typer.echo("")
@@ -229,7 +232,10 @@ def spike_upstox_actions(
 ) -> None:
     """Probe Upstox corporate actions response field names and events."""
     with _open_rt(ctx) as rt:
-        p_ctx = build_context(Mode.RESEARCH, run_id="spike_upstox_actions")
+        from algodesk.cli.secrets import _resolve_secrets_provider
+
+        sec_prov = _resolve_secrets_provider(rt)
+        p_ctx = build_context(Mode.RESEARCH, run_id="spike_upstox_actions", secrets=sec_prov)
         broker: Any = rt.plugins.create("broker", "upstox", config={}, ctx=p_ctx)
 
         if raw:
@@ -408,7 +414,10 @@ def spike_compare_adjustment(
 ) -> None:
     """Compare Upstox 1d candles against yfinance raw and adjusted to determine basis."""
     with _open_rt(ctx) as rt:
-        u_ctx = build_context(Mode.RESEARCH, run_id=f"spike_cmp_u_{symbol}")
+        from algodesk.cli.secrets import _resolve_secrets_provider
+
+        sec_prov = _resolve_secrets_provider(rt)
+        u_ctx = build_context(Mode.RESEARCH, run_id=f"spike_cmp_u_{symbol}", secrets=sec_prov)
         y_ctx = build_context(Mode.RESEARCH, run_id=f"spike_cmp_y_{symbol}")
         upstox: Any = rt.plugins.create("broker", "upstox", config={}, ctx=u_ctx)
         yfinance: Any = rt.plugins.create("broker", "yfinance", config={}, ctx=y_ctx)

@@ -389,7 +389,11 @@ def test_prop_gap_and_coverage_invariants(
         assert cal.is_trading_day(g.day)
         assert g.day not in holidays
         assert g.day.weekday() < 5
-        assert g.status in (CoverageStatus.UNAVAILABLE, CoverageStatus.EMPTY)
+        assert g.status in (
+            CoverageStatus.UNAVAILABLE,
+            CoverageStatus.EMPTY,
+            CoverageStatus.MISSING,
+        )
 
 
 # ---------------------------------------------------------------------------
