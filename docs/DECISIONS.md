@@ -104,6 +104,9 @@ Short decision records (context, decision, reason) in the order they were taken.
 
 **ADR-048 Adjustment refusal and relevant-events policy.** Historical series adjustments only consider corporate actions whose ex-date strictly follows the first bar of the requested slice; historical actions prior to the range never block reads or alter prices. Actions in `conflict` or `manual_required` status always fail closed. Unverified splits, bonuses, or rights refuse unless `--accept-unverified` is given. Unverified dividends are allowed by default (`corp.allow_unverified_dividends = true`) with warnings recorded in dataset provenance.
 
+**ADR-049 Agent dev-loop latency and token reduction tooling.** Agent development speed and token usage are optimized through targeted tooling without weakening any quality gates: parallel test runner (`pytest -n auto`), diff-based test target resolution (`scripts/t.sh`), foreground command runner with timeout (`scripts/run.sh`), IST-day cached instrument master reuse across preparation and doctor commands, plugin conformance caching with `skipped (current)` short-circuiting, handoff rotation keeping the last 25 lines, and AST API index line ranges (`file:start-end`) for surgical symbol reads.
+
+
 
 
 

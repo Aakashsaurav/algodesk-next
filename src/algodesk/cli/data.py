@@ -56,6 +56,21 @@ from algodesk.ops.context import build_context
 from algodesk.ops.runtime import Runtime
 
 data_app = typer.Typer(help="Fetch, inspect, delete, and manage market data.")
+
+
+@data_app.callback()
+def data_callback(
+    refresh_master: bool = typer.Option(
+        False, "--refresh-master", help="Force fresh download of instrument master"
+    ),
+) -> None:
+    """Market data inspection, retrieval, deletion, and trash CLI commands."""
+    import os
+
+    if refresh_master:
+        os.environ["UPSTOX_REFRESH_MASTER"] = "1"
+
+
 actions_app = typer.Typer(help="Manage, refresh, inspect, and reconcile corporate actions.")
 data_trash_app = typer.Typer(help="Manage data safety trash.")
 groups_app = typer.Typer(help="Inspect and list configured instrument groups.")

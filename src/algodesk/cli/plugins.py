@@ -94,6 +94,9 @@ def plugins_test(
     run: str | None = typer.Option(
         None, "--run", help="Run configuration name to test plugins for"
     ),
+    force: bool = typer.Option(
+        False, "--force", help="Force running tests even if code hash has a current pass"
+    ),
 ) -> None:
     """Run tests for plugin and verify contract adherence."""
     with _open_rt(ctx, ensure=True) as rt:
@@ -130,6 +133,14 @@ def plugins_test(
 
         for t_kind, t_name in deduped:
             p_info = rt.plugins.info(t_kind, t_name)
+            if (
+                all_plugins
+                and not force
+                and rt.plugins.conformance_current(p_info.kind, p_info.name)
+            ):
+                typer.echo(f"OK: {t_kind}/{t_name} skipped (current)")
+                continue
+
             tests_dir = p_info.directory / "tests"
             if tests_dir.is_dir() and any(tests_dir.glob("test_*.py")):
                 cmd = [sys.executable, "-m", "pytest", str(tests_dir), "-q"]

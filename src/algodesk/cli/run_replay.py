@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -43,8 +44,13 @@ def run_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="Verify configuration and plan"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Disable console status lines"),
     warmup_source: str | None = typer.Option(None, "--warmup-source", help="Warmup source"),
+    refresh_master: bool = typer.Option(
+        False, "--refresh-master", help="Force fresh download of instrument master"
+    ),
 ) -> None:
     """Execute a paper trading or live session with full engine wiring."""
+    if refresh_master:
+        os.environ["UPSTOX_REFRESH_MASTER"] = "1"
     with _open_rt(ctx, ensure=True) as rt:
         eff = build_effective(rt.root, run_name=run_name)
         if eff.run is None:
@@ -81,6 +87,8 @@ def run_cmd(
                     continue
                 seen_p.add(pair)
                 p_info = rt.plugins.info(pair[0], pair[1])
+                if not refresh_master and rt.plugins.conformance_current(p_info.kind, p_info.name):
+                    continue
                 tests_dir = p_info.directory / "tests"
                 if tests_dir.is_dir() and any(tests_dir.glob("test_*.py")):
                     cmd = [sys.executable, "-m", "pytest", str(tests_dir), "-q"]

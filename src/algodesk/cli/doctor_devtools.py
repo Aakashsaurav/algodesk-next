@@ -75,8 +75,15 @@ def doctor_cmd(
     only: str | None = typer.Option(None, "--only", help="Run only check with this id"),
     run: str | None = typer.Option(None, "--run", help="Run configuration name"),
     json_opt: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+    refresh_master: bool = typer.Option(
+        False, "--refresh-master", help="Force fresh download of instrument master"
+    ),
 ) -> None:
     """Run platform and component diagnostic health checks."""
+    import os
+
+    if refresh_master:
+        os.environ["UPSTOX_REFRESH_MASTER"] = "1"
     state = _get_cli_state(ctx)
     is_json = json_opt or state.json
     run_name = run or state.run

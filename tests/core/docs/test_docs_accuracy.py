@@ -51,6 +51,8 @@ ALLOWED_NON_PARAM_NAMES = {
     "report.json": "Quarantine validation report filename",
     "session.md": "Telegram session markdown summary filename",
     "trades.csv": "Executed trades CSV filename",
+    "handoff.md": "Handoff markdown filename",
+    "handoff_archive.md": "Handoff archive markdown filename",
 }
 
 KNOWN_RUNTIME_PREFIXES = (

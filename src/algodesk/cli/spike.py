@@ -27,6 +27,19 @@ spike_app = typer.Typer(
 )
 
 
+@spike_app.callback()
+def spike_callback(
+    refresh_master: bool = typer.Option(
+        False, "--refresh-master", help="Force fresh download of instrument master"
+    ),
+) -> None:
+    """Spike commands to probe and inspect live/research broker data characteristics."""
+    import os
+
+    if refresh_master:
+        os.environ["UPSTOX_REFRESH_MASTER"] = "1"
+
+
 def _open_rt(ctx: typer.Context) -> Runtime:
     from algodesk.cli import common
 

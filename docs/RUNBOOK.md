@@ -12,6 +12,37 @@ Checklists for working on AlgoDesk Next from the terminal. Always start a termin
 2. Source environment script `scripts/env.sh` via `source scripts/env.sh` (prints `ENV: isolated at <folder>`).
 3. Prefix every `uv` command with `source scripts/env.sh &&` if unsure.
 
+## Fast developer & agent dev-loop
+
+Checklists and tooling to minimize iteration loop latency and context token consumption:
+
+1. **Targeted test iteration with `scripts/t.sh`**:
+   - `bash scripts/t.sh [paths]`: Defaults to inspecting `git diff` and mapping modified files directly to relevant test modules (e.g. `src/algodesk/engine` to `tests/core/engine`, or `plugins/brokers/upstox` to `plugins/brokers/upstox/tests`).
+   - Runs `pytest -x -q --tb=short`; prints a single `PASS: <summary>` line on success, or `FAIL` and the last 15 lines on error.
+
+2. **Foreground task execution with `scripts/run.sh`**:
+   - `bash scripts/run.sh [--timeout <seconds>] <command...>`: Enforces foreground execution with a configurable timeout (default 300s). Captures output and prints the exit code and the last 25 lines, preventing runaway background tasks and token-expensive polling loops.
+
+3. **Fast quality gates with `bash scripts/check.sh --quick`**:
+   - Runs `ruff check`, `ruff format --check`, `mypy` on changed Python files only, followed by `scripts/t.sh`.
+   - `--summary` mode suppresses passing section noise and prints only failing gates and the final status line.
+
+4. **Instrument master IST daily cache**:
+   - Upstox instrument master files (`upstox_master_YYYY-MM-DD.json.gz`) are cached per Indian Standard Time (IST) calendar day in `.local/cache/instruments/`.
+   - Reused automatically across `algodesk run --prepare`, `algodesk doctor`, `algodesk spike`, and `algodesk data` commands. Same-day cache hits print `master cached` without re-downloading (~3.4 MB saved per invocation).
+   - Use `--refresh-master` on any of these commands (or set `UPSTOX_REFRESH_MASTER=1`) to force a fresh download.
+
+5. **Plugin conformance cache**:
+   - `algodesk plugins test --all` compares plugin directory code hashes against recorded passes and reports `skipped (current)` for untouched plugins, cutting test runtime to under a second.
+   - Use `algodesk plugins test --all --force` to rerun full test suites for all plugins regardless of status.
+
+6. **Agent handoff rotation**:
+   - `bash scripts/handoff.sh add "<CPn done | next | files>"` appends a checkpoint line to `_workbench/handoff.md`.
+   - Automatically maintains the 25 most recent lines in `_workbench/handoff.md`, archiving older lines to `_workbench/handoff_archive.md`. Agents read only the last 25 lines (`tail -n 25 _workbench/handoff.md`).
+
+7. **Symbol ranged reads**:
+   - `algodesk api index` regenerates `_workbench/API_INDEX.md` with AST-derived `file:start-end` line ranges for every public class, function, and method. Agents locate definitions via grep and perform targeted line-range reads.
+
 ## Before every commit
 
 1. Run quality gates in `scripts/check.sh` via `bash scripts/check.sh`; expect `CHECK: PASS`.

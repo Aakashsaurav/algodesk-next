@@ -112,7 +112,7 @@ def test_setup(tmp_path: Path) -> dict[str, Any]:
         api_version=1,
         entry="fake:YF",
         capabilities={"history": True},
-        retention={"1m": 7, "1d": 36500},
+        retention={"1m": 30, "1d": 36500},
         max_span={"1m": 7, "1d": 3650},
     )
     upstox_manifest = PluginManifest(

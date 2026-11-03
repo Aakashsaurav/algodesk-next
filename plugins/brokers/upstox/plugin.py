@@ -562,8 +562,9 @@ class UpstoxBrokerPlugin(PluginBase):
 
     def _check_instrument_cache(self) -> CheckResult:
         from datetime import UTC
+        from zoneinfo import ZoneInfo
 
-        today = datetime.now(UTC).date()
+        today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
         cache_file = self._instruments_mgr._cache_path(today)
         if not cache_file.is_file():
             return CheckResult(

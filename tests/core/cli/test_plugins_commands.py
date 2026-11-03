@@ -188,7 +188,16 @@ def test_plugins_test_all_flag(runner: CliRunner, make_project: Any) -> None:
 
 def test_plugins_test_all_run_flag(runner: CliRunner, tmp_project: Path) -> None:
     """plugins test --all --run NAME runs conformance for all run config plugins."""
-    args = ["--root", str(tmp_project), "plugins", "test", "--all", "--run", "demo_paper"]
+    args = [
+        "--root",
+        str(tmp_project),
+        "plugins",
+        "test",
+        "--all",
+        "--run",
+        "demo_paper",
+        "--force",
+    ]
     res = runner.invoke(app, args)
     assert res.exit_code == 0
     assert "broker/upstox passed conformance suite" in res.output
