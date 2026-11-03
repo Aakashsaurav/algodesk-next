@@ -102,6 +102,9 @@ Short decision records (context, decision, reason) in the order they were taken.
 
 **ADR-047 Indian Standard Time for display, UTC for storage.** All timestamps stored in databases, Parquet partitions, CSV files, and run identifiers remain strictly UTC with explicit timezones. All operator-facing displays, CLI tables, console log lines, summary reports, and exported CSV companion columns (`ts_ist`) present times in Indian Standard Time (IST, UTC+05:30) with an explicit `IST` suffix or trading calendar date (`YYYY-MM-DD` without `+00:00`), preventing off-by-one trading day ambiguity.
 
+**ADR-048 Adjustment refusal and relevant-events policy.** Historical series adjustments only consider corporate actions whose ex-date strictly follows the first bar of the requested slice; historical actions prior to the range never block reads or alter prices. Actions in `conflict` or `manual_required` status always fail closed. Unverified splits, bonuses, or rights refuse unless `--accept-unverified` is given. Unverified dividends are allowed by default (`corp.allow_unverified_dividends = true`) with warnings recorded in dataset provenance.
+
+
 
 
 

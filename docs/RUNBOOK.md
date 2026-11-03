@@ -223,6 +223,28 @@ Test Telegram notifications:
 algodesk telegram test
 ```
 
+## Corporate actions, audit & data gaps
+
+### Corporate actions refresh & OAuth requirements
+Upstox fundamentals corporate-actions requires an active OAuth access token (`upstox_access_token`).
+- Refresh actions: `algodesk data actions refresh <symbol>` (continues with other sources if one fails).
+- Diagnostic probe: `algodesk spike upstox-actions --symbols <symbol> --raw` (prints token type used).
+- If actions are older than `data.actions_ttl_hours` and OAuth token is absent, `algodesk doctor` issues a warning to run `algodesk login upstox`.
+
+### Actions audit
+Audit the computed dividend-adjusted series against vendor total-adjusted downloads:
+```bash
+algodesk data actions audit <symbol> --from <YYYY-MM-DD> --to <YYYY-MM-DD>
+```
+Reports max and median percentage differences, highlighting any symbols exceeding the tolerance threshold. If missing a series, prints the exact command to fetch it.
+
+### Inspecting data gaps and phantom bars
+Inspect missing trading days across series:
+```bash
+algodesk data gaps <symbol> --from <YYYY-MM-DD> --to <YYYY-MM-DD> --timeframe 1d --source upstox
+```
+Flat zero-volume bars (open=high=low=close with volume 0 on expected sessions) are dropped and recorded as `EMPTY` gap days in the manifest when `data.drop_flat_zero_volume_bars = true`.
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |

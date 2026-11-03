@@ -143,6 +143,7 @@ class AdjustmentResult(tuple):  # type: ignore[type-arg]
     factor_kinds: list[str]
     basis: str
     from_basis: str
+    warnings: list[str]
 
     def __new__(
         cls,
@@ -152,6 +153,7 @@ class AdjustmentResult(tuple):  # type: ignore[type-arg]
         factor_kinds: Sequence[str] = (),
         basis: str = "",
         from_basis: str = "",
+        warnings: Sequence[str] = (),
     ) -> AdjustmentResult:
         t_bars = tuple(bars)
         l_ids = list(action_ids)
@@ -162,7 +164,138 @@ class AdjustmentResult(tuple):  # type: ignore[type-arg]
         instance.factor_kinds = sorted(set(factor_kinds))
         instance.basis = basis
         instance.from_basis = from_basis
+        instance.warnings = list(warnings)
         return instance
+
+
+def _resolve_bases(
+    mode: str | None, from_basis: str | None, to_basis: str | None
+) -> tuple[str, str]:
+    if from_basis is None:
+        if mode is not None and to_basis is None:
+            src_basis, tgt_basis = "none", mode.lower()
+        else:
+            src_basis = "splits"
+            tgt_basis = (to_basis or mode or "total").lower()
+    else:
+        src_basis = from_basis.lower()
+        tgt_basis = (to_basis or mode or "total").lower()
+
+    if src_basis not in VALID_BASES:
+        raise DataError(
+            what=f"Invalid source adjustment basis '{src_basis}'",
+            where="AdjustmentView.apply",
+            fix=f"Source basis must be one of {sorted(VALID_BASES)}",
+        )
+    if tgt_basis not in VALID_BASES:
+        raise DataError(
+            what=f"Invalid target adjustment basis '{tgt_basis}'",
+            where="AdjustmentView.apply",
+            fix=f"Target basis must be one of {sorted(VALID_BASES)}",
+        )
+    return src_basis, tgt_basis
+
+
+def _check_action_policy(
+    actions: Sequence[ActionRecord],
+    allow_unverified_dividends: bool,
+    accept_unverified: bool,
+    tgt_basis: str = "",
+) -> list[str]:
+    warnings_list: list[str] = []
+    for a in actions:
+        d_iso = a.ex_date.isoformat()
+        sym = a.symbol or "UNKNOWN"
+        t = a.type.lower()
+        is_rev = tgt_basis == "none" and t in ("split", "bonus")
+        prefix = "Cannot reverse splits: " if is_rev else ""
+        if a.status in ("conflict", "manual_required"):
+            r_msg = a.reason or a.text
+            raise DataError(
+                what=f"{prefix}Action {a.type} on {d_iso} for {sym} status '{a.status}': {r_msg}",
+                where="AdjustmentView",
+                fix=f"Resolve with 'algodesk data actions override add --symbol {sym} ...'",
+            )
+        if a.status == "unverified":
+            if t == "dividend":
+                if not allow_unverified_dividends and not accept_unverified:
+                    raise DataError(
+                        what=f"Action {a.type} on {d_iso} for {sym} is unverified",
+                        where="AdjustmentView",
+                        fix="Pass accept_unverified=True or add operator override",
+                    )
+                warnings_list.append(f"Unverified dividend on {d_iso} for {sym} applied")
+            else:
+                if not accept_unverified:
+                    raise DataError(
+                        what=f"{prefix}Action {a.type} on {d_iso} for {sym} is unverified",
+                        where="AdjustmentView",
+                        fix="Pass accept_unverified=True or add operator override",
+                    )
+                warnings_list.append(f"Unverified {a.type} on {d_iso} for {sym} applied")
+    return warnings_list
+
+
+def _calc_factor_for_action(
+    a: ActionRecord,
+    src_basis: str,
+    tgt_basis: str,
+    bars: Sequence[Bar],
+    daily_bars: Sequence[Bar] | None,
+    tz: tzinfo,
+) -> tuple[float, float, str] | None:
+    t = a.type.lower()
+    if src_basis == "splits" and tgt_basis == "total":
+        if t == "dividend":
+            return _calc_dividend_factor(a, bars, daily_bars, tz), 1.0, "dividend"
+        if t == "rights":
+            return _calc_rights_factor(a, bars, daily_bars, tz), 1.0, "rights"
+        return None
+    if src_basis == "splits" and tgt_basis == "none":
+        if t == "split":
+            r = _calc_split_ratio(a)
+            return r, 1.0 / r, "split"
+        if t == "bonus":
+            r = _calc_bonus_ratio(a)
+            return r, 1.0 / r, "bonus"
+        return None
+    if src_basis == "none":
+        if t == "split":
+            r = _calc_split_ratio(a)
+            return 1.0 / r, r, "split"
+        if t == "bonus":
+            r = _calc_bonus_ratio(a)
+            return 1.0 / r, r, "bonus"
+        if tgt_basis == "total":
+            if t == "dividend":
+                return _calc_dividend_factor(a, bars, daily_bars, tz), 1.0, "dividend"
+            if t == "rights":
+                return _calc_rights_factor(a, bars, daily_bars, tz), 1.0, "rights"
+    return None
+
+
+def _collect_factors(
+    actions: Sequence[ActionRecord],
+    src_basis: str,
+    tgt_basis: str,
+    bars: Sequence[Bar],
+    daily_bars: Sequence[Bar] | None,
+    tz: tzinfo,
+) -> tuple[list[tuple[date, float, float, str]], list[str], list[str], list[str]]:
+    factors: list[tuple[date, float, float, str]] = []
+    applied_ids: list[str] = []
+    hash_parts: list[str] = []
+    factor_kinds: list[str] = []
+    for a in sorted(actions, key=lambda x: (x.ex_date, x.id)):
+        res = _calc_factor_for_action(a, src_basis, tgt_basis, bars, daily_bars, tz)
+        if res is None:
+            continue
+        f_price, f_vol, kind = res
+        factors.append((a.ex_date, f_price, f_vol, a.id))
+        applied_ids.append(a.id)
+        factor_kinds.append(kind)
+        hash_parts.append(f"{a.id}:{f_price:.8f}:{f_vol:.4f}")
+    return factors, applied_ids, hash_parts, factor_kinds
 
 
 class AdjustmentView:
@@ -179,56 +312,20 @@ class AdjustmentView:
         daily_bars: Sequence[Bar] | None = None,
         exchange_tz: tzinfo | None = None,
         accept_unverified: bool = False,
+        allow_unverified_dividends: bool = True,
     ) -> AdjustmentResult:
         """Apply corporate action adjustments backwards to bars based on basis transition."""
-        if from_basis is None:
-            if mode is not None and to_basis is None:
-                src_basis = "none"
-                tgt_basis = mode
-            else:
-                src_basis = "splits"
-                tgt_basis = to_basis or mode or "total"
-        else:
-            src_basis = from_basis.lower()
-            tgt_basis = (to_basis or mode or "total").lower()
-
-        if src_basis not in VALID_BASES:
-            raise DataError(
-                what=f"Invalid source adjustment basis '{src_basis}'",
-                where="AdjustmentView.apply",
-                fix=f"Source basis must be one of {sorted(VALID_BASES)}",
-            )
-        if tgt_basis not in VALID_BASES:
-            raise DataError(
-                what=f"Invalid target adjustment basis '{tgt_basis}'",
-                where="AdjustmentView.apply",
-                fix=f"Target basis must be one of {sorted(VALID_BASES)}",
-            )
-
+        src_basis, tgt_basis = _resolve_bases(mode, from_basis, to_basis)
         if not bars:
             return AdjustmentResult(
                 (), [], "", factor_kinds=[], basis=tgt_basis, from_basis=src_basis
             )
 
-        # 1. Any conflict or manual_required action must refuse
-        for a in actions:
-            if a.status in ("conflict", "manual_required"):
-                d_iso = a.ex_date.isoformat()
-                sym = a.symbol or "UNKNOWN"
-                r_msg = a.reason or a.text
-                raise DataError(
-                    what=f"Action {a.type} on {d_iso} for {sym} status '{a.status}': {r_msg}",
-                    where="AdjustmentView",
-                    fix=f"Resolve with 'algodesk data actions override add --symbol {sym} ...'",
-                )
-
-        # 2. Same basis: unchanged
         if src_basis == tgt_basis:
             return AdjustmentResult(
                 tuple(bars), [], "", factor_kinds=[], basis=tgt_basis, from_basis=src_basis
             )
 
-        # 2. total -> anything else: refuse with clear error
         if src_basis == "total":
             raise DataError(
                 what=f"Cannot convert '{src_basis}' adjusted series to '{tgt_basis}' basis",
@@ -240,140 +337,36 @@ class AdjustmentView:
             )
 
         tz = exchange_tz or _DEFAULT_EXCH_TZ
-        factors: list[tuple[date, float, float, str]] = []
-        applied_ids: list[str] = []
-        hash_parts: list[str] = []
-        factor_kinds: list[str] = []
+        first_bar_date = min(b.start_ts.astimezone(tz).date() for b in bars)
+        relevant_actions = [a for a in actions if a.ex_date > first_bar_date]
 
-        # 3. splits -> total: applies dividend factors only
-        if src_basis == "splits" and tgt_basis == "total":
-            for a in sorted(actions, key=lambda x: (x.ex_date, x.id)):
-                t = a.type.lower()
-                if t not in ("dividend", "rights"):
-                    continue
-                d_iso = a.ex_date.isoformat()
-                sym = a.symbol or "UNKNOWN"
-                if a.status in ("conflict", "manual_required"):
-                    r_msg = a.reason or a.text
-                    raise DataError(
-                        what=f"Action {a.type} on {d_iso} for {sym} status '{a.status}': {r_msg}",
-                        where="AdjustmentView",
-                        fix=f"Resolve with 'algodesk data actions override add --symbol {sym} ...'",
-                    )
-                if a.status == "unverified" and not accept_unverified:
-                    raise DataError(
-                        what=f"Action {a.type} on {d_iso} for {sym} is unverified",
-                        where="AdjustmentView",
-                        fix="Pass accept_unverified=True or add operator override",
-                    )
-                if t == "dividend":
-                    f_price = _calc_dividend_factor(a, bars, daily_bars, tz)
-                    f_vol = 1.0
-                    factor_kinds.append("dividend")
-                else:
-                    f_price = _calc_rights_factor(a, bars, daily_bars, tz)
-                    f_vol = 1.0
-                    factor_kinds.append("rights")
+        warnings_list = _check_action_policy(
+            relevant_actions, allow_unverified_dividends, accept_unverified, tgt_basis=tgt_basis
+        )
 
-                factors.append((a.ex_date, f_price, f_vol, a.id))
-                applied_ids.append(a.id)
-                hash_parts.append(f"{a.id}:{f_price:.8f}:{f_vol:.4f}")
-
-        # 4. splits -> none: reverses split and bonus factors
-        elif src_basis == "splits" and tgt_basis == "none":
-            # Refuse if any split or bonus is unverified, conflict or manual_required
-            for a in actions:
-                t = a.type.lower()
-                if t in ("split", "bonus"):
-                    if a.status in ("unverified", "conflict", "manual_required"):
-                        d_iso = a.ex_date.isoformat()
-                        sym = a.symbol or "UNKNOWN"
-                        raise DataError(
-                            what=(
-                                f"Cannot reverse splits: {a.type} on {d_iso} for {sym} "
-                                f"has status '{a.status}'"
-                            ),
-                            where="AdjustmentView.apply",
-                            fix=(
-                                "All split and bonus actions must be confirmed "
-                                "before reversing to none basis"
-                            ),
-                        )
-
-            for a in sorted(actions, key=lambda x: (x.ex_date, x.id)):
-                t = a.type.lower()
-                if t == "split":
-                    r = _calc_split_ratio(a)
-                    f_price, f_vol = r, 1.0 / r
-                    factor_kinds.append("split")
-                elif t == "bonus":
-                    r = _calc_bonus_ratio(a)
-                    f_price, f_vol = r, 1.0 / r
-                    factor_kinds.append("bonus")
-                else:
-                    continue
-
-                factors.append((a.ex_date, f_price, f_vol, a.id))
-                applied_ids.append(a.id)
-                hash_parts.append(f"{a.id}:{f_price:.8f}:{f_vol:.4f}")
-
-        # 5. none -> splits: applies splits
-        # 6. none -> total: applies both splits and dividends/rights
-        elif src_basis == "none":
-            allowed_types = (
-                {"split", "bonus"}
-                if tgt_basis == "splits"
-                else {"split", "bonus", "dividend", "rights"}
-            )
-            for a in sorted(actions, key=lambda x: (x.ex_date, x.id)):
-                t = a.type.lower()
-                if t not in allowed_types:
-                    continue
-                d_iso = a.ex_date.isoformat()
-                sym = a.symbol or "UNKNOWN"
-                if a.status in ("conflict", "manual_required"):
-                    r_msg = a.reason or a.text
-                    raise DataError(
-                        what=f"Action {a.type} on {d_iso} for {sym} status '{a.status}': {r_msg}",
-                        where="AdjustmentView",
-                        fix=f"Resolve with 'algodesk data actions override add --symbol {sym} ...'",
-                    )
-                if a.status == "unverified" and not accept_unverified:
-                    raise DataError(
-                        what=f"Action {a.type} on {d_iso} for {sym} is unverified",
-                        where="AdjustmentView",
-                        fix="Pass accept_unverified=True or add operator override",
-                    )
-                if t == "split":
-                    r = _calc_split_ratio(a)
-                    f_price, f_vol = 1.0 / r, r
-                    factor_kinds.append("split")
-                elif t == "bonus":
-                    r = _calc_bonus_ratio(a)
-                    f_price, f_vol = 1.0 / r, r
-                    factor_kinds.append("bonus")
-                elif t == "dividend":
-                    f_price = _calc_dividend_factor(a, bars, daily_bars, tz)
-                    f_vol = 1.0
-                    factor_kinds.append("dividend")
-                elif t == "rights":
-                    f_price = _calc_rights_factor(a, bars, daily_bars, tz)
-                    f_vol = 1.0
-                    factor_kinds.append("rights")
-                else:
-                    continue
-
-                factors.append((a.ex_date, f_price, f_vol, a.id))
-                applied_ids.append(a.id)
-                hash_parts.append(f"{a.id}:{f_price:.8f}:{f_vol:.4f}")
+        factors, applied_ids, hash_parts, factor_kinds = _collect_factors(
+            relevant_actions, src_basis, tgt_basis, bars, daily_bars, tz
+        )
 
         h = hashlib.sha256(",".join(hash_parts).encode()).hexdigest() if hash_parts else ""
         if not factors:
             return AdjustmentResult(
-                tuple(bars), applied_ids, h, factor_kinds, basis=tgt_basis, from_basis=src_basis
+                tuple(bars),
+                applied_ids,
+                h,
+                factor_kinds,
+                basis=tgt_basis,
+                from_basis=src_basis,
+                warnings=warnings_list,
             )
 
         adjusted = [_adjust_single_bar(b, factors, tz) for b in bars]
         return AdjustmentResult(
-            tuple(adjusted), applied_ids, h, factor_kinds, basis=tgt_basis, from_basis=src_basis
+            tuple(adjusted),
+            applied_ids,
+            h,
+            factor_kinds,
+            basis=tgt_basis,
+            from_basis=src_basis,
+            warnings=warnings_list,
         )

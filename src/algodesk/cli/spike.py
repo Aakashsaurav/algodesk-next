@@ -193,6 +193,7 @@ def _print_raw_diagnosis(broker: Any, symbols: str) -> None:
         )
         typer.echo(f"Symbol: {s}")
         typer.echo(f"ISIN: {diag.get('isin', s)}")
+        typer.echo(f"Token type: {diag.get('token_type', 'none')}")
         if diag.get("error"):
             typer.echo(f"Status: {diag.get('status_code', 0)}")
             typer.echo(f"Message: {diag.get('error')}")

@@ -169,6 +169,11 @@ def data_get(
     bars = list(data_slice.bars)
     if not bars:
         typer.echo(f"No bars returned for {symbol} ({timeframe}) between {start} and {end}.")
+        if data_slice.gaps:
+            empty_cnt = sum(1 for g in data_slice.gaps if str(g.status) == "EMPTY")
+            typer.echo(
+                f"Gap summary: {len(data_slice.gaps)} gap session(s) detected ({empty_cnt} EMPTY)."
+            )
         return
 
     is_daily = timeframe.lower() == "1d"
@@ -189,6 +194,11 @@ def data_get(
         for b in bars
     ]
     typer.echo(format_table(headers, rows))
+    if data_slice.gaps:
+        empty_cnt = sum(1 for g in data_slice.gaps if str(g.status) == "EMPTY")
+        typer.echo(
+            f"\nGap summary: {len(data_slice.gaps)} gap session(s) detected ({empty_cnt} EMPTY)."
+        )
 
 
 def _journal_data_event(rt: Runtime, event_type: str, payload: dict[str, Any], caller: str) -> None:
@@ -855,18 +865,32 @@ def data_gaps(
         all_gaps: list[dict[str, str]] = []
 
         for inst in instruments:
-            ds_id = dataset_id_for_key(
-                SeriesKey(InstrumentId(inst), "bars", timeframe, "raw", source)
-            )
-            for g in cov_index.detect_gaps(ds_id, start_d, end_d):
-                all_gaps.append(
-                    {
-                        "instrument": inst,
-                        "day": g.day.isoformat(),
-                        "status": str(g.status),
-                        "reason": g.reason,
-                    }
-                )
+            found_for_inst = False
+            i_id = InstrumentId(inst)
+            for adj in ("raw", "adjusted"):
+                ds_id = dataset_id_for_key(SeriesKey(i_id, "bars", timeframe, adj, source))
+                if manifest.get_dataset(ds_id) is not None:
+                    found_for_inst = True
+                    for g in cov_index.detect_gaps(ds_id, start_d, end_d):
+                        all_gaps.append(
+                            {
+                                "instrument": inst,
+                                "day": g.day.isoformat(),
+                                "status": str(g.status),
+                                "reason": g.reason,
+                            }
+                        )
+            if not found_for_inst:
+                ds_id = dataset_id_for_key(SeriesKey(i_id, "bars", timeframe, "raw", source))
+                for g in cov_index.detect_gaps(ds_id, start_d, end_d):
+                    all_gaps.append(
+                        {
+                            "instrument": inst,
+                            "day": g.day.isoformat(),
+                            "status": str(g.status),
+                            "reason": g.reason,
+                        }
+                    )
 
         if json_out:
             typer.echo(json.dumps(all_gaps, indent=2))
@@ -1018,6 +1042,8 @@ def actions_refresh(
             f"Actions refresh complete: {len(res['refreshed'])} refreshed, "
             f"{len(res['skipped'])} cached, {res['actions_count']} events{detail}."
         )
+        for warn in res.get("warnings", []):
+            typer.echo(f"Warning: {warn}")
 
 
 def _get_project_root(ctx: typer.Context) -> Path:
@@ -1206,6 +1232,54 @@ def actions_check(
             )
 
 
+def _audit_symbol(
+    ds: DataService,
+    sym: str,
+    exchange: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    from_date: str,
+    to_date: str,
+    tol: float,
+) -> tuple[list[str], bool, list[str]]:
+    import statistics
+
+    inst = f"{exchange.upper()}:EQ:{sym.upper()}"
+    try:
+        kw = dict(download="raw", adjust="total", source="yfinance", accept_unverified=True)
+        d_slice = ds.get(inst, start_dt, end_dt, **kw)  # type: ignore[arg-type]
+        kw["download"], kw["adjust"] = "adjusted", "total"
+        s_slice = ds.get(inst, start_dt, end_dt, **kw)  # type: ignore[arg-type]
+    except Exception as exc:
+        return [sym, "0", "N/A", "N/A", f"ERROR: {exc}"], True, []
+
+    missing_cmds: list[str] = []
+    base_cmd = f"algodesk data get {sym} 1d {from_date} {to_date} --source yfinance"
+    if not d_slice.bars:
+        missing_cmds.append(f"{base_cmd} --download raw")
+    if not s_slice.bars:
+        missing_cmds.append(f"{base_cmd} --download adjusted")
+    if missing_cmds:
+        return [sym, "0", "0.00%", "0.00%", "NO DATA"], False, missing_cmds
+
+    d_map = {b.start_ts.date(): b.close for b in d_slice.bars}
+    s_map = {b.start_ts.date(): b.close for b in s_slice.bars}
+    common = sorted(set(d_map.keys()) & set(s_map.keys()))
+    if not common:
+        return [sym, "0", "0.00%", "0.00%", "NO DATA"], False, []
+
+    diffs = [
+        abs(float(d_map[d]) - float(s_map[d])) / float(s_map[d]) * 100.0
+        for d in common
+        if float(s_map[d]) > 0
+    ]
+    max_d = max(diffs) if diffs else 0.0
+    med_d = statistics.median(diffs) if diffs else 0.0
+    is_flagged = max_d > tol
+    st = f"FLAG (> {tol}%)" if is_flagged else "OK"
+    return [sym, str(len(common)), f"{max_d:.2f}%", f"{med_d:.2f}%", st], is_flagged, []
+
+
 @actions_app.command("audit")
 @handle_cli_errors
 def actions_audit(
@@ -1216,8 +1290,6 @@ def actions_audit(
     exchange: str = typer.Option("NSE", "--exchange", help="Exchange code"),
 ) -> None:
     """Audit derived adjusted series vs source-adjusted series for symbols."""
-    import statistics
-
     with _open_rt(ctx, ensure=False) as rt:
         manifest = _get_manifest(rt)
         symbols = _resolve_action_symbols(rt, manifest, selector, exchange)
@@ -1230,40 +1302,20 @@ def actions_audit(
         ds = _build_data_service(rt, "yfinance")
         rows: list[list[str]] = []
         flagged = 0
+        all_missing_cmds: list[str] = []
 
         for sym in symbols:
-            inst = f"{exchange.upper()}:EQ:{sym.upper()}"
-            try:
-                kw = dict(download="raw", adjust="total", source="yfinance", accept_unverified=True)
-                d_slice = ds.get(inst, start_dt, end_dt, **kw)  # type: ignore[arg-type]
-                kw["download"], kw["adjust"] = "adjusted", "none"
-                s_slice = ds.get(inst, start_dt, end_dt, **kw)  # type: ignore[arg-type]
-            except Exception as exc:
-                rows.append([sym, "0", "N/A", "N/A", f"ERROR: {exc}"])
+            row, is_fl, missing = _audit_symbol(
+                ds, sym, exchange, start_dt, end_dt, from_date, to_date, tol
+            )
+            rows.append(row)
+            if is_fl:
                 flagged += 1
-                continue
-
-            d_map = {b.start_ts.date(): b.close for b in d_slice.bars}
-            s_map = {b.start_ts.date(): b.close for b in s_slice.bars}
-            common = sorted(set(d_map.keys()) & set(s_map.keys()))
-            if not common:
-                rows.append([sym, "0", "0.00%", "0.00%", "NO DATA"])
-                continue
-
-            diffs = [
-                abs(float(d_map[d]) - float(s_map[d])) / float(s_map[d]) * 100.0
-                for d in common
-                if float(s_map[d]) > 0
-            ]
-            max_d = max(diffs) if diffs else 0.0
-            med_d = statistics.median(diffs) if diffs else 0.0
-            is_flagged = max_d > tol
-            if is_flagged:
-                flagged += 1
-            st = f"FLAG (> {tol}%)" if is_flagged else "OK"
-            rows.append([sym, str(len(common)), f"{max_d:.2f}%", f"{med_d:.2f}%", st])
+            all_missing_cmds.extend(missing)
 
         typer.echo(format_table(["Symbol", "Bars", "Max Diff", "Median Diff", "Status"], rows))
+        for cmd in all_missing_cmds:
+            typer.echo(f"Missing series command: {cmd}")
         if flagged:
             typer.echo(
                 f"\nAudit completed: {flagged} symbol(s) flagged exceeding tolerance {tol}%."

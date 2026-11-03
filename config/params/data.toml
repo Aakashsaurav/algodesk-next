@@ -222,6 +222,24 @@ description = "Tolerance percentage for confirming dividend amounts between sour
 owner = "data"
 
 [[param]]
+name = "corp.allow_unverified_dividends"
+type = "bool"
+default = true
+scope = "global"
+tighten = "none"
+description = "Allow unverified dividends during adjustment view with warning in provenance"
+owner = "data"
+
+[[param]]
+name = "data.drop_flat_zero_volume_bars"
+type = "bool"
+default = true
+scope = "global"
+tighten = "none"
+description = "Drop flat bars with zero volume and open=high=low=close on expected trading days"
+owner = "data"
+
+[[param]]
 name = "corp.primary_source"
 type = "str"
 default = "upstox"

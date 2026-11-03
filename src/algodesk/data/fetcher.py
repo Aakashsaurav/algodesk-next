@@ -117,13 +117,43 @@ class Fetcher:
 
                 with self._lock:
                     # Validate bars
-                    self._validator.validate_chunk(bars, base_key)
+                    val_rep = self._validator.validate_chunk(bars, base_key)
+                    clean_bars = (
+                        val_rep.clean_bars
+                        if hasattr(val_rep, "clean_bars") and val_rep.clean_bars is not None
+                        else bars
+                    )
+                    if not clean_bars and getattr(val_rep, "dropped_flat_bars", 0) > 0:
+                        # pyrefly: ignore[implicit-any-empty-container]
+                        clean_bars = []
 
                     # Commit to BarStore
                     parts = self._store.commit(
-                        base_key, bars, refresh=False, validator=self._validator
+                        base_key, clean_bars, refresh=False, validator=self._validator
                     )
                     finished_iso = datetime.now(UTC).isoformat()
+                    ds_id = self._store.dataset_id(base_key)
+
+                    # Expected sessions minus returned days become EMPTY, never COMPLETE
+                    returned_days = {
+                        b.start_ts.astimezone(self._store.exchange_tz).date() for b in clean_bars
+                    }
+                    missing_chunk_days = [d for d in chunk.days if d not in returned_days]
+                    cov_empty = [
+                        CoverageDayRecord(
+                            dataset_id=ds_id,
+                            day=d.isoformat(),
+                            status=CoverageStatus.EMPTY,
+                            rows=0,
+                            expected_rows=0,
+                            part_path="",
+                            fetched_at=finished_iso,
+                            note="Expected session returned no bars from source",
+                        )
+                        for d in missing_chunk_days
+                    ]
+                    if cov_empty:
+                        manifest.record_coverage_days(cov_empty)
 
                     manifest.record_fetch_log(
                         chunk=chunk.chunk_id,

@@ -153,6 +153,7 @@ def test_upstox_actions_reader(tmp_path):
         _http_transport=transport,
         _cache_dir=tmp_path / "cache",
     )
+    plugin.use_token("fake_oauth_token")
 
     actions = plugin.actions("RELIANCE")
     assert len(actions) == 3

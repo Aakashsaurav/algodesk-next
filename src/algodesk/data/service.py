@@ -78,6 +78,14 @@ def _apply_raw_adjustments(
     acts = _get_reconciled(key, store, params)
     d_key = SeriesKey(key.instrument, "bars", "1d", "raw", key.source)
     d_slice = store.read(d_key, datetime(2000, 1, 1, tzinfo=UTC), datetime.now(UTC))
+    allow_unver_div = True
+    if params is not None:
+        try:
+            val = params.get("corp.allow_unverified_dividends")
+            if val is not None:
+                allow_unver_div = val is True or str(val).lower() in ("true", "1", "yes")
+        except Exception:
+            allow_unver_div = True
     return AdjustmentView.apply(
         bars,
         acts,
@@ -86,6 +94,7 @@ def _apply_raw_adjustments(
         daily_bars=d_slice.bars or None,
         exchange_tz=exchange_tz,
         accept_unverified=accept_unverified,
+        allow_unverified_dividends=allow_unver_div,
     )
 
 
@@ -363,10 +372,15 @@ class DataService:
             "from_basis": from_basis,
             "factor_kinds": adj_res.factor_kinds,
         }
+        prov_warnings: list[str] = []
         if req_key.source == "upstox":
-            prov_dict["warnings"] = [
+            prov_warnings.append(
                 "Upstox candle adjustment unknown; treated as adjusted pending verification"
-            ]
+            )
+        if hasattr(adj_res, "warnings") and adj_res.warnings:
+            prov_warnings.extend(adj_res.warnings)
+        if prov_warnings:
+            prov_dict["warnings"] = prov_warnings
         return DataSlice(
             key=req_key,
             start=start,

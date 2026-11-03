@@ -272,9 +272,10 @@ class CorporateActionsManager:
 
     def _fetch_and_store_symbol(
         self, exch: str, sym: str, src_list: list[str]
-    ) -> tuple[int, dict[str, int]]:
+    ) -> tuple[int, dict[str, int], list[str]]:
         sym_actions: list[ActionRecord] = []
         counts: dict[str, int] = {}
+        warnings: list[str] = []
         for src_name in src_list:
             self._limiter.acquire(src_name, "corporate_actions")
             try:
@@ -282,7 +283,9 @@ class CorporateActionsManager:
                 self._store.write(exch, sym, acts, source=src_name)
                 sym_actions.extend(acts)
                 counts[src_name] = len(acts)
-            except Exception:
+            except Exception as exc:
+                msg = f"Source '{src_name}' actions fetch failed for {sym}: {exc}"
+                warnings.append(msg)
                 if len(src_list) == 1:
                     raise
         if self._journal:
@@ -296,7 +299,7 @@ class CorporateActionsManager:
                     "action_ids": [a.id for a in sym_actions],
                 },
             )
-        return len(sym_actions), counts
+        return len(sym_actions), counts, warnings
 
     def refresh(
         self, selector: str, source: str | None = None, force: bool = False
@@ -318,6 +321,7 @@ class CorporateActionsManager:
 
         # pyrefly: ignore[implicit-any-empty-container]
         refreshed, skipped, total = [], [], 0
+        all_warnings: list[str] = []
         source_counts: dict[str, int] = {s: 0 for s in src_list}
         for sym_or_id in insts:
             # pyrefly: ignore[unnecessary-type-conversion]
@@ -326,7 +330,8 @@ class CorporateActionsManager:
                 skipped.append(f"{exch}:{sym}")
                 continue
 
-            cnt, src_map = self._fetch_and_store_symbol(exch, sym, src_list)
+            cnt, src_map, warns = self._fetch_and_store_symbol(exch, sym, src_list)
+            all_warnings.extend(warns)
             for s_name, c in src_map.items():
                 source_counts[s_name] = source_counts.get(s_name, 0) + c
             refreshed.append(f"{exch}:{sym}")
@@ -338,4 +343,5 @@ class CorporateActionsManager:
             "actions_count": total,
             "sources": src_list,
             "source_counts": source_counts,
+            "warnings": all_warnings,
         }

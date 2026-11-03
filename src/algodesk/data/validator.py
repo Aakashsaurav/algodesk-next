@@ -13,12 +13,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from algodesk.api.errors import DataError
-from algodesk.api.market import Bar, SeriesKey
+from algodesk.api.market import Bar, CoverageStatus, SeriesKey
 from algodesk.api.protocols import Calendar
 from algodesk.api.services import JournalWriter, ParamReader
-from algodesk.data.manifest import DataManifest, QuarantineRecord
+from algodesk.data.layout import dataset_id_for_key
+from algodesk.data.manifest import CoverageDayRecord, DataManifest, QuarantineRecord
 from algodesk.data.schema import write_bars_parquet
 
 
@@ -31,6 +33,8 @@ class ValidationReport:
     warnings: list[str] = field(default_factory=list)
     total_bars: int = 0
     quarantine_id: str | None = None
+    clean_bars: list[Bar] = field(default_factory=list)
+    dropped_flat_bars: int = 0
 
 
 class BarValidator:
@@ -39,6 +43,7 @@ class BarValidator:
     __slots__ = (
         "_calendar",
         "_data_dir",
+        "_exchange_tz",
         "_journal",
         "_manifest",
         "_params",
@@ -53,12 +58,14 @@ class BarValidator:
         journal: JournalWriter | None = None,
         calendar: Calendar | None = None,
         price_jump_pct: float | None = None,
+        exchange_tz: Any | None = None,
     ) -> None:
         self._data_dir = Path(data_dir)
         self._manifest = manifest
         self._params = params
         self._journal = journal
         self._calendar = calendar
+        self._exchange_tz = exchange_tz or ZoneInfo("Asia/Kolkata")
 
         if price_jump_pct is not None:
             self._price_jump_rate = float(price_jump_pct)
@@ -69,6 +76,109 @@ class BarValidator:
                 self._price_jump_rate = 20.0
         else:
             self._price_jump_rate = 20.0
+
+    def _is_flat_zero_bar(self, bar: Bar) -> bool:
+        if bar.volume != 0:
+            return False
+        if bar.open == bar.high == bar.low == bar.close:
+            b_date = bar.start_ts.astimezone(self._exchange_tz).date()
+            if self._calendar is not None:
+                return self._calendar.is_trading_day(b_date)
+            return b_date.weekday() < 5
+        return False
+
+    def _handle_flat_zero_bar(self, bar: Bar, key: SeriesKey) -> None:
+        b_date = bar.start_ts.astimezone(self._exchange_tz).date()
+        ds_id = dataset_id_for_key(key)
+        rec = CoverageDayRecord(
+            dataset_id=ds_id,
+            day=b_date.isoformat(),
+            status=CoverageStatus.EMPTY,
+            rows=0,
+            expected_rows=0,
+            part_path="",
+            fetched_at=datetime.now(UTC).isoformat(),
+            note="Dropped flat zero-volume bar",
+        )
+        self._manifest.record_coverage_days([rec])
+        if self._journal is not None:
+            self._journal.append(
+                kind="data.phantom_bar_dropped",
+                payload={
+                    "instrument": str(key.instrument),
+                    "timeframe": key.timeframe,
+                    "day": b_date.isoformat(),
+                    "bar_start": bar.start_ts.isoformat(),
+                    "price": float(bar.close),
+                    "volume": 0,
+                },
+            )
+
+    def _check_bar(
+        self,
+        idx: int,
+        bar: Bar,
+        prev_bar: Bar | None,
+        seen_ts: set[datetime],
+        start_bound: datetime | None,
+        end_bound: datetime | None,
+        report: ValidationReport,
+    ) -> None:
+        if not isinstance(bar.start_ts, datetime) or bar.start_ts.tzinfo is None:
+            report.errors.append(f"Row {idx}: start_ts must be timezone-aware UTC datetime")
+        if not isinstance(bar.end_ts, datetime) or bar.end_ts.tzinfo is None:
+            report.errors.append(f"Row {idx}: end_ts must be timezone-aware UTC datetime")
+        if bar.start_ts > bar.end_ts:
+            report.errors.append(f"Row {idx}: start_ts ({bar.start_ts}) > end_ts ({bar.end_ts})")
+        if prev_bar is not None and bar.start_ts <= prev_bar.start_ts:
+            report.errors.append(
+                f"Row {idx}: non-increasing timestamp order: {prev_bar.start_ts} >= {bar.start_ts}"
+            )
+        if bar.start_ts in seen_ts:
+            report.errors.append(f"Row {idx}: duplicate timestamp {bar.start_ts.isoformat()}")
+        seen_ts.add(bar.start_ts)
+
+        if bar.open <= 0 or bar.high <= 0 or bar.low <= 0 or bar.close <= 0:
+            report.errors.append(f"Row {idx}: OHLC prices must be strictly positive")
+        if bar.low > bar.high:
+            report.errors.append(
+                f"Row {idx}: OHLC sanity failed: low ({bar.low}) > high ({bar.high})"
+            )
+        if bar.open < bar.low or bar.open > bar.high:
+            report.errors.append(
+                f"Row {idx}: open ({bar.open}) outside [low={bar.low}, high={bar.high}]"
+            )
+        if bar.close < bar.low or bar.close > bar.high:
+            report.errors.append(
+                f"Row {idx}: close ({bar.close}) outside [low={bar.low}, high={bar.high}]"
+            )
+        if bar.volume < 0:
+            report.errors.append(f"Row {idx}: volume cannot be negative ({bar.volume})")
+
+        if self._calendar is not None:
+            day = bar.start_ts.date()
+            if not self._calendar.is_trading_day(day):
+                report.errors.append(f"Row {idx}: bar on non-trading day {day}")
+            elif sessions := self._calendar.sessions(day):
+                s_open, s_close = sessions[0].start, sessions[-1].end
+                if bar.start_ts < s_open or bar.end_ts > s_close:
+                    report.errors.append(
+                        f"Row {idx}: bar {bar.start_ts.isoformat()} outside session hours "
+                        f"[{s_open.isoformat()}, {s_close.isoformat()}]"
+                    )
+
+        if start_bound is not None and bar.start_ts < start_bound:
+            report.errors.append(f"Row {idx}: bar before start bound ({start_bound})")
+        if end_bound is not None and bar.end_ts > end_bound:
+            report.errors.append(f"Row {idx}: bar after end bound ({end_bound})")
+
+        if prev_bar is not None and prev_bar.close > 0:
+            pct_move = float(abs(bar.close - prev_bar.close)) / float(prev_bar.close) * 100.0
+            if pct_move > self._price_jump_rate:
+                report.warnings.append(
+                    f"Row {idx}: price jump of {pct_move:.1f}% from {prev_bar.close} "
+                    f"to {bar.close} exceeds warning threshold ({self._price_jump_rate:.1f}%)"
+                )
 
     def validate_chunk(
         self,
@@ -82,84 +192,30 @@ class BarValidator:
         if not bars:
             return report
 
+        drop_flat = True
+        if self._params is not None:
+            try:
+                val = self._params.get("data.drop_flat_zero_volume_bars")
+                if val is not None:
+                    drop_flat = val is True or str(val).lower() in ("true", "1", "yes")
+            except Exception:
+                drop_flat = True
+
         seen_ts: set[datetime] = set()
         prev_bar: Bar | None = None
+        clean_bars: list[Bar] = []
 
         for idx, bar in enumerate(bars):
-            # 1. Schema / timestamp checks
-            if not isinstance(bar.start_ts, datetime) or bar.start_ts.tzinfo is None:
-                report.errors.append(f"Row {idx}: start_ts must be timezone-aware UTC datetime")
-            if not isinstance(bar.end_ts, datetime) or bar.end_ts.tzinfo is None:
-                report.errors.append(f"Row {idx}: end_ts must be timezone-aware UTC datetime")
-            if bar.start_ts > bar.end_ts:
-                report.errors.append(
-                    f"Row {idx}: start_ts ({bar.start_ts}) > end_ts ({bar.end_ts})"
-                )
+            if drop_flat and self._is_flat_zero_bar(bar):
+                report.dropped_flat_bars += 1
+                self._handle_flat_zero_bar(bar, key)
+                continue
 
-            # 2. Order check
-            if prev_bar is not None and bar.start_ts <= prev_bar.start_ts:
-                report.errors.append(
-                    f"Row {idx}: non-increasing timestamp order: "
-                    f"{prev_bar.start_ts} >= {bar.start_ts}"
-                )
-
-            # 3. Duplicate check
-            if bar.start_ts in seen_ts:
-                report.errors.append(f"Row {idx}: duplicate timestamp {bar.start_ts.isoformat()}")
-            seen_ts.add(bar.start_ts)
-
-            # 4. OHLC sanity checks
-            if bar.open <= 0 or bar.high <= 0 or bar.low <= 0 or bar.close <= 0:
-                report.errors.append(f"Row {idx}: OHLC prices must be strictly positive")
-            if bar.low > bar.high:
-                report.errors.append(
-                    f"Row {idx}: OHLC sanity failed: low ({bar.low}) > high ({bar.high})"
-                )
-            if bar.open < bar.low or bar.open > bar.high:
-                report.errors.append(
-                    f"Row {idx}: open ({bar.open}) outside [low={bar.low}, high={bar.high}]"
-                )
-            if bar.close < bar.low or bar.close > bar.high:
-                report.errors.append(
-                    f"Row {idx}: close ({bar.close}) outside [low={bar.low}, high={bar.high}]"
-                )
-
-            # 5. Volume check
-            if bar.volume < 0:
-                report.errors.append(f"Row {idx}: volume cannot be negative ({bar.volume})")
-
-            # 6. Session hours check
-            if self._calendar is not None:
-                day = bar.start_ts.date()
-                if not self._calendar.is_trading_day(day):
-                    report.errors.append(f"Row {idx}: bar on non-trading day {day}")
-                else:
-                    sessions = self._calendar.sessions(day)
-                    if sessions:
-                        s_open, s_close = sessions[0].start, sessions[-1].end
-                        if bar.start_ts < s_open or bar.end_ts > s_close:
-                            report.errors.append(
-                                f"Row {idx}: bar {bar.start_ts.isoformat()} outside session hours "
-                                f"[{s_open.isoformat()}, {s_close.isoformat()}]"
-                            )
-
-            # 7. Range check
-            if start_bound is not None and bar.start_ts < start_bound:
-                report.errors.append(f"Row {idx}: bar before start bound ({start_bound})")
-            if end_bound is not None and bar.end_ts > end_bound:
-                report.errors.append(f"Row {idx}: bar after end bound ({end_bound})")
-
-            # 8. Outlier price jump check (warning only)
-            if prev_bar is not None and prev_bar.close > 0:
-                pct_move = float(abs(bar.close - prev_bar.close)) / float(prev_bar.close) * 100.0
-                if pct_move > self._price_jump_rate:
-                    report.warnings.append(
-                        f"Row {idx}: price jump of {pct_move:.1f}% from {prev_bar.close} "
-                        f"to {bar.close} exceeds warning threshold ({self._price_jump_rate:.1f}%)"
-                    )
-
+            self._check_bar(idx, bar, prev_bar, seen_ts, start_bound, end_bound, report)
+            clean_bars.append(bar)
             prev_bar = bar
 
+        report.clean_bars = clean_bars
         if report.errors:
             report.is_valid = False
             q_id = self._quarantine_chunk(bars, key, report.errors, report.warnings)

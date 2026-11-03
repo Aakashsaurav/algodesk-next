@@ -110,6 +110,10 @@ class BarStore:
     def coverage_index(self) -> CoverageIndex:
         return self._coverage_index
 
+    @property
+    def exchange_tz(self) -> tzinfo:
+        return self._exchange_tz
+
     def dataset_id(self, key: SeriesKey) -> str:
         return dataset_id_for_key(key)
 
@@ -147,7 +151,11 @@ class BarStore:
                 params=self._params,
             )
         if hasattr(val_obj, "validate_chunk"):
-            val_obj.validate_chunk(bars, key)
+            v_rep = val_obj.validate_chunk(bars, key)
+            if hasattr(v_rep, "clean_bars") and v_rep.clean_bars is not None:
+                bars = v_rep.clean_bars
+        if not bars:
+            return []
 
         ds_id = self.dataset_id(key)
         now_iso = datetime.now(UTC).isoformat()
@@ -372,7 +380,16 @@ class BarStore:
                 checksums.append(_compute_sha256(f))
 
         # Filter strictly within [start, end]
-        filtered_bars = [b for b in all_bars if start <= b.start_ts <= end]
+        if key.timeframe == "1d":
+            s_date = start.astimezone(self._exchange_tz).date()
+            e_date = end.astimezone(self._exchange_tz).date()
+            filtered_bars = [
+                b
+                for b in all_bars
+                if s_date <= b.start_ts.astimezone(self._exchange_tz).date() <= e_date
+            ]
+        else:
+            filtered_bars = [b for b in all_bars if start <= b.start_ts <= end]
         filtered_bars.sort(key=lambda b: b.start_ts)
 
         # Detect gaps

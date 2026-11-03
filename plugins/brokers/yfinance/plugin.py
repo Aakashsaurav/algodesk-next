@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import random
+import sys
 import time
+import warnings
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -120,7 +122,15 @@ class YFinanceBrokerPlugin(PluginBase, DataSource):
 
         for attempt in range(max_retries + 1):
             try:
-                return fn(*args, **kwargs)
+                with warnings.catch_warnings():
+                    pandas_errors = sys.modules.get("pandas.errors")
+                    if pandas_errors is not None:
+                        p4w = getattr(pandas_errors, "Pandas4Warning", None)
+                        if p4w is not None and issubclass(p4w, Warning):
+                            warnings.filterwarnings("ignore", category=p4w)
+                    warnings.filterwarnings("ignore", message=".*Pandas4Warning.*")
+                    warnings.filterwarnings("ignore", message=".*pandas 4.*")
+                    return fn(*args, **kwargs)
             except Exception as exc:
                 is_429 = "429" in str(exc) or "Too Many Requests" in str(exc)
                 if is_429 and attempt < max_retries:

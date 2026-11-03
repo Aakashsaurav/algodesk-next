@@ -39,6 +39,10 @@ from .history import UpstoxHistoryClient
 from .instruments import UpstoxInstrumentManager
 
 
+class AuthRequired(AuthError):
+    """Raised when an operation requires an OAuth access token."""
+
+
 def _parse_upstox_action_date(val: Any) -> date | None:
     if not val:
         return None
@@ -63,11 +67,7 @@ def _parse_upstox_action(
     now_iso: str,
 ) -> ActionRecord:
     name_raw = str(
-        ev.get("name")
-        or ev.get("type")
-        or ev.get("event_type")
-        or ev.get("purpose")
-        or ""
+        ev.get("name") or ev.get("type") or ev.get("event_type") or ev.get("purpose") or ""
     ).lower()
     if "split" in name_raw:
         ev_type = "split"
@@ -164,6 +164,7 @@ class UpstoxBrokerPlugin(PluginBase):
         _http_transport: httpx.BaseTransport | None = None,
         _ws_url_override: str | None = None,
         _cache_dir: Path | None = None,
+        _data_dir: Path | None = None,
     ) -> None:
         if isinstance(config, UpstoxConfig):
             self._cfg = config
@@ -178,6 +179,7 @@ class UpstoxBrokerPlugin(PluginBase):
         super().__init__(manifest, raw_config, cast(PluginContext, ctx))
         self._http_transport = _http_transport
         self._ws_url_override = _ws_url_override
+        self._data_dir = _data_dir
 
         self._auth = UpstoxAuthFlow(self._cfg, self.ctx, http_transport=self._http_transport)
         self._instruments_mgr = UpstoxInstrumentManager(
@@ -253,6 +255,19 @@ class UpstoxBrokerPlugin(PluginBase):
     def expires_at(self, session: AuthSession) -> datetime | None:
         return self._auth.expires_at(session)
 
+    def resolve_oauth_token(self) -> str | None:
+        """Resolve active OAuth token from session or secrets."""
+        if self._session is not None and self._session.token:
+            return self._session.token
+        reader = self.ctx.secrets if self.ctx is not None else None
+        try:
+            tok = resolve_secret_ref(self._cfg.access_token, reader)
+            if tok:
+                return tok
+        except Exception:
+            pass
+        return None
+
     def resolve_active_token(self) -> str | None:
         """Resolve highest priority active token from secrets according to auth_priority."""
         if self._session is not None and self._session.token:
@@ -295,7 +310,7 @@ class UpstoxBrokerPlugin(PluginBase):
         return self._history_client.history(key, start, end, token=token)
 
     def actions(self, symbol: str | InstrumentId) -> Sequence[ActionRecord]:
-        """Fetch corporate actions data from Upstox fundamentals endpoint."""
+        """Fetch corporate actions data from Upstox using OAuth access token."""
         self.require("corporate_actions")
         sym_str = str(symbol).strip()
         try:
@@ -308,11 +323,24 @@ class UpstoxBrokerPlugin(PluginBase):
             clean_sym = sym_str.split(":")[-1]
             exchange = "NSE"
 
+        token = self.resolve_oauth_token()
+        if not token:
+            raise AuthRequired(
+                what="Upstox corporate actions requires an active OAuth access token",
+                where="UpstoxBrokerPlugin.actions",
+                fix="run algodesk login upstox",
+            )
+        if self._session is not None and self._session.expires_at is not None:
+            now = datetime.now(self._session.expires_at.tzinfo or UTC)
+            if (self._session.expires_at - now).total_seconds() <= 0:
+                raise AuthRequired(
+                    what="Upstox OAuth access token has expired",
+                    where="UpstoxBrokerPlugin.actions",
+                    fix="run algodesk login upstox",
+                )
+
         url = f"https://api.upstox.com/v2/fundamentals/{isin}/corporate-actions"
-        token = self.resolve_active_token()
-        headers = {"Accept": "application/json"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
 
         client = self._client()
         try:
@@ -331,10 +359,10 @@ class UpstoxBrokerPlugin(PluginBase):
                 fix="Reduce request rate or wait before retrying",
             )
         if resp.status_code in (401, 403):
-            raise AuthError(
+            raise AuthRequired(
                 what="Upstox authentication failed on corporate actions",
                 where="UpstoxBrokerPlugin.actions",
-                fix="Run 'algodesk login upstox' or provide active analytics token",
+                fix="run algodesk login upstox",
             )
         if resp.status_code != 200:
             raise DataError(
@@ -353,8 +381,9 @@ class UpstoxBrokerPlugin(PluginBase):
             ) from exc
 
         if not isinstance(payload, dict):
+            p_type = type(payload).__name__
             raise DataError(
-                what=f"Unexpected Upstox corporate actions shape: expected dict, got {type(payload).__name__}",
+                what=f"Unexpected Upstox corporate actions shape: expected dict, got {p_type}",
                 where="UpstoxBrokerPlugin.actions",
                 fix="Check Upstox corporate actions response format",
             )
@@ -386,7 +415,13 @@ class UpstoxBrokerPlugin(PluginBase):
             isin = sym_str
 
         url = f"https://api.upstox.com/v2/fundamentals/{isin}/corporate-actions"
-        token = self.resolve_active_token()
+        token = self.resolve_oauth_token()
+        token_type = "oauth" if token else "none"
+        if not token:
+            token = self.resolve_active_token()
+            if token:
+                token_type = "analytics"
+
         headers = {"Accept": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -404,6 +439,7 @@ class UpstoxBrokerPlugin(PluginBase):
             return {
                 "symbol": sym_str,
                 "isin": isin,
+                "token_type": token_type,
                 "status_code": 0,
                 "error": str(exc),
             }
@@ -413,6 +449,7 @@ class UpstoxBrokerPlugin(PluginBase):
             return {
                 "symbol": sym_str,
                 "isin": isin,
+                "token_type": token_type,
                 "status_code": status_code,
                 "error": str(msg),
             }
@@ -427,6 +464,7 @@ class UpstoxBrokerPlugin(PluginBase):
         return {
             "symbol": sym_str,
             "isin": isin,
+            "token_type": token_type,
             "status_code": status_code,
             "top_level_keys": top_keys,
             "item_count": len(item_list),
@@ -465,6 +503,11 @@ class UpstoxBrokerPlugin(PluginBase):
                 id="upstox.instrument_cache",
                 severity=Severity.WARNING,
                 run=self._check_instrument_cache,
+            ),
+            DoctorCheck(
+                id="upstox.actions_oauth",
+                severity=Severity.WARNING,
+                run=self._check_actions_oauth,
             ),
         )
 
@@ -542,3 +585,34 @@ class UpstoxBrokerPlugin(PluginBase):
             message=f"Instrument cache is stale ({age_hours:.1f}h > {max_hours:.0f}h)",
             fix="Refresh instrument master cache",
         )
+
+    def _check_actions_oauth(self) -> CheckResult:
+        token = self.resolve_oauth_token()
+        if token and self._auth.validate(AuthSession(token=token)):
+            return CheckResult(
+                ok=True, message="Upstox OAuth token is active for corporate actions"
+            )
+
+        ttl = int(self._param("data.actions_ttl_hours", 24))
+        actions_dir = (self._data_dir or Path("data")) / "actions"
+        is_stale = False
+        if actions_dir.exists():
+            now_ts = datetime.now(UTC).timestamp()
+            for f in actions_dir.glob("exchange=*/symbol=*/actions.parquet"):
+                age_h = (now_ts - f.stat().st_mtime) / 3600.0
+                if age_h > ttl:
+                    is_stale = True
+                    break
+
+        if is_stale:
+            msg = (
+                f"Corporate actions are older than data.actions_ttl_hours ({ttl}h) "
+                "and OAuth is missing"
+            )
+            return CheckResult(
+                ok=False,
+                severity=Severity.WARNING,
+                message=msg,
+                fix="run algodesk login upstox",
+            )
+        return CheckResult(ok=True, message="Corporate actions are within TTL or OAuth not needed")
