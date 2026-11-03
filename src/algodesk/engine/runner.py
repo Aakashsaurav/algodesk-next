@@ -13,7 +13,7 @@ import resource
 import sys
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -24,6 +24,7 @@ import typer
 from algodesk.api import (
     AlgoDeskError,
     Bar,
+    ConfigError,
     Fill,
     FillEvent,
     Instrument,
@@ -32,6 +33,7 @@ from algodesk.api import (
     OrderEventMsg,
     PluginContext,
     PluginKind,
+    Position,
     Product,
     Quote,
     SafetyViolation,
@@ -106,7 +108,25 @@ class SessionRunner:
             self.mode = mode
         self._is_replay: bool = str(mode).lower() == "replay" or bool(replay_dates)
         self.observe = observe
-        self.replay_dates = list(replay_dates or [])
+        if replay_dates:
+            cleaned_dates: list[str] = []
+            for d in replay_dates:
+                if isinstance(d, date):
+                    cleaned_dates.append(d.isoformat())
+                else:
+                    d_str = str(d).strip()
+                    try:
+                        date.fromisoformat(d_str)
+                    except (ValueError, TypeError) as exc:
+                        raise ConfigError(
+                            what=f"Invalid replay date '{d}'. Use YYYY-MM-DD format.",
+                            where="replay_dates",
+                            fix="Provide dates in YYYY-MM-DD format (e.g. 2026-11-03)",
+                        ) from exc
+                    cleaned_dates.append(d_str)
+            self.replay_dates = cleaned_dates
+        else:
+            self.replay_dates = []
         self.seed = seed
         self.dry_run = dry_run
         self.clock = clock if clock is not None else self._init_clock()
@@ -135,7 +155,10 @@ class SessionRunner:
         self._latest_quotes: dict[InstrumentId, Quote] = {}
 
         self._tick_to_intent_latencies: list[float] = []
+        self._feed_delays: list[float] = []
+        self._platform_latencies: list[float] = []
         self._bar_close_delays: list[float] = []
+        self._first_tick_logged: set[InstrumentId] = set()
         self._latest_tick_ts: dict[Any, datetime] = {}
         self._latest_tick_mono: dict[Any, float] = {}
         self._latest_tick_recv_time: dict[Any, datetime] = {}
@@ -467,6 +490,16 @@ class SessionRunner:
             ledger.apply_fill(fill)
             notify.notify_fill(fill)
             monitor.on_fill(fe)
+            logger.info(
+                "Fill received: fill_id=%s client_ref=%s %s %s qty=%s price=%.2f charges=%.2f",
+                fill.fill_id,
+                fill.client_ref,
+                fill.instrument,
+                getattr(fill.side, "value", fill.side),
+                fill.qty,
+                fill.price,
+                float(fill.charges.total) if fill.charges else 0.0,
+            )
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(strat_rt.dispatch_fill(fill))
@@ -477,6 +510,13 @@ class SessionRunner:
 
         def _on_order_event(oem: OrderEventMsg) -> None:
             self._orders_count = len(oms.orders)
+            logger.info(
+                "Order event: client_ref=%s from=%s to=%s reason=%s",
+                oem.event.client_ref,
+                oem.event.from_state,
+                oem.event.to_state,
+                oem.event.reason,
+            )
 
         bus.subscribe(OrderEventMsg, _on_order_event)
 
@@ -675,18 +715,15 @@ class SessionRunner:
         ind_mgr = IndicatorManager(indicator_plugin=ind_plugin, journal=journal)
         buf = BarBuffer()
 
-        positions_map: Mapping[str, Any] = {
-            f"{k[0]}:{k[1].value}": pos for k, pos in ledger.positions.items()
-        }
-
         def _risk_view_builder() -> RiskViewContext:
             assert self.run_config is not None
             open_ords = [
                 o for o in oms.orders.values() if o.state in ("pending", "submitted", "open")
             ]
+            current_positions = {f"{k[0]}:{k[1].value}": pos for k, pos in ledger.positions.items()}
             return RiskViewContext(
                 portfolio=ledger.snapshot(),
-                positions=positions_map,
+                positions=current_positions,
                 open_orders=open_ords,
                 daily_pnl=ledger.realized + ledger.unrealized,
                 latest_quotes=self._latest_quotes,
@@ -711,12 +748,40 @@ class SessionRunner:
         inst_map: Mapping[InstrumentId | str, Instrument] = {k: v for k, v in instruments.items()}
         assert self.run_config is not None
         for s_cfg in self.run_config.strategies:
+            strat_prod_param = str(s_cfg.params.get("product", "")).upper()
+            target_prod = (
+                Product.MIS
+                if strat_prod_param == "MIS"
+                else (Product.CNC if strat_prod_param == "CNC" else None)
+            )
+
+            def _make_pos_fn(
+                prod: Product | None,
+            ) -> Callable[[InstrumentId | str], Position | None]:
+                def _get_pos(i: InstrumentId | str) -> Position | None:
+                    iid = InstrumentId(str(i))
+                    if prod is not None:
+                        p = ledger.positions.get((iid, prod))
+                        if p is not None and p.qty != 0:
+                            return p
+                    for (k_inst, _k_prod), p in ledger.positions.items():
+                        if k_inst == iid and p.qty != 0:
+                            return p
+                    if prod is not None:
+                        return ledger.positions.get((iid, prod))
+                    return next(
+                        (p for (k_inst, _), p in ledger.positions.items() if k_inst == iid),
+                        None,
+                    )
+
+                return _get_pos
+
             strat_ctx = build_strategy_context(
                 clock=clock,
                 instruments=inst_map,
                 indicator_manager=ind_mgr,
                 bar_buffer=buf,
-                position_fn=lambda i: ledger.positions.get((InstrumentId(str(i)), Product.CNC)),
+                position_fn=_make_pos_fn(target_prod),
                 portfolio_fn=lambda: ledger.snapshot(),
                 params=s_cfg.params,
                 risk_state={"killswitch": risk_engine.killswitch.is_active()},
@@ -788,6 +853,7 @@ class SessionRunner:
         t_mono = time.monotonic()
         trigger_mono = self._last_bar_trigger_mono.get(inst, t_mono)
         lat = max(0.01, (t_mono - trigger_mono) * 1000.0)
+        self._platform_latencies.append(lat)
         self._tick_to_intent_latencies.append(lat)
 
     def _init_recorder(self, bus: EventBus, scheduler: Scheduler) -> Recorder | None:
@@ -885,6 +951,9 @@ class SessionRunner:
             if isinstance(ev, Quote):
                 c["venue"].on_quote(ev)
                 self._latest_quotes[ev.instrument] = ev
+                if getattr(ev, "exch_ts", None) and getattr(ev, "recv_ts", None):
+                    fd = max(0.0, (ev.recv_ts - ev.exch_ts).total_seconds() * 1000.0)
+                    self._feed_delays.append(fd)
             elif isinstance(ev, Tick):
                 if self._first_tick_ts is None:
                     self._first_tick_ts = ev.exch_ts
@@ -892,6 +961,17 @@ class SessionRunner:
                 self._latest_tick_ts[ev.instrument] = ev.exch_ts
                 self._latest_tick_mono[ev.instrument] = time.monotonic()
                 self._latest_tick_recv_time[ev.instrument] = clock.now()
+                if getattr(ev, "exch_ts", None) and getattr(ev, "recv_ts", None):
+                    fd = max(0.0, (ev.recv_ts - ev.exch_ts).total_seconds() * 1000.0)
+                    self._feed_delays.append(fd)
+                if ev.instrument not in self._first_tick_logged:
+                    self._first_tick_logged.add(ev.instrument)
+                    logger.info(
+                        "First tick received for %s: ltp=%.2f at %s",
+                        ev.instrument,
+                        ev.ltp,
+                        format_ist(ev.exch_ts),
+                    )
                 c["bar_builder"].on_tick(ev)
                 self._tick_stats[str(ev.instrument)] = (
                     self._tick_stats.get(str(ev.instrument), 0) + 1
@@ -907,15 +987,27 @@ class SessionRunner:
                         ltp=ev.ltp,
                         volume=ev.volume,
                     )
+                else:
+                    self._latest_quotes[ev.instrument] = Quote(
+                        instrument=ev.instrument,
+                        exch_ts=ev.exch_ts,
+                        recv_ts=ev.recv_ts,
+                        bids=(),
+                        asks=(),
+                        ltp=ev.ltp,
+                        volume=ev.volume,
+                    )
                 await asyncio.sleep(0)
             elif isinstance(ev, FeedStatus):
                 notify.notify_feed_status(ev)
                 if ev.state == "connected":
+                    logger.info("Feed connected: %s", ev.details)
                     journal.append("feed.connected", {"state": ev.state, "details": ev.details})
                 elif ev.state in ("disconnected", "gap"):
                     self._feed_halted = True
                     self._feed_gaps += 1
                     kind = "feed.gap" if ev.state == "gap" else "feed.disconnected"
+                    logger.warning("Feed disconnected: %s", ev.details)
                     journal.append(kind, {"state": ev.state, "details": ev.details})
 
             # 3. Process venue execution events
@@ -1065,8 +1157,6 @@ class SessionRunner:
         status_sec = float(status_val or 30.0)
 
         def _print_status_line() -> None:
-            if self.quiet:
-                return
             if self._is_replay:
                 now_wall = time.monotonic()
                 if now_wall - self._last_status_wall_time < status_sec:
@@ -1099,7 +1189,9 @@ class SessionRunner:
                 f"tick_age={oldest_age_str} bars={bars_str} signals={sigs_str} "
                 f"orders={ords_str} fills={fills_str} killswitch={ks_str} rss={rss_str}"
             )
-            typer.echo(status_line)
+            logger.info("Session stats: %s", status_line)
+            if not self.quiet:
+                typer.echo(status_line)
 
         scheduler.schedule_repeating(
             "console_status_line",
@@ -1212,13 +1304,21 @@ class SessionRunner:
         notify: NotifyBridge | None = c.get("notify")
         recorder: Recorder | None = c.get("recorder")
 
-        # 1. Cancel open orders
+        # 1. Flush & compact recorder fully before final marks or writing results
+        if recorder is not None:
+            try:
+                recorder.flush()
+                recorder.compact(clock.now().date())
+            except Exception as exc:
+                logger.warning("Recorder compaction error: %s", exc)
+
+        # 2. Cancel open orders
         if oms is not None:
             for ref, ord_obj in list(oms.orders.items()):
                 if hasattr(ord_obj, "state") and ord_obj.state in ("pending", "submitted", "open"):
                     asyncio.create_task(oms.cancel(ref))
 
-        # 2. Final marks and equity point
+        # 3. Final marks and equity point
         if ledger is not None:
             for q in self._latest_quotes.values():
                 ledger.mark(q)
@@ -1255,14 +1355,6 @@ class SessionRunner:
                 "drawdown": compute_max_drawdown([p["equity"] for p in self._equity_curve]),
             }
         )
-
-        # 3. Compact recorder files
-        if recorder is not None:
-            try:
-                recorder.flush()
-                recorder.compact(clock.now().date())
-            except Exception as exc:
-                logger.warning("Recorder compaction error: %s", exc)
 
         # 4. Compile metrics
         fills = list(self._fills)
@@ -1313,14 +1405,28 @@ class SessionRunner:
             if now_ist > session_open:
                 is_partial = True
 
-        if self._tick_to_intent_latencies:
+        if self._feed_delays:
+            sorted_fd = sorted(self._feed_delays)
+            n_fd = len(sorted_fd)
+            p50_fd = float(sorted_fd[int(n_fd * 0.50)])
+            p95_fd = float(sorted_fd[min(n_fd - 1, int(n_fd * 0.95))])
+        else:
+            p50_fd = 0.0
+            p95_fd = 0.0
+
+        if self._platform_latencies:
+            sorted_plat = sorted(self._platform_latencies)
+            n_plat = len(sorted_plat)
+            p50_plat = float(sorted_plat[int(n_plat * 0.50)])
+            p95_plat = float(sorted_plat[min(n_plat - 1, int(n_plat * 0.95))])
+        elif self._tick_to_intent_latencies:
             sorted_lats = sorted(self._tick_to_intent_latencies)
             n_lats = len(sorted_lats)
-            p50 = float(sorted_lats[int(n_lats * 0.50)])
-            p95 = float(sorted_lats[min(n_lats - 1, int(n_lats * 0.95))])
+            p50_plat = float(sorted_lats[int(n_lats * 0.50)])
+            p95_plat = float(sorted_lats[min(n_lats - 1, int(n_lats * 0.95))])
         else:
-            p50 = 0.0
-            p95 = 0.0
+            p50_plat = 0.0
+            p95_plat = 0.0
 
         if self._bar_close_delays:
             sorted_bcds = sorted(self._bar_close_delays)
@@ -1371,12 +1477,17 @@ class SessionRunner:
         journal_growth = max(0, final_journal_bytes - getattr(self, "_initial_journal_bytes", 0))
 
         if self._is_replay:
-            peak_rss_mb = 0.0
+            is_partial = False
             journal_growth = 0
 
         is_fail = self._interrupted or self._feed_halted or bool(self._run_error)
         verdict_base = "FAIL" if is_fail else "PASS"
         verdict = f"{verdict_base} (partial)" if is_partial else verdict_base
+
+        stop_reason = (
+            "interrupt" if self._interrupted else ("error" if self._run_error else "end of session")
+        )
+        logger.info("Session stopped: reason=%s", stop_reason)
 
         if getattr(journal, "_current_run_id", None) is not None:
             if self._run_error:
@@ -1385,11 +1496,13 @@ class SessionRunner:
             journal.append(
                 "latency.stats",
                 {
-                    "p50_ms": round(p50, 2),
-                    "p95_ms": round(p95, 2),
+                    "p50_ms": round(p50_plat, 2),
+                    "p95_ms": round(p95_plat, 2),
+                    "feed_delay_p50_ms": round(p50_fd, 2),
+                    "feed_delay_p95_ms": round(p95_fd, 2),
                     "bar_close_delay_p50_ms": round(p50_bcd, 2),
                     "bar_close_delay_p95_ms": round(p95_bcd, 2),
-                    "samples": len(self._tick_to_intent_latencies),
+                    "samples": len(self._platform_latencies or self._tick_to_intent_latencies),
                 },
             )
             journal.append(
@@ -1440,11 +1553,16 @@ class SessionRunner:
             "signals": self._signals_count,
             "orders": self._orders_count,
             "fills": len(fills),
-            "p50_latency_ms": round(p50, 2),
-            "p95_latency_ms": round(p95, 2),
+            "feed_delay_p50_ms": round(p50_fd, 2),
+            "feed_delay_p95_ms": round(p95_fd, 2),
+            "feed_delay_p95": round(p95_fd, 2),
+            "platform_p50_ms": round(p50_plat, 2),
+            "platform_p95_ms": round(p95_plat, 2),
+            "platform_p95": round(p95_plat, 2),
             "p50_bar_close_delay_ms": round(p50_bcd, 2),
             "p95_bar_close_delay_ms": round(p95_bcd, 2),
             "bar_close_delay_p95_ms": round(p95_bcd, 2),
+            "bar_close_delay_p95": round(p95_bcd, 2),
             "bar_close_delay_ms": round(p95_bcd, 2),
             "peak_rss_mb": peak_rss_mb,
             "recorder_rows": rec_rows,

@@ -99,11 +99,23 @@ def session_report_cmd(
         win_rate = float(metrics.get("win_rate", 0.0))
         gross_win_rate = float(metrics.get("gross_win_rate", win_rate))
         rejects = metrics.get("rejects_by_rule", {})
-        p95_lat = float(metrics.get("p95_latency_ms", 0.0))
-        p95_bcd = float(
+        feed_delay_p95 = float(metrics.get("feed_delay_p95", metrics.get("feed_delay_p95_ms", 0.0)))
+        platform_p95 = float(
             metrics.get(
-                "p95_bar_close_delay_ms",
-                metrics.get("bar_close_delay_p95_ms", metrics.get("bar_close_delay_ms", 0.0)),
+                "platform_p95",
+                metrics.get(
+                    "platform_p95_ms",
+                    metrics.get("p95_latency_ms", 0.0),
+                ),
+            )
+        )
+        bar_close_delay_p95 = float(
+            metrics.get(
+                "bar_close_delay_p95",
+                metrics.get(
+                    "bar_close_delay_p95_ms",
+                    metrics.get("p95_bar_close_delay_ms", metrics.get("bar_close_delay_ms", 0.0)),
+                ),
             )
         )
         peak_rss = float(metrics.get("peak_rss_mb", 0.0))
@@ -125,7 +137,10 @@ def session_report_cmd(
         typer.echo(f"Verdict:              {verdict}")
         if verdict.startswith("FAIL") and fail_reason:
             typer.echo(f"Fail Reason:          {fail_reason}")
-        if is_partial:
+        mode_val = str(metrics.get("mode", "")).lower()
+        if mode_val == "replay" or "_replay_" in target_dir.name:
+            typer.echo("Run Type:             replay")
+        elif is_partial:
             typer.echo("Run Type:             partial (started after session open)")
         typer.echo(f"First Tick (IST):     {first_tick}")
         typer.echo(f"Last Tick (IST):      {last_tick}")
@@ -136,8 +151,9 @@ def session_report_cmd(
         typer.echo(f"Orders:               {orders}")
         typer.echo(f"Fills:                {fills}")
         typer.echo(f"Rejects by Rule:      {rejects if rejects else 'None'}")
-        typer.echo(f"Latency (p95):        {p95_lat:.2f} ms")
-        typer.echo(f"Bar-Close Delay (p95):{p95_bcd:.2f} ms")
+        typer.echo(f"Feed Delay (p95):     {feed_delay_p95:.2f} ms")
+        typer.echo(f"Platform (p95):       {platform_p95:.2f} ms")
+        typer.echo(f"Bar-Close Delay (p95):{bar_close_delay_p95:.2f} ms")
         typer.echo(f"Peak RSS:             {peak_rss:.1f} MB")
         typer.echo(f"Recorder Written:     {rec_rows} rows ({rec_bytes} bytes)")
         if rec_mb_inst_hr > 0 or proj_full_day_mb > 0:

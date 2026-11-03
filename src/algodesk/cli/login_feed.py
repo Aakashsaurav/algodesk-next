@@ -289,8 +289,13 @@ def feed_probe_cmd(
                 _run_feed_probe(broker, inst_ids, seconds, record, live=live, depth=depth)
             )
             try:
+                total_ticks = sum(len(v) for v in lats.values())
                 probe_logger = get_logger("feed_probe")
-                probe_logger.info("Feed probe completed successfully for symbols: %s", raw_syms)
+                probe_logger.info(
+                    "Feed probe completed successfully: received %d tick(s) for symbols: %s",
+                    total_ticks,
+                    raw_syms,
+                )
             except Exception:
                 pass
         except KeyboardInterrupt:

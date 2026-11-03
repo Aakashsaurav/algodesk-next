@@ -194,7 +194,17 @@ class Recorder:
         pdir.mkdir(parents=True, exist_ok=True)
 
         key = (instrument, d_str)
-        seq = self._part_seq.get(key, 0) + 1
+        if key not in self._part_seq:
+            max_s = 0
+            for existing in pdir.glob("part-*.parquet"):
+                try:
+                    num = int(existing.stem.split("-")[1])
+                    if num > max_s:
+                        max_s = num
+                except (IndexError, ValueError):
+                    pass
+            self._part_seq[key] = max_s
+        seq = self._part_seq[key] + 1
         self._part_seq[key] = seq
         filename = f"part-{seq:04d}.parquet"
         file_path = pdir / filename
@@ -251,6 +261,15 @@ class Recorder:
         tables: list[pa.Table] = []
         total_rows = 0
         part_paths = [p.as_posix() for p in parts]
+
+        day_file = date_dir / "day.parquet"
+        if day_file.exists():
+            try:
+                existing_day_table = pq.read_table(day_file)
+                tables.append(existing_day_table)
+                total_rows += len(existing_day_table)
+            except Exception as exc:
+                logger.warning("Could not read existing day.parquet in %s: %s", date_dir, exc)
 
         for p in parts:
             t = pq.read_table(p)

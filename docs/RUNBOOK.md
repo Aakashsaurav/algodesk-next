@@ -214,6 +214,25 @@ To run quietly without periodic console status lines:
 algodesk run demo_paper --quiet
 ```
 
+#### Ending a session gracefully (Ctrl-C)
+To stop an active paper session at any point, send a single interrupt (`Ctrl-C` / SIGINT):
+1. **Graceful shutdown sequence**: The runner catches `SIGINT` and immediately executes graceful finalization:
+   - Recorder flushes in-memory buffer parts and runs compaction into `day.parquet` first, ensuring no ticks are lost or unpersisted.
+   - Any open orders are cleanly cancelled through the order manager.
+   - Positions are marked using the same latest quotes / synthetic marks as post-session.
+   - Results (`metrics.json`, `trades.csv`, `SUMMARY.md`) and session logs are generated cleanly in `results/<run_id>/`.
+2. **Session observability report**:
+   ```bash
+   algodesk session report [RUN_ID]
+   ```
+   Inspects IST timestamps, separate p95 latencies (feed delay, platform, and bar-close delay), closed round trips, gross/net P&L, peak RSS, and journal growth.
+3. **Replay and compare**:
+   Replay the recorded session deterministically and compare paper and replay results:
+   ```bash
+   algodesk replay --dates YYYY-MM-DD --run demo_paper
+   algodesk results compare <paper_run_id> <replay_run_id>
+   ```
+
 #### Live-session second terminal monitoring routine
 During an active paper trading session, open a second terminal (`source scripts/env.sh`):
 1. **Live JSON structured logs**:

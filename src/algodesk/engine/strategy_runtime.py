@@ -192,6 +192,16 @@ class StrategyRuntime:
             side = getattr(spec, "side", "")
             qty = getattr(spec, "qty", 0)
 
+            side_str = str(side.value if hasattr(side, "value") else side)
+            logger.info(
+                "Signal: strategy=%s intent=%s inst=%s side=%s qty=%s",
+                name,
+                type(intent).__name__,
+                inst,
+                side_str,
+                qty,
+            )
+
             if self._journal is not None and hasattr(self._journal, "append"):
                 self._journal.append(
                     "signal",
@@ -200,7 +210,7 @@ class StrategyRuntime:
                         "intent_id": intent_id,
                         "intent_type": type(intent).__name__,
                         "instrument": str(inst) if inst else "",
-                        "side": str(side.value if hasattr(side, "value") else side),
+                        "side": side_str,
                         "qty": int(qty),
                         "ts": now_ts.isoformat(),
                     },
@@ -211,6 +221,15 @@ class StrategyRuntime:
             if self._risk_engine is not None and self._risk_view_builder is not None:
                 view = self._risk_view_builder()
                 decision = self._risk_engine.evaluate(intent, view)
+
+            if decision is not None and not decision.allow:
+                logger.warning(
+                    "Risk rejected signal: strategy=%s intent=%s inst=%s reason=%s",
+                    name,
+                    intent_id,
+                    inst,
+                    decision.reason,
+                )
 
             # 3. Submit to OMS if approved
             if decision is None or decision.allow:

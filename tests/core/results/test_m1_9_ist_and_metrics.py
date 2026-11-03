@@ -537,8 +537,8 @@ def test_session_report_prints_both_latencies_and_recorder_volume(tmp_project: P
     assert res.exit_code == 0
     out = res.output
 
-    # Check both latencies
-    assert "Latency (p95):" in out
+    # Check latencies
+    assert "Platform (p95):" in out
     assert "1.25 ms" in out
     assert "Bar-Close Delay (p95):" in out
     assert "250.50 ms" in out

@@ -215,7 +215,21 @@ def replay_cmd(
     """Replay historical market data deterministically through the engine."""
     state = _get_cli_state(ctx)
     run_name = run or state.run or "demo_paper"
-    parsed_dates = [d.strip() for d in dates.split(",")] if dates else None
+    parsed_dates: list[str] | None = None
+    if dates:
+        parsed_dates = []
+        for d in dates.split(","):
+            d_clean = d.strip()
+            if not d_clean:
+                continue
+            try:
+                datetime.strptime(d_clean, "%Y-%m-%d")
+            except ValueError:
+                raise typer.BadParameter(
+                    f"Invalid date '{d_clean}'. Use YYYY-MM-DD format (e.g. 2026-11-03)",
+                    param_hint="--dates",
+                ) from None
+            parsed_dates.append(d_clean)
 
     with _open_rt(ctx, ensure=True) as rt:
         eff = build_effective(rt.root, run_name=run_name)

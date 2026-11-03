@@ -112,6 +112,9 @@ Short decision records (context, decision, reason) in the order they were taken.
 3. *Data gap semantics*: `data gaps` strictly distinguishes `MISSING` (no coverage record in manifest) from `EMPTY` (session fetched and source returned 0 bars). Series selection accepts `--source` and `--adj` flags, defaulting to the series with the most coverage days in the manifest, and explicitly prints the checked series.
 4. *Flat zero-volume bar quarantine*: `data verify` re-validates stored bars with the current validator rules, identifying phantom flat zero-volume bars on trading days. Passing `--fix` moves offending bars to quarantine (journaled with `data.quarantine`), rewrites or deletes part files on disk, and updates manifest coverage records.
 
+**ADR-051 M1 close: replay determinism, append-only recording, and latency separation.** Recorder parts are append-only; compaction merges existing `day.parquet` with new parts rather than overwriting earlier intraday sessions. Session interrupt (Ctrl-C) fully flushes and compacts the recorder before writing final results. Final marking uses identical quotes across paper and replay. Session reports print feed delay, platform latency, and bar-close delay p95 separately without the legacy combined metric. CLI date options fail with exit code 2 and explicit `YYYY-MM-DD` errors.
+
+
 
 
 

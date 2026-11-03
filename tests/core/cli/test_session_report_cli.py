@@ -93,8 +93,10 @@ def test_session_report_prints_all_14_required_fields(tmp_project: Path, runner:
     assert "Fills:" in out
     # 9. Rejects by rule
     assert "Rejects by Rule:" in out
-    # 10. Latency (p95)
-    assert "Latency (p95):" in out
+    # 10. Latencies: Feed delay, Platform and Bar-Close Delay
+    assert "Feed Delay (p95):" in out
+    assert "Platform (p95):" in out
+    assert "Bar-Close Delay (p95):" in out
     # 11. Peak RSS
     assert "Peak RSS:" in out
     # 12. Recorder rows & bytes
