@@ -145,7 +145,7 @@ def test_cli_doctor_runs_fifteen_checks(runner: CliRunner) -> None:
     root = find_project_root()
     res = runner.invoke(app, ["--root", str(root), "doctor"])
     assert res.exit_code == 0
-    assert "DOCTOR: 19 passed, 0 warning, 0 critical" in res.output
+    assert "DOCTOR: 21 passed, 0 warning, 0 critical" in res.output
 
 
 def test_cli_doctor_check_ids_include_devtools(runner: CliRunner) -> None:
@@ -154,7 +154,7 @@ def test_cli_doctor_check_ids_include_devtools(runner: CliRunner) -> None:
     assert res.exit_code == 0
     data = json.loads(res.output)
     check_ids = [r["id"] for r in data["results"]]
-    assert len(check_ids) == 19
+    assert len(check_ids) == 21
     assert "disk.ticks_projection" in check_ids
     assert "budget.dependencies" in check_ids
     assert "budget.size" in check_ids
@@ -163,6 +163,8 @@ def test_cli_doctor_check_ids_include_devtools(runner: CliRunner) -> None:
     assert "secrets.scan" in check_ids
     assert "data.verify_quick" in check_ids
     assert "data.quarantine" in check_ids
+    assert "calendar.coverage_horizon" in check_ids
+    assert "data.closure_disagreements" in check_ids
     assert "data.warmup_source" in check_ids
 
 

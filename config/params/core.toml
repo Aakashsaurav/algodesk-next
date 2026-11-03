@@ -168,3 +168,15 @@ scope = "global"
 tighten = "down"
 description = "Maximum word count permitted in docs/STATUS.md"
 owner = "core"
+
+[[param]]
+name = "calendar.warn_days"
+type = "int"
+default = 30
+min = 1
+max = 365
+unit = "days"
+scope = "global"
+tighten = "down"
+description = "Days before calendar coverage expiration when doctor issues warning"
+owner = "core"

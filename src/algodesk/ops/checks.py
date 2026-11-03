@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from algodesk.api.checks import CheckResult, DoctorCheck, Severity
 from algodesk.api.errors import ConfigError
+from algodesk.api.kinds import Mode, PluginKind
 from algodesk.journal.store import unclosed_runs, verify_journal
 from algodesk.params.store import SCHEMA_VERSION
 from algodesk.registry.base_checks import registry_doctor_checks
@@ -552,6 +553,92 @@ def _check_data_warmup_source(runtime: Runtime) -> CheckResult:
     )
 
 
+def _check_calendar_coverage_horizon(runtime: Runtime) -> CheckResult:
+    from datetime import date
+
+    warn_days = 30
+    if runtime.params is not None:
+        try:
+            val = runtime.params.get("calendar.warn_days")
+            if val is not None:
+                warn_days = int(val)
+        except Exception:
+            pass
+
+    today = date.today()
+    cal_data_dir = runtime.root / "plugins" / "calendars" / "exchange" / "data"
+    if not cal_data_dir.is_dir():
+        return CheckResult(ok=True, message="No calendar data directory found")
+
+    expiring: list[str] = []
+    for f in sorted(cal_data_dir.glob("*.toml")):
+        try:
+            with open(f, "rb") as fh:
+                data = tomllib.load(fh)
+            c_end = data.get("coverage_end")
+            exch = data.get("exchange", f.stem)
+            if isinstance(c_end, date):
+                days_left = (c_end - today).days
+                if days_left <= warn_days:
+                    expiring.append(f"{exch} ({days_left}d left)")
+        except Exception:
+            pass
+
+    if expiring:
+        exp_list = ", ".join(expiring)
+        return CheckResult(
+            ok=False,
+            severity=Severity.WARNING,
+            message=f"Calendar coverage horizon warning: {exp_list} (<= {warn_days} days)",
+            fix="Update calendar data TOML with upcoming year holidays",
+        )
+    return CheckResult(
+        ok=True,
+        message=f"Calendar coverage valid for all exchanges (> {warn_days} days remaining)",
+    )
+
+
+def _check_market_closure_disagreements(runtime: Runtime) -> CheckResult:
+    data_dir = runtime.paths.data
+    m_path = data_dir / "state" / "data_manifest.db"
+    if not m_path.exists() and (data_dir / "manifest.db").exists():
+        m_path = data_dir / "manifest.db"
+    if not m_path.exists():
+        return CheckResult(ok=True, message="No data manifest found")
+
+    try:
+        from algodesk.data.closures import check_market_closure_disagreements
+        from algodesk.data.manifest import DataManifest
+        from algodesk.ops.context import build_context
+
+        manifest = DataManifest(m_path)
+        p_ctx = build_context(Mode.RESEARCH, run_id="doctor_check_closures")
+        total = 0
+        for exch in ("NSE", "BSE", "MCX"):
+            cal_plugin = None
+            try:
+                cal_plugin = runtime.plugins.create(
+                    PluginKind.CALENDAR, "exchange", config={"exchange": exch.lower()}, ctx=p_ctx
+                )
+            except Exception:
+                pass
+            from algodesk.api.protocols import Calendar
+
+            cal_typed: Calendar | None = cal_plugin if isinstance(cal_plugin, Calendar) else None
+            total += len(check_market_closure_disagreements(manifest, cal_typed, exch))
+
+        if total > 0:
+            return CheckResult(
+                ok=False,
+                severity=Severity.WARNING,
+                message=f"{total} unresolved market closure disagreement(s) found",
+                fix="Run 'algodesk data closures check' and update calendar data",
+            )
+    except Exception:
+        pass
+    return CheckResult(ok=True, message="No unresolved market closure disagreements")
+
+
 def _build_data_doctor_checks(runtime: Runtime) -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -568,6 +655,16 @@ def _build_data_doctor_checks(runtime: Runtime) -> list[DoctorCheck]:
             id="data.warmup_source",
             severity=Severity.CRITICAL,
             run=lambda: _check_data_warmup_source(runtime),
+        ),
+        DoctorCheck(
+            id="calendar.coverage_horizon",
+            severity=Severity.WARNING,
+            run=lambda: _check_calendar_coverage_horizon(runtime),
+        ),
+        DoctorCheck(
+            id="data.closure_disagreements",
+            severity=Severity.WARNING,
+            run=lambda: _check_market_closure_disagreements(runtime),
         ),
     ]
 

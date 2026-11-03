@@ -61,6 +61,7 @@ def calendar_holidays(
         ..., "--exchange", "-e", help="Exchange code (e.g. nse, bse, mcx)"
     ),
     year: int | None = typer.Option(None, "--year", "-y", help="Filter holidays by year"),
+    all_years: bool = typer.Option(False, "--all", help="Show holidays across all covered years"),
 ) -> None:
     """List declared market holidays for an exchange."""
     with _open_rt(ctx, ensure=False) as rt:
@@ -68,11 +69,13 @@ def calendar_holidays(
         cal: Any = rt.plugins.create(
             "calendar", "exchange", config={"exchange": exchange}, ctx=p_ctx
         )
-        h_list = cal.holidays(year=year)
+        from datetime import date
+
+        target_year = None if all_years else (year or date.today().year)
+        h_list = cal.holidays(year=target_year)
         if not h_list:
-            typer.echo(
-                f"No holidays found for {exchange.upper()}" + (f" in {year}" if year else "")
-            )
+            year_suffix = f" in {target_year}" if target_year else ""
+            typer.echo(f"No holidays found for {exchange.upper()}{year_suffix}")
             return
         headers = ["DATE", "NAME", "CLOSED"]
         rows: list[list[str]] = []

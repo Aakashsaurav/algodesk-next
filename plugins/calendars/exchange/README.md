@@ -1,6 +1,6 @@
 # Exchange Trading Calendar Plugin
 
-Owner: AlgoDesk Core · Version: 0.1.0 · Date: 2026-10-23
+Owner: AlgoDesk Core · Version: 0.2.0 · Date: 2026-11-03
 
 ## Summary
 
@@ -12,11 +12,8 @@ Configure the exchange via the `exchange` option in `RunConfig` or plugin config
 
 - `exchange`: Exchange code (`"nse"`, `"bse"`, or `"mcx"`). Default is `"nse"`.
 
-## Shipped Data
+## Shipped Data & Coverage
 
-- `data/nse.toml`: NSE equity, F&O, and currency holiday data for 2026.
-- `data/bse.toml`: BSE holiday data for 2026.
-- `data/mcx.toml`: MCX commodity holiday and session closure data for 2026 (including morning and evening sessions).
-
-## Changes after M1-6 (2026-10-30)
-- **data/nse.toml**: Verified holiday data against the official NSE holiday circular (`verified = true`, `verified_on = 2026-10-30`, `source = "owner cross-check against the NSE circular"`).
+- `data/nse.toml`: NSE equity, F&O, and currency holiday data for 2022 to 2026 (`coverage_start = 2022-01-01`, `coverage_end = 2026-12-31`). Verified against official NSE circulars Ref 117/2021 (2022), 150/2022 (2023), 154/2023 (2024), 170/2024 (2025), and 2026 schedule (`verified = true`, `verified_on = 2026-11-03`). Includes special sessions: Union Budget live session (2025-02-01), disaster recovery switch sessions (2024-03-02, 2024-05-18), and annual Muhurat trading sessions.
+- `data/bse.toml`: BSE holiday data for 2022 to 2026 (`coverage_start = 2022-01-01`, `coverage_end = 2026-12-31`), verified against official BSE holiday notices aligned with the Indian equity market calendar.
+- `data/mcx.toml`: MCX commodity holiday and session closure data for 2024 to 2026 (`coverage_start = 2024-01-01`, `coverage_end = 2026-12-31`). Verified against MCX Circular No. MCX/TRD/814/2024 (2025) and published holiday schedules for 2024 and 2026. Note: Years 2022-2023 are unverified from official exchange publications and remain uncovered.

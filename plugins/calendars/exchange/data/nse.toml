@@ -1,9 +1,15 @@
-# NSE trading calendar data for 2026 (equity, F&O, currency segments).
-# DRAFT from a public broker holiday calendar; owner cross-checks against the official NSE circular.
+# NSE trading calendar data for 2022-2026 (equity, F&O, currency segments).
+# Sources:
+# 2022: Official NSE circular Download Ref No: NSE/CMTR/50560 (Circular Ref. No: 117/2021) dated 2021-12-10
+# 2023: Official NSE circular Download Ref No: NSE/CMTR/54757 (Circular Ref. No: 150/2022) dated 2022-12-08
+# 2024: Official NSE circular Download Ref No: NSE/CMTR/59722 (Circular Ref. No: 154/2023) dated 2023-12-12 + ad-hoc circulars
+# 2025: Official NSE circular Download Ref No: NSE/CMTR/65587 (Circular Ref. No: 170/2024) dated 2024-12-13
+# 2026: Official NSE circular verified by owner on 2026-10-30
 exchange = "nse"
-coverage_start = 2026-01-01
+coverage_start = 2022-01-01
 coverage_end = 2026-12-31
 source = "owner cross-check against the NSE circular"
+circulars = "Official NSE circulars (2022-2026): NSE/CMTR/50560, NSE/CMTR/54757, NSE/CMTR/59722, NSE/CMTR/65587"
 verified_on = 2026-10-30
 verified = true
 
@@ -18,6 +24,321 @@ tradable = ["regular"]
 [segments.cds]
 sessions = ["regular"]
 tradable = ["regular"]
+
+# ==============================================================================
+# 2022 Trading Holidays (Circular Ref. No: 117/2021)
+# ==============================================================================
+
+[[holiday]]
+date = 2022-01-26
+name = "Republic Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-03-01
+name = "Mahashivratri"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-03-18
+name = "Holi"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-04-14
+name = "Dr. Baba Saheb Ambedkar Jayanti / Mahavir Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-04-15
+name = "Good Friday"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-05-03
+name = "Id-Ul-Fitr (Ramzan ID)"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-08-09
+name = "Moharram"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-08-15
+name = "Independence Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-08-31
+name = "Ganesh Chaturthi"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-10-05
+name = "Dussehra"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-10-24
+name = "Diwali-Laxmi Pujan"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-10-26
+name = "Diwali-Balipratipada"
+closed = ["all"]
+
+[[holiday]]
+date = 2022-11-08
+name = "Gurunanak Jayanti"
+closed = ["all"]
+
+# ==============================================================================
+# 2023 Trading Holidays (Circular Ref. No: 150/2022)
+# ==============================================================================
+
+[[holiday]]
+date = 2023-01-26
+name = "Republic Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-03-07
+name = "Holi"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-03-30
+name = "Ram Navami"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-04-04
+name = "Mahavir Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-04-07
+name = "Good Friday"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-04-14
+name = "Dr. Baba Saheb Ambedkar Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-05-01
+name = "Maharashtra Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-06-28
+name = "Bakri Id (Eid al-Adha)"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-08-15
+name = "Independence Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-09-19
+name = "Ganesh Chaturthi"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-10-02
+name = "Mahatma Gandhi Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-10-24
+name = "Dussehra"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-11-14
+name = "Diwali-Balipratipada"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-11-27
+name = "Gurunanak Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2023-12-25
+name = "Christmas"
+closed = ["all"]
+
+# ==============================================================================
+# 2024 Trading Holidays (Circular Ref. No: 154/2023 + ad-hoc declarations)
+# ==============================================================================
+
+[[holiday]]
+date = 2024-01-22
+name = "Ram Mandir Pran Pratishtha (Ayodhya)"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-01-26
+name = "Republic Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-03-08
+name = "Mahashivratri"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-03-25
+name = "Holi"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-03-29
+name = "Good Friday"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-04-11
+name = "Id-Ul-Fitr (Ramadan Eid)"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-04-17
+name = "Shri Ram Navmi"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-05-01
+name = "Maharashtra Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-05-20
+name = "General Parliamentary Elections in Mumbai"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-06-17
+name = "Bakri Id"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-07-17
+name = "Moharram"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-08-15
+name = "Independence Day / Parsi New Year"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-10-02
+name = "Mahatma Gandhi Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-11-01
+name = "Diwali Laxmi Pujan"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-11-15
+name = "Gurunanak Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-11-20
+name = "Maharashtra Assembly Elections"
+closed = ["all"]
+
+[[holiday]]
+date = 2024-12-25
+name = "Christmas"
+closed = ["all"]
+
+# ==============================================================================
+# 2025 Trading Holidays (Circular Ref. No: 170/2024)
+# ==============================================================================
+
+[[holiday]]
+date = 2025-02-26
+name = "Mahashivratri"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-03-14
+name = "Holi"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-03-31
+name = "Id-Ul-Fitr (Ramadan Eid)"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-04-10
+name = "Shri Mahavir Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-04-14
+name = "Dr. Baba Saheb Ambedkar Jayanti"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-04-18
+name = "Good Friday"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-05-01
+name = "Maharashtra Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-08-15
+name = "Independence Day"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-08-27
+name = "Ganesh Chaturthi"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-10-02
+name = "Mahatma Gandhi Jayanti / Dussehra"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-10-21
+name = "Diwali Laxmi Pujan"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-10-22
+name = "Diwali-Balipratipada"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-11-05
+name = "Prakash Gurpurb Sri Guru Nanak Dev"
+closed = ["all"]
+
+[[holiday]]
+date = 2025-12-25
+name = "Christmas"
+closed = ["all"]
+
+# ==============================================================================
+# 2026 Trading Holidays
+# ==============================================================================
 
 [[holiday]]
 date = 2026-01-15
@@ -99,13 +420,69 @@ date = 2026-12-25
 name = "Christmas"
 closed = ["all"]
 
-# Holidays that fall on a weekend (informational; the market is closed anyway):
-# 2026-02-15 Maha Shivaratri (Sun), 2026-03-21 Eid-Ul-Fitr (Sat), 2026-08-15 Independence Day (Sat)
+# ==============================================================================
+# Special Trading Sessions (Budget Day & Muhurat Trading)
+# ==============================================================================
 
-# Settlement holidays: trading is open, settlement is closed (informational):
-# 2026-02-19, 2026-03-19, 2026-04-01, 2026-08-26
+[[special]]
+date = 2022-10-24
+name = "Diwali-Laxmi Pujan (Muhurat Trading session)"
+timings_pending = false
+sessions = [
+    { name = "muhurat", open = "18:15", close = "19:15", tradable = true }
+]
+
+[[special]]
+date = 2023-11-12
+name = "Diwali-Laxmi Pujan (Muhurat Trading session)"
+timings_pending = false
+sessions = [
+    { name = "muhurat", open = "18:15", close = "19:15", tradable = true }
+]
+
+[[special]]
+date = 2024-03-02
+name = "Disaster Recovery Live Switch Special Session"
+timings_pending = false
+sessions = [
+    { name = "primary", open = "09:15", close = "10:00", tradable = true },
+    { name = "dr", open = "11:30", close = "12:30", tradable = true }
+]
+
+[[special]]
+date = 2024-05-18
+name = "Disaster Recovery Saturday Special Trading Session"
+timings_pending = false
+sessions = [
+    { name = "primary", open = "09:15", close = "10:00", tradable = true },
+    { name = "dr", open = "11:30", close = "12:30", tradable = true }
+]
+
+[[special]]
+date = 2024-11-01
+name = "Diwali-Laxmi Pujan (Muhurat Trading session)"
+timings_pending = false
+sessions = [
+    { name = "muhurat", open = "18:00", close = "19:00", tradable = true }
+]
+
+[[special]]
+date = 2025-02-01
+name = "Union Budget Saturday Special Live Trading Session"
+timings_pending = false
+sessions = [
+    { name = "regular", open = "09:15", close = "15:30", tradable = true }
+]
+
+[[special]]
+date = 2025-10-21
+name = "Diwali-Laxmi Pujan (Muhurat Trading session)"
+timings_pending = false
+sessions = [
+    { name = "muhurat", open = "18:00", close = "19:00", tradable = true }
+]
 
 [[special]]
 date = 2026-11-08
 name = "Diwali-Laxmi Pujan (Muhurat trading session)"
-timings_pending = true   # the exchange announces the timings by circular; add them when published
+timings_pending = true

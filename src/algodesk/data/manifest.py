@@ -9,6 +9,7 @@ import sqlite3
 import threading
 from collections.abc import Sequence
 from dataclasses import astuple, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +106,15 @@ class QuarantineRecord:
     status: str = "quarantined"
 
 
+@dataclass(frozen=True, slots=True)
+class MarketClosureRecord:
+    exchange: str
+    day: str
+    kind: str
+    evidence: str
+    created: str
+
+
 class DataManifest:
     """SQLite-backed metadata catalog with ACID transaction safety."""
 
@@ -152,9 +162,15 @@ class DataManifest:
             "CREATE TABLE IF NOT EXISTS instruments "
             "(id TEXT PRIMARY KEY, exchange TEXT NOT NULL, segment TEXT NOT NULL, "
             "trading_symbol TEXT NOT NULL, kind TEXT NOT NULL, underlying TEXT, expiry TEXT);\n"
+            "CREATE TABLE IF NOT EXISTS market_closures "
+            "(exchange TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL, "
+            "evidence TEXT NOT NULL, created TEXT NOT NULL, "
+            "PRIMARY KEY (exchange, day));\n"
             "CREATE INDEX IF NOT EXISTS idx_files_inst_date ON files(instrument, date);\n"
             "CREATE INDEX IF NOT EXISTS idx_files_kind_state ON files(kind, state);\n"
             "CREATE INDEX IF NOT EXISTS idx_inst_sym ON instruments(trading_symbol);\n"
+            "CREATE INDEX IF NOT EXISTS idx_market_closures_exchange_day "
+            "ON market_closures(exchange, day);\n"
         )
         if current_v < 2:
             cur.executescript(
@@ -634,6 +650,82 @@ class DataManifest:
         query += " ORDER BY created DESC"
         cur = self._conn.execute(query, params)
         return [QuarantineRecord(**dict(r)) for r in cur.fetchall()]
+
+    def record_market_closure(
+        self,
+        exchange: str,
+        day: str,
+        kind: str,
+        evidence: str = "",
+        created: str | None = None,
+    ) -> None:
+        """Insert or replace a market closure entry."""
+        created_str = created or datetime.now(UTC).isoformat()
+        try:
+            self._begin_immediate()
+            self._conn.execute(
+                "INSERT OR REPLACE INTO market_closures "
+                "(exchange, day, kind, evidence, created) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (exchange.upper(), day, kind, evidence, created_str),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
+    def get_market_closure(self, exchange: str, day: str) -> MarketClosureRecord | None:
+        """Get market closure record for a specific exchange and date."""
+        cur = self._conn.execute(
+            "SELECT exchange, day, kind, evidence, created FROM market_closures "
+            "WHERE exchange = ? AND day = ?",
+            (exchange.upper(), day),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return MarketClosureRecord(**dict(row))
+
+    def list_market_closures(
+        self,
+        exchange: str | None = None,
+        start_day: str | None = None,
+        end_day: str | None = None,
+        kind: str | None = None,
+    ) -> list[MarketClosureRecord]:
+        """List market closures with optional exchange, day range, and kind filters."""
+        query = "SELECT exchange, day, kind, evidence, created FROM market_closures WHERE 1=1"
+        params: list[Any] = []
+        if exchange:
+            query += " AND exchange = ?"
+            params.append(exchange.upper())
+        if start_day:
+            query += " AND day >= ?"
+            params.append(start_day)
+        if end_day:
+            query += " AND day <= ?"
+            params.append(end_day)
+        if kind:
+            query += " AND kind = ?"
+            params.append(kind)
+        query += " ORDER BY day ASC"
+        cur = self._conn.execute(query, params)
+        return [MarketClosureRecord(**dict(r)) for r in cur.fetchall()]
+
+    def delete_market_closure(self, exchange: str, day: str) -> bool:
+        """Delete a market closure record by exchange and day."""
+        try:
+            self._begin_immediate()
+            cur = self._conn.execute(
+                "DELETE FROM market_closures WHERE exchange = ? AND day = ?",
+                (exchange.upper(), day),
+            )
+            deleted = cur.rowcount > 0
+            self._commit()
+            return deleted
+        except Exception:
+            self._rollback()
+            raise
 
     def close(self) -> None:
         """Close SQLite database connection."""

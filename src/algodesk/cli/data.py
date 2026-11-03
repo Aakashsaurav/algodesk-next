@@ -16,7 +16,8 @@ import typer
 
 from algodesk.api import ActionRecord, Bar, InstrumentId, SeriesKey
 from algodesk.api.errors import ConfigError, DataError
-from algodesk.api.kinds import Mode
+from algodesk.api.kinds import Mode, PluginKind
+from algodesk.cli.closures import closures_app
 from algodesk.cli.common import _open_rt, format_table, handle_cli_errors
 from algodesk.cli.secrets import _resolve_secrets_provider
 from algodesk.data.actions_store import ActionsStore, CorporateActionsManager
@@ -84,6 +85,7 @@ actions_app.add_typer(override_app, name="override")
 data_app.add_typer(data_trash_app, name="trash")
 data_app.add_typer(quarantine_app, name="quarantine")
 data_app.add_typer(session_bars_app, name="session-bars")
+data_app.add_typer(closures_app, name="closures")
 
 
 def _get_manifest(rt: Runtime) -> DataManifest:
@@ -135,8 +137,25 @@ def _build_data_service(rt: Runtime, source: str = "yfinance") -> DataService:
         journal=getattr(rt, "journal", None),
     )
     j = getattr(rt, "journal", None)
+    cal: Any = None
+    try:
+        cal = rt.plugins.create(
+            PluginKind.CALENDAR,
+            "exchange",
+            config={"exchange": "nse"},
+            ctx=p_ctx,
+        )
+    except Exception:
+        pass
     return DataService(
-        {source: broker}, source, store, None, manifests=manifests, params=rt.params, journal=j
+        {source: broker},
+        source,
+        store,
+        None,
+        manifests=manifests,
+        calendar=cal,
+        params=rt.params,
+        journal=j,
     )
 
 
@@ -1007,7 +1026,20 @@ def data_gaps(
         )
         end_d = date.fromisoformat(to_date) if to_date else date.today()
 
-        cov_index = CoverageIndex(manifest=manifest)
+        cal: Any = None
+        try:
+            sec_prov = _resolve_secrets_provider(rt)
+            p_ctx = build_context(Mode.RESEARCH, run_id="data_gaps", secrets=sec_prov)
+            cal = rt.plugins.create(
+                PluginKind.CALENDAR,
+                "exchange",
+                config={"exchange": "nse"},
+                ctx=p_ctx,
+            )
+        except Exception:
+            pass
+
+        cov_index = CoverageIndex(manifest=manifest, calendar=cal)
         all_gaps: list[dict[str, str]] = []
         datasets_list = manifest.list_datasets(kind="bars")
 
@@ -1051,12 +1083,20 @@ def data_gaps(
                     }
                 )
 
+        closure_counts = cov_index.last_closure_counts
+        counts_msg = (
+            f"Closures: {closure_counts['closed_calendar']} closed (calendar), "
+            f"{closure_counts['closed_inferred']} closed (inferred), "
+            f"{closure_counts['special_sessions']} special session(s)."
+        )
+
         if json_out:
             typer.echo(json.dumps(all_gaps, indent=2))
             return
 
         if not all_gaps:
             typer.echo(f"No gaps found for '{selector}' between {start_d} and {end_d}.")
+            typer.echo(counts_msg)
             return
 
         headers = ["INSTRUMENT", "DAY (IST)", "STATUS", "REASON"]
@@ -1065,6 +1105,7 @@ def data_gaps(
             for g in all_gaps
         ]
         typer.echo(format_table(headers, rows))
+        typer.echo(counts_msg)
 
 
 @quarantine_app.command("list")

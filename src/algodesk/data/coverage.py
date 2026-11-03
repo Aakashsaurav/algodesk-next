@@ -12,7 +12,7 @@ from algodesk.data.manifest import DataManifest
 class CoverageIndex:
     """Evaluates trading day completeness, settlement margins, and data gaps."""
 
-    __slots__ = ("_calendar", "_manifest", "_settle_delay_m")
+    __slots__ = ("_calendar", "_manifest", "_settle_delay_m", "_last_closure_counts")
 
     def __init__(
         self,
@@ -23,6 +23,11 @@ class CoverageIndex:
         self._manifest = manifest
         self._calendar = calendar
         self._settle_delay_m = settle_minutes if settle_minutes is not None else 0
+        self._last_closure_counts: dict[str, int] = {
+            "closed_calendar": 0,
+            "closed_inferred": 0,
+            "special_sessions": 0,
+        }
 
     @property
     def calendar(self) -> Calendar | None:
@@ -31,6 +36,18 @@ class CoverageIndex:
     @property
     def settle_minutes(self) -> int:
         return self._settle_delay_m
+
+    @property
+    def last_closure_counts(self) -> dict[str, int]:
+        return dict(self._last_closure_counts)
+
+    def _resolve_exchange(self, dataset_id: str) -> str:
+        u = dataset_id.upper()
+        if "BSE" in u:
+            return "BSE"
+        if "MCX" in u:
+            return "MCX"
+        return "NSE"
 
     def evaluate_day_status(
         self,
@@ -41,16 +58,34 @@ class CoverageIndex:
     ) -> CoverageStatus:
         """Evaluate status (COMPLETE, PARTIAL, CLOSED, EMPTY) against calendar and settle margin."""
         now_utc = as_of or datetime.now(UTC)
+        exch = self._resolve_exchange(dataset_id)
+        day_str = day.isoformat()
+
+        # Check market closures in manifest first
+        if hasattr(self._manifest, "get_market_closure"):
+            closure = self._manifest.get_market_closure(exch, day_str)
+            if closure is not None:
+                if closure.kind in ("inferred", "calendar"):
+                    return CoverageStatus.CLOSED
+                if closure.kind == "special":
+                    # Special trading session is open
+                    pass
 
         # 1. Check if calendar marks this day closed
         if self._calendar is not None:
-            is_open = self._calendar.is_trading_day(day)
+            try:
+                is_open = self._calendar.is_trading_day(day)
+            except Exception:
+                is_open = day.weekday() < 5
             if not is_open:
                 return CoverageStatus.CLOSED
-            sess_list = self._calendar.sessions(day)
-            if not sess_list:
-                return CoverageStatus.CLOSED
-            session_end = sess_list[-1].end
+            try:
+                sess_list = self._calendar.sessions(day)
+                if not sess_list:
+                    return CoverageStatus.CLOSED
+                session_end = sess_list[-1].end
+            except Exception:
+                session_end = datetime(day.year, day.month, day.day, 10, 0, tzinfo=UTC)
         else:
             if day.weekday() >= 5:
                 return CoverageStatus.CLOSED
@@ -85,18 +120,51 @@ class CoverageIndex:
             )
         }
 
+        exch = self._resolve_exchange(dataset_id)
+        closures_map: dict[str, str] = {}
+        if hasattr(self._manifest, "list_market_closures"):
+            for mc in self._manifest.list_market_closures(
+                exchange=exch,
+                start_day=start_day.isoformat(),
+                end_day=end_day.isoformat(),
+            ):
+                closures_map[mc.day] = mc.kind
+
         gaps: list[DataGap] = []
         cur = start_day
         one_day = timedelta(days=1)
 
+        closed_cal_count = 0
+        closed_inf_count = 0
+        special_count = 0
+
         while cur <= end_day:
             day_str = cur.isoformat()
+            closure_kind = closures_map.get(day_str)
+
             is_closed = False
-            if self._calendar is not None:
-                if not self._calendar.is_trading_day(cur):
-                    is_closed = True
-            elif cur.weekday() >= 5:
+            if closure_kind == "special":
+                special_count += 1
+                is_closed = False
+            elif closure_kind == "inferred":
+                closed_inf_count += 1
                 is_closed = True
+            elif closure_kind == "calendar":
+                closed_cal_count += 1
+                is_closed = True
+            else:
+                if self._calendar is not None:
+                    try:
+                        if not self._calendar.is_trading_day(cur):
+                            is_closed = True
+                            closed_cal_count += 1
+                    except Exception:
+                        if cur.weekday() >= 5:
+                            is_closed = True
+                            closed_cal_count += 1
+                elif cur.weekday() >= 5:
+                    is_closed = True
+                    closed_cal_count += 1
 
             if not is_closed:
                 rec = cov_records.get(day_str)
@@ -126,5 +194,11 @@ class CoverageIndex:
                     )
 
             cur += one_day
+
+        self._last_closure_counts = {
+            "closed_calendar": closed_cal_count,
+            "closed_inferred": closed_inf_count,
+            "special_sessions": special_count,
+        }
 
         return gaps

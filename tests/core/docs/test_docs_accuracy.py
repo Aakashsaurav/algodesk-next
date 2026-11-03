@@ -19,6 +19,8 @@ ALLOWED_NON_PARAM_NAMES = {
     "config.valid": "Doctor diagnostic check ID for configuration validity",
     "env.isolated": "Doctor diagnostic check ID for workspace isolation",
     "plugins.conformance": "Doctor diagnostic check ID for plugin conformance",
+    "calendar.coverage_horizon": "Doctor diagnostic check ID for calendar coverage horizon",
+    "data.closure_disagreements": "Doctor diagnostic check ID for market closure disagreements",
     "check.sh": "Shell quality check script filename",
     "env.sh": "Environment setup script filename",
     "metrics.json": "Execution results metrics filename",

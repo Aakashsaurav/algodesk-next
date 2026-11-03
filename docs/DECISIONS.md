@@ -114,6 +114,14 @@ Short decision records (context, decision, reason) in the order they were taken.
 
 **ADR-051 M1 close: replay determinism, append-only recording, and latency separation.** Recorder parts are append-only; compaction merges existing `day.parquet` with new parts rather than overwriting earlier intraday sessions. Session interrupt (Ctrl-C) fully flushes and compacts the recorder before writing final results. Final marking uses identical quotes across paper and replay. Session reports print feed delay, platform latency, and bar-close delay p95 separately without the legacy combined metric. CLI date options fail with exit code 2 and explicit `YYYY-MM-DD` errors.
 
+**ADR-052 Market closure inference, multi-year trading calendar, and special sessions handling.** Holiday closures and special trading sessions are tracked systematically to eliminate spurious EMPTY data gaps while maintaining deterministic calendar validation:
+1. *Market closures manifest table*: Manifest table `market_closures(exchange, day, kind, evidence, created)` tracks data-driven market closures (`inferred`) and special trading sessions (`special`).
+2. *Multi-symbol consensus inference*: CLI command `algodesk data closures infer` checks 1d bars across liquid sample symbols (`data.closure_sample`). A calendar-open day is marked CLOSED (inferred) only when every sample symbol returns zero bars; a single missing symbol is never a closure. When at least `data.closure_min_symbols` return bars on a weekend or holiday, the day is marked as a special trading session (e.g. Budget Saturday 2025-02-01 or Diwali Muhurat trading).
+3. *GapPlanner and CoverageIndex integration*: Inferred closures are recognized as CLOSED, preventing false EMPTY gaps in `data gaps` and redundant fetch work in `GapPlanner.plan()`. Special sessions are treated as valid open trading days.
+4. *Multi-year calendar coverage*: NSE and BSE calendar files cover years 2022 through 2026 citing official exchange circulars (NSE/CMTR/50560, 54757, 59722, 65587), Ayodhya holiday, and election days. Unverified years remain uncovered.
+5. *Disagreement audits and doctor checks*: `algodesk data closures check` audits discrepancies between calendar declarations and data evidence. Doctor check `calendar.coverage_horizon` warns when calendar coverage expiration falls within `calendar.warn_days` (default 60 days), and `data.closure_disagreements` warns when unresolved closure conflicts exist.
+
+
 
 
 

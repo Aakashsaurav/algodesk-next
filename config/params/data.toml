@@ -271,3 +271,24 @@ scope = "global"
 tighten = "down"
 description = "Audit tolerance percentage comparing derived adjusted series with source-adjusted series"
 owner = "data"
+
+[[param]]
+name = "data.closure_sample"
+type = "str"
+default = "NSE:EQ:RELIANCE,NSE:EQ:TCS,NSE:EQ:INFY,NSE:EQ:HDFCBANK,NSE:EQ:ICICIBANK"
+scope = "global"
+tighten = "none"
+description = "Default sample of liquid instruments used to infer market closures"
+owner = "data"
+
+[[param]]
+name = "data.closure_min_symbols"
+type = "int"
+default = 3
+min = 1
+max = 10
+unit = "symbols"
+scope = "global"
+tighten = "down"
+description = "Minimum number of symbols reporting bars on a non-trading day to infer a special trading session"
+owner = "data"

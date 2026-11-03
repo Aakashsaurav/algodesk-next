@@ -76,6 +76,9 @@ class FetchPlan:
     complete_days: tuple[date, ...]
     closed_days: tuple[date, ...]
     unavailable_days: tuple[date, ...]
+    closed_calendar_days: tuple[date, ...] = ()
+    closed_inferred_days: tuple[date, ...] = ()
+    special_session_days: tuple[date, ...] = ()
 
     @property
     def has_work(self) -> bool:
@@ -158,25 +161,65 @@ class GapPlanner:
         missing: list[date] = []
         complete: list[date] = []
         closed: list[date] = []
+        closed_calendar: list[date] = []
+        closed_inferred: list[date] = []
+        special_sessions: list[date] = []
         unavailable: list[date] = []
+
+        inst_str = str(key.instrument).upper()
+        inst_exch = "NSE"
+        if inst_str.startswith("BSE"):
+            inst_exch = "BSE"
+        elif inst_str.startswith("MCX"):
+            inst_exch = "MCX"
+        elif hasattr(key.instrument, "exchange") and key.instrument.exchange:
+            inst_exch = str(key.instrument.exchange).upper()
+
+        closures_map: dict[str, str] = {}
+        if manifest is not None and hasattr(manifest, "list_market_closures"):
+            for mc in manifest.list_market_closures(
+                exchange=inst_exch,
+                start_day=start_day.isoformat(),
+                end_day=end_day.isoformat(),
+            ):
+                closures_map[mc.day] = mc.kind
 
         cur = start_day
         one_day = timedelta(days=1)
         while cur <= end_day:
             day_str = cur.isoformat()
+            closure_kind = closures_map.get(day_str)
 
-            # 1. Check if closed by calendar
-            is_closed = False
-            if calendar is not None:
-                if not calendar.is_trading_day(cur):
-                    is_closed = True
-            elif cur.weekday() >= 5:
-                is_closed = True
+            # Special session overrides weekend/calendar closure
+            if closure_kind == "special":
+                special_sessions.append(cur)
+            else:
+                is_closed_calendar = False
+                is_closed_inferred = False
 
-            if is_closed:
-                closed.append(cur)
-                cur += one_day
-                continue
+                if closure_kind == "inferred":
+                    is_closed_inferred = True
+                elif closure_kind == "calendar":
+                    is_closed_calendar = True
+                else:
+                    if calendar is not None:
+                        try:
+                            if not calendar.is_trading_day(cur):
+                                is_closed_calendar = True
+                        except CalendarCoverageError:
+                            if cur.weekday() >= 5:
+                                is_closed_calendar = True
+                    elif cur.weekday() >= 5:
+                        is_closed_calendar = True
+
+                if is_closed_calendar or is_closed_inferred:
+                    closed.append(cur)
+                    if is_closed_inferred:
+                        closed_inferred.append(cur)
+                    else:
+                        closed_calendar.append(cur)
+                    cur += one_day
+                    continue
 
             # 2. Check if older than source retention
             if is_older_than_retention(cur, retention_val, as_of_date):
@@ -294,4 +337,7 @@ class GapPlanner:
             complete_days=tuple(complete),
             closed_days=tuple(closed),
             unavailable_days=tuple(unavailable),
+            closed_calendar_days=tuple(closed_calendar),
+            closed_inferred_days=tuple(closed_inferred),
+            special_session_days=tuple(special_sessions),
         )

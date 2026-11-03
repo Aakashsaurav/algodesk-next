@@ -296,6 +296,13 @@ algodesk data gaps <symbol> --from <YYYY-MM-DD> --to <YYYY-MM-DD> --timeframe 1d
 ```
 Flat zero-volume bars (open=high=low=close with volume 0 on expected sessions) are dropped and recorded as `EMPTY` gap days in the manifest when `data.drop_flat_zero_volume_bars = true`.
 
+### Market closure inference & calendar audits
+Detect exchange holidays and special trading sessions empirically:
+- Infer closures from liquid basket: `algodesk data closures infer --exchange NSE --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--sample <SYMBOLS>]`
+- Audit discrepancies between calendar and data: `algodesk data closures check --exchange NSE [--from <YYYY-MM-DD>] [--to <YYYY-MM-DD>]`
+- List recorded closures: `algodesk data closures list --exchange NSE`
+- Doctor checks: `algodesk doctor` warns when calendar coverage expiration falls within `calendar.warn_days` (default 60 days) or when unresolved closure disagreements exist.
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |
