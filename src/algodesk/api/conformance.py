@@ -263,6 +263,40 @@ def fees_problems(obj: Any) -> list[str]:
     return problems
 
 
+def reference_problems(obj: Any) -> list[str]:
+    """Verify ReferenceSource protocol conformance and manifest declarations."""
+    problems = _check_methods(obj, ["corporate_actions"], "ReferenceSource")
+    ca_fn = getattr(obj, "corporate_actions", None)
+    if ca_fn is not None and callable(ca_fn):
+        try:
+            sig = inspect.signature(ca_fn)
+            params = list(sig.parameters.values())
+            if not params:
+                problems.append("ReferenceSource.corporate_actions() must accept symbol_or_isin")
+        except Exception:
+            pass
+
+    manifest = getattr(obj, "manifest", None)
+    if manifest is not None:
+        limits = getattr(manifest, "limits", None)
+        if not limits or not isinstance(limits, Mapping):
+            problems.append("Reference plugin manifest must declare [limits] per ADR-042")
+        elif "corporate_actions" not in limits:
+            problems.append(
+                "Reference plugin manifest [limits] must define 'corporate_actions' endpoint"
+            )
+
+        verified_on = getattr(manifest, "verified_on", None)
+        if verified_on is None:
+            problems.append("Reference plugin manifest must declare 'verified_on' date")
+
+        sources = getattr(manifest, "sources", None)
+        if not sources or not isinstance(sources, Sequence):
+            problems.append("Reference plugin manifest must declare non-empty 'sources' list")
+
+    return problems
+
+
 def kind_problems(plugin: Any) -> list[str]:
     """Dispatch plugin conformance verification based on manifest.kind."""
     if not hasattr(plugin, "manifest"):
@@ -294,6 +328,8 @@ def kind_problems(plugin: Any) -> list[str]:
         return fees_problems(plugin)
     if kind_str == "clock":
         return clock_problems(plugin)
+    if kind_str == "reference":
+        return reference_problems(plugin)
 
     return []
 

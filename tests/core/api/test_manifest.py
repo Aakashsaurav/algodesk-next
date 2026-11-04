@@ -138,6 +138,19 @@ _VALID_TEMPLATES: dict[PluginKind, str] = {
         [capabilities]
         generate = true
     """,
+    PluginKind.REFERENCE: """
+        name = "test_reference"
+        kind = "reference"
+        version = "0.1.0"
+        api_version = 1
+        entry = "plugins.reference.test_ref:TestRef"
+        verified_on = "2026-11-03"
+        sources = ["https://example.com"]
+        [capabilities]
+        corporate_actions = true
+        [limits.corporate_actions]
+        requests_per_second = 1
+    """,
 }
 
 

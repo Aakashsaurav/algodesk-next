@@ -292,3 +292,75 @@ scope = "global"
 tighten = "down"
 description = "Minimum number of symbols reporting bars on a non-trading day to infer a special trading session"
 owner = "data"
+
+[[param]]
+name = "source.nse.corporate_actions.requests_per_second"
+type = "int"
+default = 1
+min = 1
+max = 10
+unit = "req/s"
+scope = "global"
+tighten = "down"
+description = "NSE corporate actions API requests allowed per second"
+owner = "data"
+
+[[param]]
+name = "source.nse.corporate_actions.requests_per_minute"
+type = "int"
+default = 30
+min = 1
+max = 300
+unit = "req/m"
+scope = "global"
+tighten = "down"
+description = "NSE corporate actions API requests allowed per minute"
+owner = "data"
+
+[[param]]
+name = "source.nse.corporate_actions.requests_per_30min"
+type = "int"
+default = 600
+min = 1
+max = 5000
+unit = "req/30m"
+scope = "global"
+tighten = "down"
+description = "NSE corporate actions API requests allowed per 30 minutes"
+owner = "data"
+
+[[param]]
+name = "source.bse.corporate_actions.requests_per_second"
+type = "int"
+default = 1
+min = 1
+max = 10
+unit = "req/s"
+scope = "global"
+tighten = "down"
+description = "BSE corporate actions API requests allowed per second"
+owner = "data"
+
+[[param]]
+name = "source.bse.corporate_actions.requests_per_minute"
+type = "int"
+default = 30
+min = 1
+max = 300
+unit = "req/m"
+scope = "global"
+tighten = "down"
+description = "BSE corporate actions API requests allowed per minute"
+owner = "data"
+
+[[param]]
+name = "source.bse.corporate_actions.requests_per_30min"
+type = "int"
+default = 600
+min = 1
+max = 5000
+unit = "req/30m"
+scope = "global"
+tighten = "down"
+description = "BSE corporate actions API requests allowed per 30 minutes"
+owner = "data"

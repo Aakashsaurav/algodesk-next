@@ -11,7 +11,16 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
-from algodesk.api.market import Bar, Instrument, InstrumentId, MarketEvent, Quote, SeriesKey, Tick
+from algodesk.api.market import (
+    ActionRecord,
+    Bar,
+    Instrument,
+    InstrumentId,
+    MarketEvent,
+    Quote,
+    SeriesKey,
+    Tick,
+)
 from algodesk.api.trading import (
     Fill,
     Funds,
@@ -258,3 +267,15 @@ class SecretsProvider(Protocol):
     def set(self, name: str, value: str) -> None: ...
 
     def names(self) -> Sequence[str]: ...
+
+
+@runtime_checkable
+class ReferenceSource(Protocol):
+    """Independent reference data source (e.g. corporate actions)."""
+
+    def corporate_actions(
+        self,
+        symbol_or_isin: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> Sequence[ActionRecord]: ...

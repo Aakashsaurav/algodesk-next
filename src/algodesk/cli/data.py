@@ -1206,12 +1206,26 @@ def _build_action_sources(rt: Runtime, requested_source: str | None) -> dict[str
     sources: dict[str, Any] = {}
     sec_prov = _resolve_secrets_provider(rt)
     p_ctx = build_context(Mode.RESEARCH, run_id="data_actions", secrets=sec_prov)
-    names = [requested_source] if requested_source else ["upstox", "yfinance"]
+    req = requested_source.strip().lower() if requested_source else "all"
+    if req == "bse":
+        raise DataError(
+            what=(
+                "BSE corporate actions endpoint is blocked by exchange bot protection "
+                "(Akamai HTTP 403 Access Denied)"
+            ),
+            where="CorporateActionsManager._build_action_sources",
+            fix="BSE automated access is blocked; choose from nse, upstox, yfinance, or all",
+        )
+    names = ["upstox", "yfinance", "nse"] if req == "all" else [req]
     for name in names:
         try:
-            sources[name] = rt.plugins.create("broker", name, config={}, ctx=p_ctx)
+            if name in ("nse", "nse_actions"):
+                p = rt.plugins.create(PluginKind.REFERENCE, "nse_actions", config={}, ctx=p_ctx)
+                sources[name] = p
+            elif name in ("upstox", "yfinance"):
+                sources[name] = rt.plugins.create(PluginKind.BROKER, name, config={}, ctx=p_ctx)
         except Exception:
-            if requested_source:
+            if requested_source and requested_source.strip().lower() != "all":
                 raise
     return sources
 
@@ -1221,7 +1235,7 @@ def _build_action_sources(rt: Runtime, requested_source: str | None) -> dict[str
 def actions_refresh(
     ctx: typer.Context,
     selector: str = typer.Argument(..., help="Symbol, ID, or @group selector"),
-    source: str | None = typer.Option(None, "--source", help="Data source broker plugin"),
+    source: str = typer.Option("all", "--source", help="Data source: nse|bse|upstox|yfinance|all"),
     force: bool = typer.Option(False, "--force", help="Force refresh even if within TTL"),
 ) -> None:
     """Refresh corporate actions for selector symbols older than data.actions_ttl_hours."""
@@ -1258,12 +1272,15 @@ def _resolve_action_symbols(
     rt: Runtime, manifest: DataManifest, selector: str | None, exchange: str
 ) -> list[str]:
     if selector:
-        try:
-            res = resolve_selector(selector, manifest, groups_dir=Path("config/groups"))
-            syms = [str(it).split(":")[-1].upper() for it in res]
-            return list(dict.fromkeys(syms)) or [selector.upper()]
-        except Exception:
-            return [selector.upper()]
+        parts = [s.strip() for s in selector.split(",") if s.strip()]
+        syms: list[str] = []
+        for part in parts:
+            try:
+                res = resolve_selector(part, manifest, groups_dir=Path("config/groups"))
+                syms.extend([str(it).split(":")[-1].upper() for it in res])
+            except Exception:
+                syms.append(part.upper())
+        return list(dict.fromkeys(syms)) or [s.upper() for s in parts]
     p = rt.paths.data / "actions" / f"exchange={exchange.upper()}"
     if not p.exists():
         return []
@@ -1361,6 +1378,81 @@ def actions_list(
             return
 
         typer.echo(format_table(ACTION_COLUMNS, rows))
+        typer.echo(f"\nSummary counts: {_format_summary_counts([r[5] for r in rows])}")
+
+
+COMPARE_COLUMNS = ["Symbol", "Date", "Type", "Sources", "Values", "Status", "Reason"]
+
+
+def _format_event_values(acts: Sequence[ActionRecord]) -> str:
+    parts: list[str] = []
+    for a in sorted(acts, key=lambda x: x.source.lower()):
+        src = a.source or "unknown"
+        if a.ratio is not None:
+            if a.ratio_new is not None and a.ratio_old is not None:
+                v = f"{a.ratio_new:g}:{a.ratio_old:g}"
+            else:
+                v = (
+                    f"{a.ratio:g}"
+                    if isinstance(a.ratio, float) and a.ratio.is_integer()
+                    else f"{a.ratio}"
+                )
+        elif a.amount is not None:
+            v = f"Rs {a.amount}"
+        else:
+            v = "-"
+        parts.append(f"{src}: {v}")
+    return ", ".join(parts) if parts else "-"
+
+
+@actions_app.command("compare")
+@handle_cli_errors
+def actions_compare(
+    ctx: typer.Context,
+    selector: str = typer.Argument(..., help="Symbol, ID, or @group selector"),
+    exchange: str = typer.Option("NSE", "--exchange", help="Exchange code"),
+) -> None:
+    """Compare corporate action sources per event with values, status, and reason."""
+    with _open_rt(ctx, ensure=False) as rt:
+        manifest = _get_manifest(rt)
+        store = ActionsStore(data_dir=rt.paths.data, manifest=manifest)
+        symbols = _resolve_action_symbols(rt, manifest, selector, exchange)
+        if not symbols:
+            typer.echo("No corporate actions found.")
+            return
+
+        reconciler = _build_reconciler(ctx, rt.params)
+        rows: list[list[str]] = []
+        for s in symbols:
+            raw_actions = store.read(exchange, s)
+            if not raw_actions:
+                continue
+            reconciled = reconciler.reconcile(exchange, s, raw_actions)
+            by_key: dict[tuple[date, str], list[ActionRecord]] = {}
+            for a in raw_actions:
+                by_key.setdefault((a.ex_date, a.type.lower()), []).append(a)
+
+            for rec in reconciled:
+                matching = by_key.get((rec.ex_date, rec.type.lower())) or [rec]
+                srcs = ", ".join(sorted({a.source for a in matching if a.source}))
+                vals = _format_event_values(matching)
+                rows.append(
+                    [
+                        rec.symbol,
+                        rec.ex_date.isoformat(),
+                        rec.type,
+                        srcs or rec.source or "-",
+                        vals,
+                        rec.status,
+                        rec.reason or "-",
+                    ]
+                )
+
+        if not rows:
+            typer.echo("No corporate actions found.")
+            return
+
+        typer.echo(format_table(COMPARE_COLUMNS, rows))
         typer.echo(f"\nSummary counts: {_format_summary_counts([r[5] for r in rows])}")
 
 

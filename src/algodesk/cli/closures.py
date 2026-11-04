@@ -9,13 +9,13 @@ from typing import Any
 import typer
 
 from algodesk.api.kinds import Mode, PluginKind
-from algodesk.cli.common import format_table, handle_cli_errors
+from algodesk.cli.common import _open_rt, format_table, handle_cli_errors
 from algodesk.data.closures import (
     check_market_closure_disagreements,
     infer_market_closures,
 )
 from algodesk.data.manifest import DataManifest
-from algodesk.ops.runtime import Runtime, open_runtime
+from algodesk.ops.runtime import Runtime
 
 closures_app = typer.Typer(
     name="closures",
@@ -58,8 +58,7 @@ def closures_infer(
     if start_d > end_d:
         raise typer.BadParameter("Start date must be <= end date", param_hint="--from")
 
-    root = getattr(ctx.obj, "root", None)
-    with open_runtime(root, ensure=False) as rt:
+    with _open_rt(ctx, ensure=False) as rt:
         manifest = _get_manifest(rt)
         from algodesk.cli.data import _build_data_service
         from algodesk.cli.secrets import _resolve_secrets_provider
@@ -157,8 +156,7 @@ def closures_check(
     if start_d and end_d and start_d > end_d:
         raise typer.BadParameter("Start date must be <= end date", param_hint="--from")
 
-    root = getattr(ctx.obj, "root", None)
-    with open_runtime(root, ensure=False) as rt:
+    with _open_rt(ctx, ensure=False) as rt:
         manifest = _get_manifest(rt)
         from algodesk.cli.secrets import _resolve_secrets_provider
         from algodesk.ops.context import build_context
@@ -236,8 +234,7 @@ def closures_list(
     start_d = _parse_date(from_date, "--from") if from_date else None
     end_d = _parse_date(to_date, "--to") if to_date else None
 
-    root = getattr(ctx.obj, "root", None)
-    with open_runtime(root, ensure=False) as rt:
+    with _open_rt(ctx, ensure=False) as rt:
         manifest = _get_manifest(rt)
         records = manifest.list_market_closures(
             exchange=exchange,

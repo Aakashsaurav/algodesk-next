@@ -166,10 +166,14 @@ class LoggingHandle:
         path: Path,
         logger: logging.Logger,
         handlers: list[logging.Handler],
+        prev_level: int = logging.NOTSET,
+        prev_propagate: bool = True,
     ) -> None:
         self.path = path
         self.logger = logger
         self.handlers = handlers
+        self.prev_level = prev_level
+        self.prev_propagate = prev_propagate
         self._closed = False
 
     def close(self) -> None:
@@ -182,6 +186,8 @@ class LoggingHandle:
                 h.close()
             except Exception:
                 pass
+        self.logger.setLevel(self.prev_level)
+        self.logger.propagate = self.prev_propagate
         self._closed = True
 
     def __enter__(self) -> LoggingHandle:
@@ -239,6 +245,8 @@ def setup_logging(
         )
 
     logger = logging.getLogger("algodesk")
+    prev_propagate = logger.propagate
+    prev_level = logger.level
     logger.propagate = False
     log_level = _parse_log_level(level)
     logger.setLevel(log_level)
@@ -269,7 +277,13 @@ def setup_logging(
         logger.addHandler(console_handler)
         handlers.append(console_handler)
 
-    return LoggingHandle(path=log_file, logger=logger, handlers=handlers)
+    return LoggingHandle(
+        path=log_file,
+        logger=logger,
+        handlers=handlers,
+        prev_level=prev_level,
+        prev_propagate=prev_propagate,
+    )
 
 
 def get_logger(component: str) -> logging.Logger:

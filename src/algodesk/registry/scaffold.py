@@ -13,12 +13,21 @@ def _write_scaffold_files(target_dir: Path, k: str, name: str, class_name: str) 
     tests_dir = target_dir / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
 
+    extra_manifest = ""
+    if k == "reference":
+        extra_manifest = (
+            '\nverified_on = "2026-11-03"\n'
+            'sources = ["https://example.com"]\n\n'
+            "[limits.corporate_actions]\n"
+            "requests_per_second = 1\n"
+        )
+
     manifest_content = (
         f'name = "{name}"\n'
         f'kind = "{k}"\n'
         f'version = "0.1.0"\n'
         f"api_version = 1\n"
-        f'entry = "plugin:{class_name}"\n\n'
+        f'entry = "plugin:{class_name}"\n{extra_manifest}\n'
         f"[capabilities]\n"
         f"default = true\n"
     )
@@ -89,6 +98,14 @@ def _write_scaffold_files(target_dir: Path, k: str, name: str, class_name: str) 
         extra_imports = "from typing import Any\n"
     elif k == "risk_rule":
         stubs = "    def check(self, intent: Any, view: Any) -> Any:\n        return None\n"
+        extra_imports = "from typing import Any\n"
+    elif k == "reference":
+        stubs = (
+            "    def corporate_actions(\n"
+            "        self, symbol_or_isin: str, start: Any = None, end: Any = None\n"
+            "    ) -> Any:\n"
+            "        return []\n"
+        )
         extra_imports = "from typing import Any\n"
 
     plugin_code = (

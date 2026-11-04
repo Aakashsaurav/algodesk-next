@@ -18,6 +18,7 @@ _EXPECTED_KINDS = [
     "transport",
     "model",
     "report",
+    "reference",
 ]
 
 _EXPECTED_MODES = ["research", "backtest", "paper", "live"]
@@ -28,7 +29,7 @@ def test_api_version_is_one() -> None:
 
 
 def test_plugin_kind_count() -> None:
-    assert len(PluginKind) == 13
+    assert len(PluginKind) == 14
 
 
 def test_plugin_kind_values() -> None:

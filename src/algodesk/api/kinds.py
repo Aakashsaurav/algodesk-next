@@ -24,6 +24,7 @@ class PluginKind(StrEnum):
     TRANSPORT = "transport"
     MODEL = "model"
     REPORT = "report"
+    REFERENCE = "reference"
 
 
 class Mode(StrEnum):

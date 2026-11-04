@@ -86,11 +86,21 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     _CURRENT_TEST_IS_LIVE = (
         os.environ.get("ALGODESK_LIVE_TESTS") == "1" or item.get_closest_marker("live") is not None
     )
+    import logging
+
+    algodesk_l = logging.getLogger("algodesk")
+    algodesk_l.propagate = True
+    algodesk_l.setLevel(logging.NOTSET)
 
 
 def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
     global _CURRENT_TEST_IS_LIVE
     _CURRENT_TEST_IS_LIVE = False
+    import logging
+
+    algodesk_l = logging.getLogger("algodesk")
+    algodesk_l.propagate = True
+    algodesk_l.setLevel(logging.NOTSET)
 
 
 GUARDED_FOLDERS: tuple[str, ...] = ("data", "results", ".algodesk")

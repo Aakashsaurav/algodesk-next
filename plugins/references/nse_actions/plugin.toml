@@ -1,0 +1,18 @@
+name = "nse_actions"
+kind = "reference"
+version = "0.1.0"
+api_version = 1
+entry = "plugin:NSEActionsReferencePlugin"
+verified_on = "2026-11-03"
+sources = ["https://www.nseindia.com/companies-listing/corporate-filings-actions"]
+
+[capabilities]
+corporate_actions = true
+
+[limits.corporate_actions]
+requests_per_second = 1
+requests_per_minute = 30
+requests_per_30min = 600
+
+[requires]
+packages = ["httpx"]

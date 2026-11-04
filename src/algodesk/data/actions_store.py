@@ -256,14 +256,25 @@ class CorporateActionsManager:
 
     def _resolve_sources(self, source: str | None) -> list[str]:
         if source:
-            if source not in self._sources:
+            s_lower = source.strip().lower()
+            if s_lower == "all":
+                return [
+                    n
+                    for n, s in self._sources.items()
+                    if hasattr(s, "actions") or hasattr(s, "corporate_actions")
+                ]
+            if s_lower not in self._sources:
                 raise DataError(
                     what=f"Corporate actions source '{source}' is not configured",
                     where="CorporateActionsManager.refresh",
                     fix=f"Configure '{source}' or choose from {list(self._sources.keys())}",
                 )
-            return [source]
-        return [n for n, s in self._sources.items() if hasattr(s, "actions")]
+            return [s_lower]
+        return [
+            n
+            for n, s in self._sources.items()
+            if hasattr(s, "actions") or hasattr(s, "corporate_actions")
+        ]
 
     def _parse_inst(self, sym_or_id: str) -> tuple[str, str]:
         s_str = sym_or_id.strip()
@@ -279,7 +290,13 @@ class CorporateActionsManager:
         for src_name in src_list:
             self._limiter.acquire(src_name, "corporate_actions")
             try:
-                acts = list(self._sources[src_name].actions(sym))  # type: ignore[attr-defined]
+                src_obj = self._sources[src_name]
+                if hasattr(src_obj, "actions"):
+                    acts = list(src_obj.actions(sym))
+                elif hasattr(src_obj, "corporate_actions"):
+                    acts = list(src_obj.corporate_actions(sym))
+                else:
+                    acts = []
                 self._store.write(exch, sym, acts, source=src_name)
                 sym_actions.extend(acts)
                 counts[src_name] = len(acts)
@@ -305,15 +322,19 @@ class CorporateActionsManager:
         self, selector: str, source: str | None = None, force: bool = False
     ) -> dict[str, Any]:
         manifest = self._store.manifest
-        try:
-            insts = (
-                resolve_selector(selector, manifest, groups_dir=self._groups_dir)
-                if manifest
-                else [selector]
-            )
-        except Exception:
-            insts = [selector]
-        insts = insts or [selector]
+        parts = [s.strip() for s in selector.split(",") if s.strip()]
+        insts: list[str] = []
+        for part in parts:
+            try:
+                resolved = (
+                    resolve_selector(part, manifest, groups_dir=self._groups_dir)
+                    if manifest
+                    else [part]
+                )
+            except Exception:
+                resolved = [part]
+            insts.extend(resolved or [part])
+        insts = insts or parts or [selector]
 
         p = self._params
         ttl = int(p.get("data.actions_ttl_hours", "24")) if p else 24

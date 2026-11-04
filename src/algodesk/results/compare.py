@@ -148,6 +148,47 @@ def _compare_sequence_items(
     return None
 
 
+def _format_version_differences(dir_a: Path, dir_b: Path) -> list[str]:
+    """Compare code and plugin versions between two result manifests."""
+    diffs: list[str] = []
+    man_a_path = dir_a / "manifest.json"
+    man_b_path = dir_b / "manifest.json"
+    if not man_a_path.is_file() or not man_b_path.is_file():
+        return diffs
+    try:
+        man_a = json.loads(man_a_path.read_text(encoding="utf-8"))
+        man_b = json.loads(man_b_path.read_text(encoding="utf-8"))
+    except Exception:
+        return diffs
+
+    cv_a = man_a.get("code_version")
+    cv_b = man_b.get("code_version")
+    if cv_a and cv_b and cv_a != cv_b:
+        diffs.append(f"code_version: {cv_a} != {cv_b}")
+
+    pv_a = man_a.get("plugin_versions") or {}
+    pv_b = man_b.get("plugin_versions") or {}
+    all_plugins = sorted(set(pv_a.keys()) | set(pv_b.keys()))
+    for p_name in all_plugins:
+        info_a = pv_a.get(p_name, {})
+        info_b = pv_b.get(p_name, {})
+        va, vb = info_a.get("version"), info_b.get("version")
+        ha, hb = info_a.get("hash"), info_b.get("hash")
+        if va != vb:
+            diffs.append(f"plugin '{p_name}' version: {va} != {vb}")
+        elif ha != hb:
+            diffs.append(f"plugin '{p_name}' code hash: {ha} != {hb}")
+
+    return diffs
+
+
+def _attach_version_diffs(dir_a: Path, dir_b: Path, base_msg: str) -> str:
+    v_diffs = _format_version_differences(dir_a, dir_b)
+    if not v_diffs:
+        return base_msg
+    return f"{base_msg} | versions: {', '.join(v_diffs)}"
+
+
 def compare_runs(
     root: Path | str,
     run_a: str,
@@ -179,7 +220,7 @@ def compare_runs(
 
     diff_metric = _compare_metrics(m_a, m_b)
     if diff_metric is not None:
-        return False, diff_metric
+        return False, _attach_version_diffs(dir_a, dir_b, diff_metric)
 
     # 2. Extract and compare journal event sequences
     events_a = _load_events_for_run(r_path, run_a, dir_a)
@@ -190,6 +231,10 @@ def compare_runs(
     for seq_name in ("signals", "risk_decisions", "orders", "fills"):
         diff_seq = _compare_sequence_items(seq_name, seqs_a[seq_name], seqs_b[seq_name])
         if diff_seq is not None:
-            return False, diff_seq
+            return False, _attach_version_diffs(dir_a, dir_b, diff_seq)
+
+    v_diffs = _format_version_differences(dir_a, dir_b)
+    if v_diffs:
+        return False, f"Code or plugin versions differ: {', '.join(v_diffs)}"
 
     return True, None

@@ -121,6 +121,8 @@ Short decision records (context, decision, reason) in the order they were taken.
 4. *Multi-year calendar coverage*: NSE and BSE calendar files cover years 2022 through 2026 citing official exchange circulars (NSE/CMTR/50560, 54757, 59722, 65587), Ayodhya holiday, and election days. Unverified years remain uncovered.
 5. *Disagreement audits and doctor checks*: `algodesk data closures check` audits discrepancies between calendar declarations and data evidence. Doctor check `calendar.coverage_horizon` warns when calendar coverage expiration falls within `calendar.warn_days` (default 60 days), and `data.closure_disagreements` warns when unresolved closure conflicts exist.
 
+**ADR-053 Reference plugin kind and independent exchange corporate action source.** Upstox provides ~12 months of events and yfinance is an unofficial single source; bhavcopy carries unadjusted previous close. Plugin kind `reference` introduces `ReferenceSource` protocol (`corporate_actions`) with manifest limits, `verified_on`, and `sources`. Built `plugins/references/nse_actions` parsing NSE corporate actions (split face values, bonuses x:y, cash dividends, rights; unknown/mergers marked `manual_required`). BSE is classified blocked (Akamai HTTP 403). `data actions refresh --source` and `compare` display source agreement, and compare runs flags version diffs.
+
 
 
 

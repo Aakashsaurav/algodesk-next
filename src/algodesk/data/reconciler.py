@@ -68,7 +68,7 @@ class CorporateActionsReconciler:
             status=status,
             id=c.id,
             issue_price=c.issue_price,
-            reason=conflict_reason or c.reason,
+            reason=conflict_reason or ("ratio disagreement" if status == "conflict" else c.reason),
             verified_on=c.verified_on,
         )
 

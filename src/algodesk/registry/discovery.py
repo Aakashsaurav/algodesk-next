@@ -159,6 +159,7 @@ def _normalize_kind(folder: str) -> str:
         "transports": "transport",
         "models": "model",
         "reports": "report",
+        "references": "reference",
     }
     return mapping.get(folder, folder)
 

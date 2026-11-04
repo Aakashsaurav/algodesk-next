@@ -173,7 +173,9 @@ Ephemeral intraday bars stored under `data/session_bars/date=YYYY-MM-DD/`, isola
 ### 12. Corporate actions operations
 Manage partitioned corporate actions storage (`data/actions/`), reconciliation, operator overrides, and adjustment audits:
 - Refresh actions from readers (respects `data.actions_ttl_hours`): `algodesk data actions refresh @demo5`
-- Refresh from specific source: `algodesk data actions refresh RELIANCE --source upstox`
+- Refresh from specific source: `algodesk data actions refresh RELIANCE --source upstox` (options: `nse`, `upstox`, `yfinance`, `all`)
+- Refresh from official exchange reference plugin: `algodesk data actions refresh RELIANCE --source nse`
+- Compare corporate actions across sources: `algodesk data actions compare RELIANCE` (shows per-event symbol, date, type, sources, values, status, reason)
 - List actions and reconciliation statuses: `algodesk data actions list RELIANCE` (add `--raw` for un-reconciled actions)
 - Check corporate actions reconciliation status: `algodesk data actions check @demo5` (add `--raw` to inspect raw feeds)
 - Add operator override (requires `--reason`): `algodesk data actions override add --symbol RELIANCE --ex-date 2024-10-28 --type bonus --ratio 2.0 --reason "Confirmed via NSE circular"`
