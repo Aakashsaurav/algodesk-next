@@ -12,3 +12,6 @@ __pycache__/
 *.key
 token*.json
 .DS_Store
+*.csv
+*.json
+*.zip
