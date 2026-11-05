@@ -36,7 +36,11 @@ from algodesk.data.detection import (
     detect_price_anomalies,
     verify_prices_for_actions,
 )
-from algodesk.data.groups import get_group, list_group_details
+from algodesk.data.groups import (
+    get_group,
+    list_group_details,
+    resolve_group_universe,
+)
 from algodesk.data.layout import dataset_id_for_key, parse_bar_file_path
 from algodesk.data.manifest import (
     CoverageDayRecord,
@@ -44,6 +48,11 @@ from algodesk.data.manifest import (
     DatasetRecord,
     FileRecord,
     PartRecord,
+)
+from algodesk.data.migration import (
+    apply_migration,
+    build_migration_plan,
+    finalize_migration,
 )
 from algodesk.data.overrides import (
     ActionOverride,
@@ -524,6 +533,9 @@ def groups_list_cmd(
 def groups_show_cmd(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Group name"),
+    resolved: bool = typer.Option(
+        False, "--resolved", help="Show resolved canonical instruments and content hash"
+    ),
     json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Show details and members of an instrument group."""
@@ -538,6 +550,21 @@ def groups_show_cmd(
                 fix=f"Available groups: {', '.join(known)}",
             )
         info = details[name]
+
+        if resolved:
+            canonical_members, content_hash = resolve_group_universe(name, groups_dir)
+            if json_out:
+                typer.echo(
+                    json.dumps(
+                        {"name": name, "hash": content_hash, "members": canonical_members},
+                        indent=2,
+                    )
+                )
+                return
+            m_lines = "\n".join(f"  - {m}" for m in canonical_members)
+            typer.echo(f"Group: {name} (Resolved Hash: {content_hash})\nMembers:\n{m_lines}")
+            return
+
         if json_out:
             typer.echo(json.dumps(info, indent=2))
             return
@@ -624,6 +651,83 @@ def _adopt_bar(
                 ds_id, d_val.isoformat(), st, len(day_bars), len(day_bars), o_rel, now_iso
             )
         )
+
+
+@data_app.command("migrate-ids")
+@handle_cli_errors
+def migrate_ids(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="List migration plan without modifying files"
+    ),
+    apply: bool = typer.Option(
+        False, "--apply", help="Copy files to new partitions, verify, and update manifest"
+    ),
+    finalize: bool = typer.Option(
+        False, "--finalize", help="Remove old legacy files after verified apply"
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    json_opt: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+) -> None:
+    """Migrate legacy instrument partition layout to canonical structured format."""
+    with _open_rt(ctx, ensure=False) as rt:
+        from algodesk.cli.common import _get_cli_state
+
+        manifest = _get_manifest(rt)
+        data_dir = rt.paths.data
+        plan = build_migration_plan(data_dir, manifest)
+
+        state = _get_cli_state(ctx)
+        is_json = json_opt or state.json
+        if is_json:
+            typer.echo(json.dumps(plan.to_dict(), indent=2))
+            return
+
+        if finalize:
+            if plan.total_files == 0:
+                typer.echo("No legacy files to finalize.")
+                return
+            if not yes:
+                confirm = typer.prompt("Type 'FINALIZE' to permanently delete old legacy files")
+                if confirm != "FINALIZE":
+                    typer.echo("Aborted.")
+                    return
+            count = finalize_migration(plan, manifest, journal=getattr(rt, "journal", None))
+            typer.echo(f"Finalized migration for {count} file(s). Old legacy files removed.")
+            return
+
+        if apply:
+            if plan.total_files == 0:
+                typer.echo("No legacy files to migrate.")
+                return
+            if not yes:
+                confirm = typer.prompt("Type 'yes' to proceed with migration copy")
+                if confirm != "yes":
+                    typer.echo("Aborted.")
+                    return
+            count = apply_migration(plan, manifest, journal=getattr(rt, "journal", None))
+            typer.echo(
+                f"Successfully copied and verified {count} file(s). "
+                "Manifest updated with aliases. Run --finalize to remove old copies."
+            )
+            return
+
+        if plan.total_files == 0:
+            typer.echo("No legacy files to migrate. All files conform to canonical partitions.")
+            return
+
+        typer.echo(
+            f"Migration Plan ({plan.total_files} file(s), "
+            f"{plan.total_rows} rows, {plan.total_bytes} bytes):"
+        )
+        for item in plan.items:
+            typer.echo(f"  Legacy:    {item.legacy_id}")
+            typer.echo(f"  Canonical: {item.canonical_id}")
+            typer.echo(f"  Source:    {item.source_path}")
+            typer.echo(f"  Target:    {item.target_path}")
+            typer.echo(f"  Rows:      {item.rows} (SHA: {item.sha256[:12]}...)")
+            typer.echo("  ---")
+        typer.echo("Plan listed. Dry-run mode: no files changed.")
 
 
 @data_app.command("verify")

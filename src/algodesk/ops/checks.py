@@ -644,6 +644,105 @@ def _check_market_closure_disagreements(runtime: Runtime) -> CheckResult:
     return CheckResult(ok=True, message="No unresolved market closure disagreements")
 
 
+def _check_legacy_instrument_ids(runtime: Runtime) -> CheckResult:
+    try:
+        data_dir = runtime.paths.data
+        if not data_dir.exists():
+            return CheckResult(ok=True, message="No legacy instrument IDs remaining")
+        manifest_db = data_dir / "state" / "data_manifest.db"
+        if not manifest_db.exists() and (data_dir / "manifest.db").exists():
+            manifest_db = data_dir / "manifest.db"
+        if not manifest_db.exists():
+            return CheckResult(ok=True, message="No legacy instrument IDs remaining")
+
+        from algodesk.data.manifest import DataManifest
+        from algodesk.data.migration import build_migration_plan
+
+        manifest = DataManifest(manifest_db)
+        plan = build_migration_plan(runtime.paths.data, manifest)
+        if plan.total_files > 0:
+            return CheckResult(
+                ok=False,
+                severity=Severity.WARNING,
+                message=(
+                    f"{plan.total_files} legacy partition file(s) remain across legacy identifiers"
+                ),
+                fix=(
+                    "Run 'algodesk data migrate-ids --apply' then "
+                    "'algodesk data migrate-ids --finalize'"
+                ),
+            )
+    except Exception as exc:
+        return CheckResult(
+            ok=False,
+            severity=Severity.WARNING,
+            message=f"Error checking legacy instrument IDs: {exc}",
+            fix="Inspect manifest and data directories",
+        )
+    return CheckResult(ok=True, message="No legacy instrument IDs remaining")
+
+
+def _check_instrument_master_diff(runtime: Runtime) -> CheckResult:
+    try:
+        data_dir = runtime.paths.data
+        if not (data_dir / "instruments").exists():
+            return CheckResult(
+                ok=True,
+                message="Instrument master diff: insufficient history for diff",
+            )
+        from algodesk.api.alias import resolve_alias
+        from algodesk.data.groups import load_groups
+        from algodesk.data.instruments_store import InstrumentStore
+
+        store = InstrumentStore(data_dir)
+        dates = store.list_dates("upstox")
+        if len(dates) < 2:
+            return CheckResult(
+                ok=True,
+                message="Instrument master diff: insufficient history for diff",
+            )
+
+        report = store.diff("upstox", dates[-2], dates[-1])
+        if not report.has_changes:
+            return CheckResult(ok=True, message="Instrument master diff: no changes detected")
+
+        groups_dir = runtime.root / "config" / "groups"
+        if not groups_dir.exists():
+            return CheckResult(ok=True, message="Instrument master diff: no groups config")
+        groups = load_groups(groups_dir)
+        all_members: set[str] = set()
+        for g_members in groups.values():
+            all_members.update(str(resolve_alias(m)) for m in g_members)
+
+        changed_universe = [c for c in report.changed if str(c.id) in all_members]
+        removed_universe = [i for i in report.removed if str(i.id) in all_members]
+
+        if changed_universe or removed_universe:
+            details = []
+            for c in changed_universe:
+                f_diffs = [f"{k}: {v[0]}->{v[1]}" for k, v in c.changes.items()]
+                details.append(f"{c.id} ({', '.join(f_diffs)})")
+            for r in removed_universe:
+                details.append(f"{r.id} (REMOVED)")
+            return CheckResult(
+                ok=False,
+                severity=Severity.WARNING,
+                message=(
+                    "Instrument master diff detected changes to universe members: "
+                    f"{'; '.join(details)}"
+                ),
+                fix="Inspect universe member specifications and parameter constraints",
+            )
+    except Exception as exc:
+        return CheckResult(
+            ok=False,
+            severity=Severity.WARNING,
+            message=f"Error checking instrument master diff: {exc}",
+            fix="Inspect data/instruments store",
+        )
+    return CheckResult(ok=True, message="Instrument master diff: no universe members affected")
+
+
 def _build_data_doctor_checks(runtime: Runtime) -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -670,6 +769,16 @@ def _build_data_doctor_checks(runtime: Runtime) -> list[DoctorCheck]:
             id="data.closure_disagreements",
             severity=Severity.WARNING,
             run=lambda: _check_market_closure_disagreements(runtime),
+        ),
+        DoctorCheck(
+            id="data.legacy_ids",
+            severity=Severity.WARNING,
+            run=lambda: _check_legacy_instrument_ids(runtime),
+        ),
+        DoctorCheck(
+            id="instruments.diff_warnings",
+            severity=Severity.WARNING,
+            run=lambda: _check_instrument_master_diff(runtime),
         ),
     ]
 

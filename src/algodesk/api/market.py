@@ -32,6 +32,7 @@ class IdParts:
     expiry: date | None = None
     strike: Decimal | None = None
     option_type: str | None = None
+    underlying: str | None = None
 
     def __post_init__(self) -> None:
         if not self.exchange or self.exchange != self.exchange.upper():
@@ -49,6 +50,8 @@ class IdParts:
                 raise ValueError("Expiry must be specified when option_type is present")
         if self.strike is not None and self.option_type is None:
             raise ValueError("Option type must be specified when strike is present")
+        if self.underlying is None:
+            object.__setattr__(self, "underlying", self.symbol)
 
 
 def parse_id(id_str: str | InstrumentId) -> IdParts:
@@ -95,13 +98,32 @@ def parse_id(id_str: str | InstrumentId) -> IdParts:
     )
 
 
-def format_id(parts: IdParts) -> InstrumentId:
-    """Format an IdParts object into a canonical InstrumentId."""
-    base = f"{parts.exchange}:{parts.segment}:{parts.symbol}"
-    if parts.expiry is not None:
-        base += f":{parts.expiry.isoformat()}"
-        if parts.strike is not None and parts.option_type is not None:
-            base += f":{parts.strike}:{parts.option_type}"
+def format_id(parts: IdParts | Instrument) -> InstrumentId:
+    """Format an IdParts or Instrument object into a canonical InstrumentId."""
+    if isinstance(parts, Instrument):
+        exchange = parts.exchange
+        segment = parts.segment
+        symbol = (
+            parts.underlying
+            if parts.segment in ("FUT", "OPT") and parts.underlying
+            else parts.symbol
+        )
+        exp = parts.expiry
+        strike = parts.strike
+        opt_type = parts.option_type
+    else:
+        exchange = parts.exchange
+        segment = parts.segment
+        symbol = parts.symbol
+        exp = parts.expiry
+        strike = parts.strike
+        opt_type = parts.option_type
+
+    base = f"{exchange}:{segment}:{symbol}"
+    if exp is not None:
+        base += f":{exp.isoformat()}"
+        if strike is not None and opt_type is not None:
+            base += f":{strike}:{opt_type}"
     return InstrumentId(base)
 
 
@@ -109,25 +131,69 @@ def format_id(parts: IdParts) -> InstrumentId:
 class Instrument:
     """Financial instrument definition."""
 
-    id: InstrumentId
     exchange: str
     segment: str
     symbol: str
-    kind: str
-    lot_size: int
-    tick_size: Decimal
-    expiry: date | None = None
     underlying: str | None = None
+    expiry: date | None = None
+    strike: Decimal | None = None
+    option_type: str | None = None
+    lot_size: int = 1
+    tick_size: Decimal = Decimal("0.05")
     isin: str | None = None
+    trading_symbol: str | None = None
     broker_keys: Mapping[str, str] = field(default_factory=dict)
+    id: InstrumentId = field(default_factory=lambda: InstrumentId(""))
+    kind: str = ""
 
     def __post_init__(self) -> None:
-        if not self.id or str(self.id) != str(self.id).upper():
+        if not self.exchange or self.exchange != self.exchange.upper():
+            raise ValueError(f"Exchange must be non-empty uppercase string: {self.exchange!r}")
+        if not self.segment or self.segment != self.segment.upper():
+            raise ValueError(f"Segment must be non-empty uppercase string: {self.segment!r}")
+        if not self.symbol or self.symbol != self.symbol.upper():
+            raise ValueError(f"Symbol must be non-empty uppercase string: {self.symbol!r}")
+
+        if self.underlying is None:
+            object.__setattr__(self, "underlying", self.symbol)
+
+        if self.trading_symbol is None:
+            object.__setattr__(self, "trading_symbol", self.symbol)
+
+        if not self.id:
+            c_id = format_id(self)
+            object.__setattr__(self, "id", c_id)
+        elif str(self.id) != str(self.id).upper():
             raise ValueError(f"Instrument id must be uppercase: {self.id!r}")
+
+        if not self.kind:
+            seg = self.segment.upper()
+            if seg in ("EQ", "EQUITY"):
+                k = "equity"
+            elif seg in ("FUT", "FUTURE"):
+                k = "future"
+            elif seg in ("OPT", "OPTION"):
+                k = "option"
+            elif seg in ("INDEX", "IDX"):
+                k = "index"
+            else:
+                k = seg.lower()
+            object.__setattr__(self, "kind", k)
+
         if self.lot_size <= 0:
             raise ValueError(f"lot_size must be positive, got {self.lot_size}")
         if not isinstance(self.tick_size, Decimal) or self.tick_size <= Decimal(0):
             raise ValueError(f"tick_size must be a positive Decimal, got {self.tick_size!r}")
+
+        if self.option_type is not None:
+            if self.option_type not in ("CE", "PE"):
+                raise ValueError(f"Option type must be 'CE' or 'PE', got {self.option_type!r}")
+            if self.strike is None or self.strike <= Decimal(0):
+                raise ValueError("Strike must be a positive Decimal when option_type is specified")
+            if self.expiry is None:
+                raise ValueError("Expiry must be specified when option_type is present")
+        if self.strike is not None and self.option_type is None:
+            raise ValueError("Option type must be specified when strike is present")
 
 
 @dataclass(frozen=True, slots=True)

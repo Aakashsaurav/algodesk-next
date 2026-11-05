@@ -20,6 +20,7 @@ from typing import Any
 
 from algodesk.api.errors import ConfigError, DataError
 from algodesk.api.market import parse_id
+from algodesk.data.aliases import resolve_alias
 from algodesk.data.groups import get_group, load_groups
 from algodesk.data.manifest import DataManifest, FileRecord
 
@@ -137,6 +138,12 @@ def resolve_selector(
 
     if sel in all_inst_ids:
         return [sel]
+    c_sel = str(resolve_alias(sel))
+    if c_sel in all_inst_ids:
+        return [c_sel]
+    matching_c = [i for i in all_inst_ids if str(resolve_alias(i)) == c_sel]
+    if len(matching_c) == 1:
+        return matching_c
 
     if "*" in sel or "?" in sel:
         matched = [i for i in all_inst_ids if fnmatch.fnmatch(i, sel)]
@@ -247,14 +254,17 @@ def coverage(
     buckets: dict[tuple[str, str, str, str], list[FileRecord]] = {}
     for f in files:
         target = f.instrument
+        canonical_inst = resolve_alias(f.instrument)
         if group_by == "exchange":
-            target = parse_id(f.instrument).exchange
+            target = parse_id(canonical_inst).exchange
         elif group_by == "segment":
-            target = parse_id(f.instrument).segment
+            target = parse_id(canonical_inst).segment
         elif group_by == "underlying":
-            target = parse_id(f.instrument).symbol
+            target = parse_id(canonical_inst).symbol
         elif group_by == "group":
-            target = inst_to_group.get(f.instrument, "ungrouped")
+            target = inst_to_group.get(
+                f.instrument, inst_to_group.get(str(canonical_inst), "ungrouped")
+            )
 
         key = (target, f.kind, f.timeframe, f.source)
         buckets.setdefault(key, []).append(f)

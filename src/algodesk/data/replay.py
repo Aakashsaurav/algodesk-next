@@ -95,6 +95,12 @@ def load_warmup_bars_parquet(path: Path | str) -> list[Bar]:
 
 def _derive_instrument_from_file_path(path: Path) -> InstrumentId:
     """Extract canonical instrument id from partitioned path."""
+    from algodesk.data.layout import parse_tick_file_path
+
+    info = parse_tick_file_path(path)
+    if info and "instrument" in info:
+        return InstrumentId(info["instrument"])
+
     exch, seg, sym = "", "", ""
     for part in path.parts:
         if part.startswith("exchange="):
@@ -104,7 +110,9 @@ def _derive_instrument_from_file_path(path: Path) -> InstrumentId:
         elif part.startswith("symbol="):
             sym = part.split("=")[1]
     if exch and seg and sym:
-        return InstrumentId(f"{exch}:{seg}:{sym}".upper())
+        from algodesk.data.aliases import resolve_alias
+
+        return resolve_alias(f"{exch}:{seg}:{sym}".upper())
     return InstrumentId("NSE:EQ:UNKNOWN")
 
 

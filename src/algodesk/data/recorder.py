@@ -19,7 +19,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from algodesk.api.market import FeedStatus, InstrumentId, MarketEvent, Quote, Tick, parse_id
+from algodesk.api.market import FeedStatus, InstrumentId, MarketEvent, Quote, Tick
 from algodesk.data.manifest import DataManifest, FileRecord
 from algodesk.data.schema import events_to_table
 
@@ -161,15 +161,10 @@ class Recorder:
 
     def partition_dir(self, instrument: InstrumentId, date_str: str) -> Path:
         """Compute partitioned directory path for ticks."""
-        parts = parse_id(instrument)
-        return (
-            self._data_dir
-            / "ticks"
-            / f"exchange={parts.exchange}"
-            / f"segment={parts.segment}"
-            / f"symbol={parts.symbol}"
-            / f"date={date_str}"
-        )
+        from algodesk.data.layout import instrument_partition_path
+
+        part = instrument_partition_path(instrument)
+        return self._data_dir / "ticks" / part / f"date={date_str}"
 
     def flush(self, instrument: InstrumentId | None = None) -> list[str]:
         """Flush buffer to part file(s) and record in manifest."""
@@ -247,7 +242,7 @@ class Recorder:
             return []
 
         compacted: list[str] = []
-        for date_dir in ticks_dir.glob(f"*/*/*/date={d_str}"):
+        for date_dir in sorted(ticks_dir.rglob(f"date={d_str}")):
             res = self._compact_partition(date_dir, d_str)
             if res:
                 compacted.append(res)

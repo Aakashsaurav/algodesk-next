@@ -1013,23 +1013,47 @@ class SessionRunner:
             groups_dir = self.runtime.root / "config" / "groups"
             symbols = list(resolve_selector(f"@{u_cfg.group}", manifest, groups_dir=groups_dir))
 
+        from algodesk.data.aliases import resolve_alias
+
         res: dict[InstrumentId, Instrument] = {}
         for s in symbols:
-            inst_id = InstrumentId(s)
-            p = parse_id(s)
-            res[inst_id] = Instrument(
-                id=inst_id,
+            canonical_id = resolve_alias(s)
+            p = parse_id(canonical_id)
+            inst = Instrument(
+                id=canonical_id,
                 exchange=p.exchange,
                 segment=p.segment,
                 symbol=p.symbol,
-                kind="equity",
+                expiry=p.expiry,
+                strike=p.strike,
+                option_type=p.option_type,
                 lot_size=1,
                 tick_size=Decimal("0.05"),
-                expiry=p.expiry,
-                underlying=None,
+                underlying=p.underlying,
                 isin=None,
                 broker_keys={},
             )
+            res[canonical_id] = inst
+            if str(canonical_id) != str(s):
+                res[InstrumentId(s)] = inst
+
+        import hashlib
+
+        sorted_keys = sorted(str(k) for k in res.keys())
+        content_hash = hashlib.sha256("\n".join(sorted_keys).encode("utf-8")).hexdigest()[:16]
+        if hasattr(self, "journal") and self.journal is not None:
+            try:
+                self.journal.append(
+                    "universe.frozen",
+                    {
+                        "group": getattr(u_cfg, "group", None),
+                        "hash": content_hash,
+                        "instruments": sorted_keys,
+                    },
+                )
+            except Exception:
+                pass
+
         return res
 
     async def _execute_session(
@@ -1040,7 +1064,31 @@ class SessionRunner:
     ) -> None:
         """Stream market events, process fills, advance scheduler, and monitor heartbeat."""
         notify: NotifyBridge = c["notify"]
-        notify.notify_session_start(self.run_name, str(self.mode), len(c["instruments"]))
+        diff_warnings: list[str] = []
+        try:
+            from algodesk.data.instruments_store import InstrumentStore
+
+            store = InstrumentStore(self.runtime.paths.data)
+            dates = store.list_dates("upstox")
+            if len(dates) >= 2:
+                report = store.diff("upstox", dates[-2], dates[-1])
+                univ_set = {str(k) for k in c["instruments"].keys()}
+                for ch in report.changed:
+                    if str(ch.id) in univ_set:
+                        f_diffs = [f"{k}: {v[0]}->{v[1]}" for k, v in ch.changes.items()]
+                        diff_warnings.append(f"Master diff for {ch.id}: {', '.join(f_diffs)}")
+                for rem in report.removed:
+                    if str(rem.id) in univ_set:
+                        diff_warnings.append(f"Master diff: {rem.id} was removed from master")
+        except Exception:
+            pass
+
+        notify.notify_session_start(
+            self.run_name,
+            str(self.mode),
+            len(c["instruments"]),
+            warnings=diff_warnings or None,
+        )
 
         # Schedule timers
         self._setup_timers(c, clock, journal)

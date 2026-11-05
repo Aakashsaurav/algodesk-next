@@ -400,3 +400,15 @@ scope = "global"
 tighten = "up"
 description = "Minimum tick frequency per minute for an instrument to be included in aggregate liquid feed delay stats"
 owner = "data"
+
+[[param]]
+name = "contract.rollover_days"
+type = "int"
+default = 3
+min = 0
+max = 30
+unit = "days"
+scope = "global"
+tighten = "down"
+description = "Number of calendar days before contract expiry to roll over to next contract"
+owner = "data"

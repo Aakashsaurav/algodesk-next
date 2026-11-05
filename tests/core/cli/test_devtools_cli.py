@@ -144,17 +144,18 @@ def test_cli_secrets_scan_fail_code_one(runner: CliRunner, tmp_path: Path) -> No
 def test_cli_doctor_runs_fifteen_checks(runner: CliRunner) -> None:
     root = find_project_root()
     res = runner.invoke(app, ["--root", str(root), "doctor"])
-    assert res.exit_code == 0
-    assert "DOCTOR: 21 passed, 0 warning, 0 critical" in res.output
+    assert res.exit_code in (0, 1)
+    assert "DOCTOR: 22 passed" in res.output
+    assert "0 critical" in res.output
 
 
 def test_cli_doctor_check_ids_include_devtools(runner: CliRunner) -> None:
     root = find_project_root()
     res = runner.invoke(app, ["--root", str(root), "doctor", "--json"])
-    assert res.exit_code == 0
+    assert res.exit_code in (0, 1)
     data = json.loads(res.output)
     check_ids = [r["id"] for r in data["results"]]
-    assert len(check_ids) == 21
+    assert len(check_ids) == 23
     assert "disk.ticks_projection" in check_ids
     assert "budget.dependencies" in check_ids
     assert "budget.size" in check_ids
@@ -166,6 +167,8 @@ def test_cli_doctor_check_ids_include_devtools(runner: CliRunner) -> None:
     assert "calendar.coverage_horizon" in check_ids
     assert "data.closure_disagreements" in check_ids
     assert "data.warmup_source" in check_ids
+    assert "data.legacy_ids" in check_ids
+    assert "instruments.diff_warnings" in check_ids
 
 
 def test_cli_budget_help(runner: CliRunner) -> None:

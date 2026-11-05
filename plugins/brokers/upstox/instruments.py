@@ -20,9 +20,11 @@ import httpx
 from algodesk.api import (
     AlgoDeskError,
     ConfigError,
+    DataError,
     Instrument,
     InstrumentId,
     PluginContext,
+    resolve_alias,
 )
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -173,56 +175,168 @@ class UpstoxInstrumentManager:
         self._symbol_to_inst.clear()
 
         for row in entries:
-            inst = self._map_row(row)
-            if inst is not None:
-                result.append(inst)
-                self._instruments[str(inst.id)] = inst
-                upstox_key = inst.broker_keys.get("upstox")
-                if upstox_key:
-                    self._key_to_inst[upstox_key] = inst
-                sym = row.get("tradingsymbol") or row.get("trading_symbol") or inst.symbol
-                self._symbol_to_inst[sym.upper()] = inst
+            try:
+                inst = self._map_row(row)
+            except Exception:
+                continue
+            result.append(inst)
+            self._instruments[str(inst.id)] = inst
+            upstox_key = inst.broker_keys.get("upstox")
+            if upstox_key:
+                self._key_to_inst[upstox_key] = inst
+            sym = row.get("tradingsymbol") or row.get("trading_symbol") or inst.symbol
+            self._symbol_to_inst[str(sym).upper()] = inst
+            if inst.trading_symbol:
+                self._symbol_to_inst[inst.trading_symbol.upper()] = inst
 
         return result
 
-    def _map_row(self, row: dict[str, Any]) -> Instrument | None:
-        key = row.get("instrument_key", "")
-        if not key or "|" not in key:
+    def _parse_upstox_expiry(self, val: Any) -> date | None:
+        if val is None or val == "":
             return None
+        if isinstance(val, (int, float)):
+            return datetime.fromtimestamp(val / 1000.0, tz=IST).date()
+        s = str(val).strip()
+        if s.isdigit():
+            return datetime.fromtimestamp(int(s) / 1000.0, tz=IST).date()
+        if "-" in s:
+            try:
+                return date.fromisoformat(s)
+            except Exception:
+                pass
+        return None
+
+    def _map_row(self, row: dict[str, Any]) -> Instrument:
+        key = str(row.get("instrument_key", "")).strip()
+        if not key or "|" not in key:
+            raise DataError(
+                what=f"Cannot map Upstox record: missing or invalid instrument_key: {row!r}",
+                where="UpstoxInstrumentManager._map_row",
+                fix="Ensure instrument master record has valid instrument_key",
+            )
 
         seg_prefix, identifier = key.split("|", 1)
-        parts = seg_prefix.split("_")
-        exchange = parts[0].upper()
-        seg_type = parts[1].upper() if len(parts) > 1 else "EQ"
-        raw_symbol = row.get("tradingsymbol") or row.get("trading_symbol") or identifier
-        symbol = str(raw_symbol).upper()
+        raw_exch = str(row.get("exchange") or seg_prefix.split("_")[0]).strip().upper()
+        exchange = raw_exch if raw_exch else "NSE"
+        seg_type = str(row.get("segment") or seg_prefix).strip().upper()
+        itype = str(row.get("instrument_type") or "").strip().upper()
+        trading_symbol = str(
+            row.get("tradingsymbol") or row.get("trading_symbol") or identifier
+        ).strip().upper()
 
-        canonical_seg = "EQ" if seg_type in ("EQ", "INDEX") else "FNO"
-        canonical_id = InstrumentId(f"{exchange}:{canonical_seg}:{symbol}")
+        if itype == "FUT":
+            canonical_seg = "FUT"
+        elif itype in ("CE", "PE"):
+            canonical_seg = "OPT"
+        elif itype == "INDEX" or "INDEX" in seg_type:
+            canonical_seg = "INDEX"
+        elif "EQ" in seg_type or itype in (
+            "EQ", "EQUITY", "A", "B", "T", "BE", "SM", "BZ", "Z", "M", "MT",
+            "ST", "E", "P", "X", "XT", "G", "GS", "TB", "GB", "F"
+        ):
+            canonical_seg = "EQ"
+        elif "COM" in seg_type and itype == "COM":
+            canonical_seg = "COM"
+        elif seg_type == "GLOBAL_INDICATOR" or itype == "INDICATOR":
+            canonical_seg = "INDICATOR"
+        else:
+            raise DataError(
+                what=(
+                    f"Cannot map Upstox record '{key}': unsupported segment "
+                    f"'{seg_type}' and type '{itype}'"
+                ),
+                where="UpstoxInstrumentManager._map_row",
+                fix="Check instrument master record or support this market segment",
+            )
+
+        expiry: date | None = None
+        strike: Decimal | None = None
+        option_type: str | None = None
+
+        if canonical_seg in ("FUT", "OPT"):
+            raw_exp = row.get("expiry") or row.get("last_trading_date")
+            expiry = self._parse_upstox_expiry(raw_exp)
+            if expiry is None:
+                raise DataError(
+                    what=f"Cannot map Upstox record '{key}': missing or invalid expiry date ({raw_exp!r})",
+                    where="UpstoxInstrumentManager._map_row",
+                    fix="Verify expiry field in master record",
+                )
+            und = str(
+                row.get("underlying_symbol") or row.get("asset_symbol") or ""
+            ).strip().upper()
+            if not und:
+                und = trading_symbol.split()[0]
+            underlying = und
+            symbol = underlying
+
+            if canonical_seg == "OPT":
+                raw_strike = row.get("strike_price") or row.get("strike")
+                if raw_strike is None or raw_strike == "":
+                    raise DataError(
+                        what=f"Cannot map Upstox option record '{key}': missing strike price",
+                        where="UpstoxInstrumentManager._map_row",
+                        fix="Verify strike_price in master record",
+                    )
+                try:
+                    k_dec = Decimal(str(raw_strike))
+                    if k_dec == k_dec.to_integral_value():
+                        strike = Decimal(int(k_dec))
+                    else:
+                        strike = k_dec.normalize()
+                except Exception as e:
+                    raise DataError(
+                        what=f"Cannot map Upstox option record '{key}': invalid strike price {raw_strike!r}",
+                        where="UpstoxInstrumentManager._map_row",
+                        fix="Verify strike_price in master record",
+                    ) from e
+                if itype not in ("CE", "PE"):
+                    raise DataError(
+                        what=f"Cannot map Upstox option record '{key}': invalid option type {itype!r}",
+                        where="UpstoxInstrumentManager._map_row",
+                        fix="Option instrument_type must be CE or PE",
+                    )
+                option_type = itype
+        else:
+            symbol = trading_symbol
+            underlying = symbol
 
         try:
-            lot = int(row.get("lot_size") or 1)
+            lot = int(row.get("lot_size") or row.get("minimum_lot") or 1)
         except (ValueError, TypeError):
+            lot = 1
+        if lot <= 0:
             lot = 1
 
         try:
             tick = Decimal(str(row.get("tick_size") or "0.05"))
         except Exception:
             tick = Decimal("0.05")
+        if tick <= Decimal(0):
+            tick = Decimal("0.05")
 
-        isin = str(row.get("isin") or (identifier if identifier.startswith("IN") else "")).strip()
+        isin = str(
+            row.get("isin") or (identifier if identifier.startswith("IN") else "")
+        ).strip()
         broker_keys: dict[str, str] = {"upstox": key}
         if isin:
             broker_keys["isin"] = isin
+        token = row.get("exchange_token")
+        if token:
+            broker_keys["exchange_token"] = str(token)
 
         return Instrument(
-            id=canonical_id,
             exchange=exchange,
             segment=canonical_seg,
             symbol=symbol,
-            kind="equity" if canonical_seg == "EQ" else "fno",
+            underlying=underlying,
+            expiry=expiry,
+            strike=strike,
+            option_type=option_type,
             lot_size=lot,
             tick_size=tick,
+            isin=isin or None,
+            trading_symbol=trading_symbol,
             broker_keys=broker_keys,
         )
 
@@ -236,6 +350,14 @@ class UpstoxInstrumentManager:
                 fetch_error = e
 
         raw = str(symbol_or_id).strip()
+
+        try:
+            resolved_id = str(resolve_alias(raw))
+            if resolved_id in self._instruments:
+                return self._instruments[resolved_id]
+        except Exception:
+            pass
+
         if raw in self._instruments:
             return self._instruments[raw]
         if raw in self._key_to_inst:

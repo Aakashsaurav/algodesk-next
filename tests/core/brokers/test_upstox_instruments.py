@@ -109,7 +109,7 @@ def test_instruments_mapping_and_lookup(tmp_path: Path) -> None:
     # Index symbol lookup
     nifty = mgr.resolve("NIFTY 50")
     assert nifty is not None
-    assert nifty.id == InstrumentId("NSE:EQ:NIFTY 50")
+    assert nifty.id == InstrumentId("NSE:INDEX:NIFTY 50")
     assert nifty.lot_size == 25
     assert nifty.broker_keys["upstox"] == "NSE_INDEX|Nifty 50"
 

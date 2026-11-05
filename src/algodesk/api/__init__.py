@@ -3,6 +3,7 @@
 Public API surface — re-exports everything downstream code needs.
 """
 
+from algodesk.api.alias import parse_legacy_symbol, register_alias, resolve_alias
 from algodesk.api.checks import CheckResult, DoctorCheck, Severity
 from algodesk.api.conformance import (
     bar_sequence_conformance_problems,
@@ -116,6 +117,10 @@ from algodesk.api.trading import (
 )
 
 __all__ = [
+    # alias
+    "resolve_alias",
+    "register_alias",
+    "parse_legacy_symbol",
     # scrub
     "Scrubber",
     # checks

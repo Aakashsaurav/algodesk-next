@@ -166,9 +166,13 @@ class DataManifest:
             "(exchange TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL, "
             "evidence TEXT NOT NULL, created TEXT NOT NULL, "
             "PRIMARY KEY (exchange, day));\n"
+            "CREATE TABLE IF NOT EXISTS instrument_aliases "
+            "(alias TEXT PRIMARY KEY, canonical_id TEXT NOT NULL, created_at TEXT NOT NULL);\n"
             "CREATE INDEX IF NOT EXISTS idx_files_inst_date ON files(instrument, date);\n"
             "CREATE INDEX IF NOT EXISTS idx_files_kind_state ON files(kind, state);\n"
             "CREATE INDEX IF NOT EXISTS idx_inst_sym ON instruments(trading_symbol);\n"
+            "CREATE INDEX IF NOT EXISTS idx_inst_aliases_canonical "
+            "ON instrument_aliases(canonical_id);\n"
             "CREATE INDEX IF NOT EXISTS idx_market_closures_exchange_day "
             "ON market_closures(exchange, day);\n"
         )
@@ -277,6 +281,12 @@ class DataManifest:
         except Exception:
             self._rollback()
             raise
+
+    add_file = record_file
+
+    def delete_file(self, path: str) -> bool:
+        """Delete a single file by path under explicit transaction."""
+        return self.delete_files([path]) > 0
 
     def replace_parts_with_day(
         self,
@@ -389,10 +399,6 @@ class DataManifest:
     def list_instruments(self) -> list[InstrumentRecord]:
         """Alias for get_instruments."""
         return self.get_instruments()
-
-    def delete_file(self, path: str) -> None:
-        """Delete single file record from manifest."""
-        self.delete_files([path])
 
     def record_dataset(self, record: DatasetRecord) -> None:
         """Insert or replace dataset metadata row under transaction."""
@@ -758,6 +764,37 @@ class DataManifest:
         except Exception:
             self._rollback()
             raise
+
+    def add_alias(self, alias: str, canonical_id: str) -> None:
+        """Register an instrument alias in the manifest under transaction."""
+        try:
+            self._begin_immediate()
+            self._conn.execute(
+                "INSERT OR REPLACE INTO instrument_aliases (alias, canonical_id, created_at) "
+                "VALUES (?, ?, datetime('now'))",
+                (alias.strip(), canonical_id.strip()),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
+    def resolve_alias(self, alias: str) -> str | None:
+        """Resolve an alias to canonical instrument ID if present."""
+        cur = self._conn.execute(
+            "SELECT canonical_id FROM instrument_aliases WHERE alias = ?",
+            (alias.strip(),),
+        )
+        row = cur.fetchone()
+        return str(row[0]) if row else None
+
+    def list_aliases(self) -> dict[str, str]:
+        """List all registered aliases."""
+        cur = self._conn.execute(
+            "SELECT alias, canonical_id FROM instrument_aliases ORDER BY alias"
+        )
+        rows = cur.fetchall()
+        return {r[0]: r[1] for r in rows}
 
     def close(self) -> None:
         """Close SQLite database connection."""

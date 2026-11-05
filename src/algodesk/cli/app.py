@@ -27,6 +27,7 @@ from algodesk.cli.doctor_devtools import (
     lint_cmd,
 )
 from algodesk.cli.fees_calendar import calendar_app, fees_app
+from algodesk.cli.instruments import instruments_app
 from algodesk.cli.journal import journal_app
 from algodesk.cli.login_feed import feed_app, login_app
 from algodesk.cli.param import config_app, param_app
@@ -62,6 +63,7 @@ app.add_typer(calendar_app, name="calendar")
 app.add_typer(fees_app, name="fees")
 app.add_typer(data_app, name="data")
 app.add_typer(groups_app, name="groups")
+app.add_typer(instruments_app, name="instruments")
 app.add_typer(login_app, name="login")
 app.add_typer(feed_app, name="feed")
 app.add_typer(docs_app, name="docs")

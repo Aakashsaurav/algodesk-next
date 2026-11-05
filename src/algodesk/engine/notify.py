@@ -85,11 +85,20 @@ class NotifyBridge:
                     except Exception:
                         pass
 
-    def notify_session_start(self, run_name: str, mode: str, count: int) -> None:
+    def notify_session_start(
+        self,
+        run_name: str,
+        mode: str,
+        count: int,
+        warnings: list[str] | None = None,
+    ) -> None:
+        text = f"AlgoDesk Next {mode} session '{run_name}' started with {count} instruments."
+        if warnings:
+            text += "\nWarnings:\n" + "\n".join(f"- {w}" for w in warnings)
         msg = Message(
             title="Session Started",
-            text=f"AlgoDesk Next {mode} session '{run_name}' started with {count} instruments.",
-            severity="info",
+            text=text,
+            severity="warning" if warnings else "info",
             channel="alerts",
             ts=self._clock.now(),
         )

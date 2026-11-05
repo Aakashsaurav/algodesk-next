@@ -69,6 +69,15 @@ class YFinanceBrokerPlugin(PluginBase, DataSource):
         if ":" in raw:
             parts = raw.split(":")
             exch = parts[0].upper()
+            seg = parts[1].upper()
+            if seg != "EQ":
+                raise NotSupported(
+                    what=(
+                        f"Yahoo Finance maps equity only, got segment '{seg}' in '{instrument}'"
+                    ),
+                    where="YFinanceBrokerPlugin.map_symbol",
+                    fix="Use an exchange broker plugin (e.g. upstox) for derivatives",
+                )
             sym = parts[2] if len(parts) >= 3 else parts[-1]
             if exch == "NSE":
                 return f"{sym}.NS"

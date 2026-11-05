@@ -322,6 +322,24 @@ Detect exchange holidays and special trading sessions empirically:
 - List recorded closures: `algodesk data closures list --exchange NSE`
 - Doctor checks: `algodesk doctor` warns when calendar coverage expiration falls within `calendar.warn_days` (default 60 days) or when unresolved closure disagreements exist.
 
+### Instrument ID migration & contract-aware layout
+Migrate legacy tick and bar partition paths (with spaces/raw trading symbols) to canonical structured IDs (`EXCHANGE:SEGMENT:SYMBOL[:EXPIRY[:STRIKE:TYPE]]`):
+- Preview migration plan: `algodesk data migrate-ids --dry-run`
+- Copy files, verify row counts/checksums, and update manifest: `algodesk data migrate-ids --apply`
+- Permanently remove verified legacy source files: `algodesk data migrate-ids --finalize`
+- Diagnostics: `algodesk doctor` reports `data.legacy_ids` warning while legacy partition files remain.
+
+### Daily instrument master diffing & universe tracking
+Inspect changes between daily master snapshots:
+- Compare snapshots: `algodesk instruments diff [DATE_A] [DATE_B] [--source upstox] [--json]`
+- Output reports added, removed, and changed instruments (lot size, tick size, expiry, ISIN) and journals `instruments.diff`.
+- Universe warnings: changes impacting active universe groups trigger doctor warnings (`instruments.diff_warnings`) and Telegram session alerts.
+
+### Universe resolution & trading feasibility
+- Inspect group with frozen content hash: `algodesk groups show <GROUP_NAME> --resolved [--json]`
+- Check capital feasibility against latest close prices: `algodesk instruments feasibility --group <GROUP_NAME> --capital <INR> [--json]`
+- Feasibility evaluates single lot requirements against capital, noting that margin requirements are not estimated.
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |

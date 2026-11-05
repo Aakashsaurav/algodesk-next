@@ -78,3 +78,37 @@ def get_group(name: str, groups_dir: Path | str | None = None) -> list[str] | No
     """Retrieve members for a single group by name, or None if not found."""
     groups = load_groups(groups_dir)
     return groups.get(name)
+
+
+def resolve_group_universe(
+    name: str,
+    groups_dir: Path | str | None = None,
+    manifest: Any | None = None,
+) -> tuple[list[str], str]:
+    """Resolve group members to canonical InstrumentIds and compute deterministic content hash.
+
+    Returns:
+        (canonical_instruments, content_hash)
+    """
+    import hashlib
+
+    from algodesk.data.aliases import resolve_alias
+
+    raw_members = get_group(name, groups_dir)
+    if raw_members is None:
+        known = sorted(load_groups(groups_dir).keys())
+        raise ConfigError(
+            what=f"Group '{name}' not found",
+            where=f"config/groups/{name}.toml",
+            fix=f"Available groups: {', '.join(known)}",
+        )
+
+    resolved: list[str] = []
+    for m in raw_members:
+        canonical = str(resolve_alias(m, manifest=manifest))
+        resolved.append(canonical)
+
+    sorted_unique = sorted(list(set(resolved)))
+    payload = "\n".join(sorted_unique).encode("utf-8")
+    content_hash = hashlib.sha256(payload).hexdigest()[:16]
+    return (sorted_unique, content_hash)
