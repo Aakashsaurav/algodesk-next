@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from datetime import UTC, datetime
+from typing import Any
 
 import typer
 
@@ -201,6 +202,9 @@ def replay_cmd(
     dates: str | None = typer.Option(
         None, "--dates", help="Comma-separated dates to replay (YYYY-MM-DD)"
     ),
+    session: str | None = typer.Option(
+        None, "--session", help="Paper run ID to replay (reproduces that exact session)"
+    ),
     run: str | None = typer.Option(None, "--run", help="Run configuration name"),
     twice: bool = typer.Option(
         False, "--twice", help="Execute twice and verify bit-identical replay determinism"
@@ -232,6 +236,63 @@ def replay_cmd(
             parsed_dates.append(d_clean)
 
     with _open_rt(ctx, ensure=True) as rt:
+        if session:
+            sess_dir = rt.paths.results / session
+            if not sess_dir.is_dir():
+                raise ConfigError(
+                    what=f"Session directory not found for '{session}'",
+                    where=f"results/{session}",
+                    fix="Provide a valid paper session ID",
+                )
+            if not run:
+                sum_path = sess_dir / "SUMMARY.md"
+                if sum_path.is_file():
+                    for line in sum_path.read_text(encoding="utf-8").splitlines():
+                        if "Session " in line:
+                            parts = line.split("Session ")
+                            if len(parts) > 1:
+                                inferred = parts[1].split()[0]
+                                if inferred:
+                                    run_name = inferred
+                                    break
+                if run_name == "demo_paper" and "_paper_" in session:
+                    run_name = session.split("_paper_")[0]
+
+        if parsed_dates and not session:
+            results_dir = rt.paths.results
+            for d in parsed_dates:
+                d_nodash = d.replace("-", "")
+                matching_sessions: list[tuple[str, dict[str, Any]]] = []
+                if results_dir.is_dir():
+                    for p in sorted(results_dir.iterdir()):
+                        if not p.is_dir():
+                            continue
+                        m_file = p / "metrics.json"
+                        if not m_file.is_file():
+                            continue
+                        try:
+                            m_data = json.loads(m_file.read_text(encoding="utf-8"))
+                        except Exception:
+                            continue
+                        is_paper = m_data.get("mode") == "paper" or "_paper_" in p.name
+                        if is_paper and (
+                            m_data.get("date") == d or f"_paper_{d_nodash}_" in p.name
+                        ):
+                            matching_sessions.append((p.name, m_data))
+                if len(matching_sessions) > 1:
+                    msg = (
+                        f"Refusing replay for date {d}: multiple recorded sessions "
+                        f"({len(matching_sessions)}) found."
+                    )
+                    typer.echo(msg)
+                    typer.echo("Please specify a session using --session <run_id>:")
+                    for s_id, s_metrics in matching_sessions:
+                        f_ist = s_metrics.get("first_tick_ist", "N/A")
+                        l_ist = s_metrics.get("last_tick_ist", "N/A")
+                        trades = s_metrics.get("trades", s_metrics.get("fills", 0))
+                        typer.echo(f"  - {s_id} (first: {f_ist}, last: {l_ist}, fills: {trades})")
+                    raise typer.Exit(code=1)
+
         eff = build_effective(rt.root, run_name=run_name)
         if twice:
             ts_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -244,9 +305,14 @@ def replay_cmd(
                     run_config=eff.run,
                     mode="replay",
                     replay_dates=parsed_dates,
+                    replay_session=session,
                     run_id=r_id,
                     quiet=quiet,
+                    warmup_source=warmup_source,
                 )
+                if runner_rep.version_warnings:
+                    for w in runner_rep.version_warnings:
+                        typer.echo(f"Warning: {w}")
                 p2 = asyncio.run(runner_rep.run())
 
             is_equal, diff = compare_runs(rt.root, run_id_a, run_id_b)
@@ -260,8 +326,13 @@ def replay_cmd(
                 run_config=eff.run,
                 mode="replay",
                 replay_dates=parsed_dates,
+                replay_session=session,
                 quiet=quiet,
+                warmup_source=warmup_source,
             )
+            if runner.version_warnings:
+                for w in runner.version_warnings:
+                    typer.echo(f"Warning: {w}")
             p = asyncio.run(runner.run())
             typer.echo(f"results folder: {p}")
 

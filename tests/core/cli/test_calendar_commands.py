@@ -75,10 +75,11 @@ def test_calendar_holidays_nse(runner: CliRunner) -> None:
 
 
 def test_calendar_check_success_and_failure(runner: CliRunner) -> None:
-    # 3 days check should succeed (assuming current date in early Nov 2026 before special session)
+    # 2 days check should succeed (assuming current date in early Nov 2026
+    # before special session on 2026-11-08)
     res_ok = runner.invoke(
         app,
-        ["calendar", "check", "--exchange", "nse", "--days", "3"],
+        ["calendar", "check", "--exchange", "nse", "--days", "2"],
     )
     assert res_ok.exit_code == 0
     assert "OK:" in res_ok.output

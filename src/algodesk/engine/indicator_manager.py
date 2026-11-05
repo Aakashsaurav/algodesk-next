@@ -6,7 +6,7 @@ handles historical warm-up from DataService without look-ahead, and feeds only c
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -45,6 +45,12 @@ class IndicatorManager:
         self._plugin = indicator_plugin
         self._journal = journal
         self._indicators: dict[IndicatorKey, _IndicatorEntry] = {}
+        self._warmed_bars: list[Bar] = []
+
+    @property
+    def warmup_bars(self) -> list[Bar]:
+        """Bars used to warm up indicators prior to session start."""
+        return list(self._warmed_bars)
 
     def _make_key(
         self,
@@ -168,6 +174,8 @@ class IndicatorManager:
         )
 
         for b in feed_bars:
+            if b not in self._warmed_bars:
+                self._warmed_bars.append(b)
             for e in entries:
                 val = e.indicator.update(e.state, b.close)
                 e.current_value = val
@@ -191,6 +199,32 @@ class IndicatorManager:
                             "bars_available": e.bars_fed,
                         },
                     )
+
+    def warmup_from_bars(self, bars: Sequence[Bar]) -> None:
+        """Warm up registered indicators directly from an explicit sequence of Bar objects."""
+        if not self._indicators or not bars:
+            return
+        self._warmed_bars = list(bars)
+        series_groups: dict[tuple[InstrumentId, str], list[_IndicatorEntry]] = {}
+        for entry in self._indicators.values():
+            grp_key = (entry.instrument, entry.timeframe)
+            series_groups.setdefault(grp_key, []).append(entry)
+
+        sorted_bars = sorted(bars, key=lambda b: b.start_ts)
+        for b in sorted_bars:
+            grp = series_groups.get((b.instrument, b.timeframe))
+            if grp:
+                for e in grp:
+                    val = e.indicator.update(e.state, b.close)
+                    e.current_value = val
+                    e.bars_fed += 1
+                    if val is not None:
+                        e.values_history.append(val)
+
+        for entry in self._indicators.values():
+            entry.is_warmed = (
+                entry.bars_fed >= entry.warmup_needed and entry.current_value is not None
+            )
 
     def on_bar(self, bar: Bar) -> None:
         """Feed a bar incrementally. Only completed bars are fed (no look-ahead)."""

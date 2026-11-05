@@ -259,6 +259,21 @@ Replay recorded ticks deterministically through the exact engine wiring:
 ```bash
 algodesk replay --dates 2026-10-26 --run demo_paper
 ```
+
+**Replay a single paper session exactly**:
+To reproduce a specific paper run with its exact tick window, initial seed, and warm-up state:
+```bash
+algodesk replay --session <paper_run_id>
+```
+This scopes market tick playback strictly to `[first_tick_utc, last_tick_utc]`, restores indicator warm-up from `results/<paper_run_id>/warmup_bars.parquet` (or reconstructs warm-up from the bar store up to the session start), and verifies configuration and seed alignment.
+
+**Handling multiple recorded sessions on a single day**:
+If several paper sessions were recorded on date `YYYY-MM-DD`, running:
+```bash
+algodesk replay --dates YYYY-MM-DD
+```
+refuses execution to prevent mixing tick windows or carrying stale indicator/position state across sessions. The CLI lists all matching recorded sessions with their run IDs, tick windows, and trade counts. To replay, pass `--session <paper_run_id>`.
+
 Compare performance metrics and ordered event sequences (signals, risk decisions, orders, fills) between paper and replay runs:
 ```bash
 algodesk results compare <paper_run_id> <replay_run_id>

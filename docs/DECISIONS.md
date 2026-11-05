@@ -137,6 +137,8 @@ Short decision records (context, decision, reason) in the order they were taken.
 4. *Price-based corporate action verification*: On declared split or bonus ex-dates, observed raw close divided by previous raw close ($P_{\text{ex}} / P_{\text{prev}}$) is verified against the declared factor within `corp.price_verification_tolerance_pct` (default 5.0%). A match confirms the action with evidence `price`; a deviation flags `conflict`; and an unexplained price jump (> `corp.detect_jump_pct`, default 20.0%) with no action reports `suspect_event`.
 5. *CLI command*: `algodesk data actions verify-prices <selector> --from D --to D` displays declared factor, observed factor, verdict, and details in tabular form with summary counts.
 
+**ADR-057 Session replay reproducibility, warm-up capture, latency separation, and duplicate terminal idempotency.** Replay by `--session <paper-run-id>` reproduces single paper sessions deterministically by scoping tick playback strictly to `[first_tick_utc, last_tick_utc]`, loading persisted `warmup_bars.parquet` (or reconstructing up to window start with no later bars), and reusing run seed and config. Multi-session days refuse un-scoped replay (`replay --dates D`). Order manager idempotently journals duplicate terminal events (`order.duplicate_terminal`) without failing silently. Platform latency measures bar close receipt to intent publication monotonically, reporting `signal_age` separately. Feed delay p95 aggregates filter to liquid instruments (`feed.liquid_min_ticks_per_min`), and stop reasons (`interrupt`, `error`, `end of session`, `kill switch`) are explicitly reported.
+
 
 
 

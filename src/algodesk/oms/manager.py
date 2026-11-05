@@ -68,6 +68,12 @@ class OrderManager:
             except Exception:
                 pass
         self.submit_timeout_ms = submit_ms
+        self._duplicate_terminal_count: int = 0
+
+    @property
+    def duplicate_terminal_count(self) -> int:
+        """Count of duplicate terminal events received and journaled."""
+        return self._duplicate_terminal_count
 
     @property
     def orders(self) -> Mapping[str, Order]:
@@ -253,12 +259,36 @@ class OrderManager:
                 self._submitted_times.pop(order.client_ref, None)
 
         elif kind == "reject":
-            if order.state != OrderState.REJECTED:
+            if order.state in (OrderState.REJECTED, OrderState.CANCELLED, OrderState.FILLED):
+                if hasattr(self.journal, "append"):
+                    self.journal.append(
+                        "order.duplicate_terminal",
+                        {
+                            "client_ref": order.client_ref,
+                            "from_state": order.state.value,
+                            "event_kind": kind,
+                            "reason": event.reason or "venue_reject",
+                        },
+                    )
+                self._duplicate_terminal_count += 1
+            else:
                 self._transition(order, OrderState.REJECTED, reason=event.reason or "venue_reject")
             self._submitted_times.pop(order.client_ref, None)
 
         elif kind == "cancel":
-            if order.state != OrderState.CANCELLED:
+            if order.state in (OrderState.CANCELLED, OrderState.REJECTED, OrderState.FILLED):
+                if hasattr(self.journal, "append"):
+                    self.journal.append(
+                        "order.duplicate_terminal",
+                        {
+                            "client_ref": order.client_ref,
+                            "from_state": order.state.value,
+                            "event_kind": kind,
+                            "reason": event.reason or "venue_cancel",
+                        },
+                    )
+                self._duplicate_terminal_count += 1
+            else:
                 self._transition(order, OrderState.CANCELLED, reason=event.reason or "venue_cancel")
             self._submitted_times.pop(order.client_ref, None)
 

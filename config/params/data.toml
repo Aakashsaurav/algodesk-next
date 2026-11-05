@@ -388,3 +388,15 @@ scope = "global"
 tighten = "down"
 description = "BSE corporate actions API requests allowed per 30 minutes"
 owner = "data"
+
+[[param]]
+name = "feed.liquid_min_ticks_per_min"
+type = "int"
+default = 30
+min = 1
+max = 10000
+unit = "ticks/min"
+scope = "global"
+tighten = "up"
+description = "Minimum tick frequency per minute for an instrument to be included in aggregate liquid feed delay stats"
+owner = "data"

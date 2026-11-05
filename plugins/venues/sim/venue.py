@@ -182,11 +182,6 @@ class SimVenue:
                 accepted=False,
                 reason=rejection_reason,
             )
-            self._record_event(
-                VenueEvent(
-                    kind="reject", client_ref=client_ref, ts=trigger_ts, reason=rejection_reason
-                )
-            )
             return ack
 
         if self.timeout_rate > 0.0 and self._rng.random() < self.timeout_rate:

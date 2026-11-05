@@ -470,5 +470,7 @@ def test_replay_equivalence_same_seed_produces_identical_metrics(
         metrics2 = json.loads((res2 / "metrics.json").read_text(encoding="utf-8"))
         trades2 = (res2 / "trades.csv").read_text(encoding="utf-8")
 
+        metrics1.pop("peak_rss_mb", None)
+        metrics2.pop("peak_rss_mb", None)
         assert metrics1 == metrics2
         assert trades1 == trades2

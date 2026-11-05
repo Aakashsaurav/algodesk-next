@@ -34,6 +34,8 @@ ALLOWED_NON_PARAM_NAMES = {
     "data.closures.clear": "Journal event type for market closure clearing",
     "day.parquet": "Compacted day parquet filename",
     "order.created": "Journal event type for order creation",
+    "order.duplicate_terminal": "Journal event type for duplicate terminal order events",
+    "warmup_bars.parquet": "Persisted warmup bars parquet filename",
     "run.start": "Journal event type for run start",
     "config.effective": "Journal event type for effective config",
     "registry.snapshot": "Journal event type for registry snapshot",

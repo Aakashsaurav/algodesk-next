@@ -177,3 +177,53 @@ def test_replay_acceptance_trend_twice(tmp_project: Path) -> None:
                 found_trades = True
                 break
     assert found_trades, f"Expected replay run with trades >= 2, got:\n{res_list.stdout}"
+
+
+def test_compare_plugin_version_diffs_only_for_configured_plugins(tmp_project: Path) -> None:
+    """results compare reports version differences only for plugins in run config."""
+    from algodesk.results.compare import compare_runs
+
+    results_dir = tmp_project / "results"
+    run_a = results_dir / "demo_paper_paper_test_a"
+    run_b = results_dir / "demo_paper_replay_test_b"
+    run_a.mkdir(parents=True, exist_ok=True)
+    run_b.mkdir(parents=True, exist_ok=True)
+
+    metrics = {
+        "trades": 0,
+        "gross_pnl": 0.0,
+        "net_pnl": 0.0,
+        "charges": 0.0,
+        "win_rate": 0.0,
+        "max_drawdown": 0.0,
+    }
+    (run_a / "metrics.json").write_text(json.dumps(metrics), encoding="utf-8")
+    (run_b / "metrics.json").write_text(json.dumps(metrics), encoding="utf-8")
+
+    # Both runs configured with 'upstox', but NOT 'nse_bhavcopy'
+    cfg_text = "data_source.plugin = 'upstox'\n"
+    (run_a / "config.effective.txt").write_text(cfg_text, encoding="utf-8")
+    (run_b / "config.effective.txt").write_text(cfg_text, encoding="utf-8")
+
+    # In manifest: nse_bhavcopy has different versions, upstox has identical versions
+    man_a = {
+        "code_version": "0.1.0",
+        "plugin_versions": {
+            "nse_bhavcopy": {"version": "0.1.0", "hash": "h1"},
+            "upstox": {"version": "0.1.0", "hash": "u1"},
+        },
+    }
+    man_b = {
+        "code_version": "0.1.0",
+        "plugin_versions": {
+            "nse_bhavcopy": {"version": "0.2.0", "hash": "h2"},
+            "upstox": {"version": "0.1.0", "hash": "u1"},
+        },
+    }
+    (run_a / "manifest.json").write_text(json.dumps(man_a), encoding="utf-8")
+    (run_b / "manifest.json").write_text(json.dumps(man_b), encoding="utf-8")
+
+    is_equal, diff = compare_runs(tmp_project, run_a.name, run_b.name)
+    # Since nse_bhavcopy is not configured, its version difference should NOT cause divergence!
+    assert is_equal is True
+    assert diff is None

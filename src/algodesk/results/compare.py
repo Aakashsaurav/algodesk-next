@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -148,8 +149,31 @@ def _compare_sequence_items(
     return None
 
 
+def _get_configured_plugins(run_dir: Path) -> set[str] | None:
+    """Extract plugins configured for a run from manifest.json or config.effective.txt."""
+    man_path = run_dir / "manifest.json"
+    if man_path.is_file():
+        try:
+            man = json.loads(man_path.read_text(encoding="utf-8"))
+            if "configured_plugins" in man and isinstance(man["configured_plugins"], list):
+                return set(man["configured_plugins"])
+        except Exception:
+            pass
+
+    eff_path = run_dir / "config.effective.txt"
+    if eff_path.is_file():
+        try:
+            content = eff_path.read_text(encoding="utf-8")
+            matches = re.findall(r"(?:plugin|schedule|screen)\s*=\s*['\"]([^'\"]+)['\"]", content)
+            if matches:
+                return set(matches)
+        except Exception:
+            pass
+    return None
+
+
 def _format_version_differences(dir_a: Path, dir_b: Path) -> list[str]:
-    """Compare code and plugin versions between two result manifests."""
+    """Compare code and plugin versions between two manifests for configured plugins."""
     diffs: list[str] = []
     man_a_path = dir_a / "manifest.json"
     man_b_path = dir_b / "manifest.json"
@@ -168,8 +192,17 @@ def _format_version_differences(dir_a: Path, dir_b: Path) -> list[str]:
 
     pv_a = man_a.get("plugin_versions") or {}
     pv_b = man_b.get("plugin_versions") or {}
+
+    active_a = _get_configured_plugins(dir_a)
+    active_b = _get_configured_plugins(dir_b)
+    configured_filter: set[str] | None = None
+    if active_a is not None or active_b is not None:
+        configured_filter = (active_a or set()) | (active_b or set())
+
     all_plugins = sorted(set(pv_a.keys()) | set(pv_b.keys()))
     for p_name in all_plugins:
+        if configured_filter is not None and p_name not in configured_filter:
+            continue
         info_a = pv_a.get(p_name, {})
         info_b = pv_b.get(p_name, {})
         va, vb = info_a.get("version"), info_b.get("version")

@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import resource
+import signal
 import sys
 import time
 import uuid
@@ -46,7 +48,7 @@ from algodesk.api.protocols import Clock
 from algodesk.data.catalog import resolve_selector
 from algodesk.data.manifest import DataManifest
 from algodesk.data.recorder import Recorder
-from algodesk.data.replay import ReplayFeed
+from algodesk.data.replay import ReplayFeed, save_warmup_bars_parquet
 from algodesk.engine.bars import BarBuilder
 from algodesk.engine.bus import EventBus
 from algodesk.engine.clock import SimClock, WallClock
@@ -76,6 +78,16 @@ from algodesk.risk.view import RiskViewContext
 logger = logging.getLogger("algodesk.engine.runner")
 
 
+def _parse_ist_str_to_utc(ist_str: str) -> datetime:
+    """Parse 'YYYY-MM-DD HH:MM:SS IST' or ISO timestamp to UTC datetime."""
+    s = str(ist_str).replace(" IST", "").strip()
+    try:
+        dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        return dt.replace(tzinfo=IST).astimezone(UTC)
+    except Exception:
+        return datetime.fromisoformat(s).astimezone(UTC)
+
+
 class SessionRunner:
     """Executes paper trading and deterministic replay sessions end-to-end."""
 
@@ -95,19 +107,87 @@ class SessionRunner:
         secrets: Any | None = None,
         quiet: bool = False,
         warmup_source: str | None = None,
+        replay_session: str | None = None,
+        tick_window: tuple[datetime, datetime] | None = None,
     ) -> None:
         self.runtime = runtime
         self._secrets_provider = secrets
         self.quiet = quiet
         self.warmup_source = warmup_source
+        self.replay_session = replay_session
+        self.tick_window = tick_window
+        self._version_warnings: list[str] = []
         self._data_service: Any = None
         self.run_config = run_config or runtime.effective.run
         if isinstance(mode, str):
             self.mode = Mode.BACKTEST if mode.lower() == "replay" else Mode(mode.lower())
         else:
             self.mode = mode
-        self._is_replay: bool = str(mode).lower() == "replay" or bool(replay_dates)
+        self._is_replay: bool = (
+            str(mode).lower() == "replay" or bool(replay_dates) or bool(replay_session)
+        )
         self.observe = observe
+
+        if replay_session:
+            sess_path = self.runtime.paths.results / replay_session
+            if not sess_path.is_dir() and Path(replay_session).is_dir():
+                sess_path = Path(replay_session)
+            if not sess_path.is_dir():
+                raise ConfigError(
+                    what=f"Session '{replay_session}' not found in results directory",
+                    where="SessionRunner",
+                    fix="Use 'algodesk results list' to view available sessions",
+                )
+            m_path = sess_path / "metrics.json"
+            man_path = sess_path / "manifest.json"
+            m_data = json.loads(m_path.read_text(encoding="utf-8")) if m_path.is_file() else {}
+            man_data = (
+                json.loads(man_path.read_text(encoding="utf-8")) if man_path.is_file() else {}
+            )
+
+            sess_date = m_data.get("date")
+            if sess_date and not replay_dates:
+                replay_dates = [str(sess_date)]
+            if seed is None and man_data.get("seed") is not None:
+                seed = int(man_data["seed"])
+
+            if not self.tick_window:
+                w_start: datetime | None = None
+                w_end: datetime | None = None
+                if m_data.get("first_tick_utc") and m_data.get("last_tick_utc"):
+                    w_start = datetime.fromisoformat(m_data["first_tick_utc"])
+                    w_end = datetime.fromisoformat(m_data["last_tick_utc"])
+                elif m_data.get("first_tick_ist") and m_data.get("last_tick_ist"):
+                    w_start = _parse_ist_str_to_utc(m_data["first_tick_ist"])
+                    w_end = _parse_ist_str_to_utc(m_data["last_tick_ist"])
+                if w_start and w_end:
+                    self.tick_window = (w_start, w_end)
+
+            from algodesk.results.compare import _get_configured_plugins
+
+            active_p = _get_configured_plugins(sess_path)
+            pv_sess = man_data.get("plugin_versions") or {}
+            curr_map = {p.name: p for p in self.runtime.plugins.list()}
+            for p_name, p_info in pv_sess.items():
+                if active_p is not None and p_name not in active_p:
+                    continue
+                try:
+                    p_curr = curr_map.get(p_name)
+                    if p_curr and p_curr.manifest.version != p_info.get("version"):
+                        p_ver = p_info.get("version")
+                        self._version_warnings.append(
+                            f"plugin '{p_name}' version: {p_ver} (paper) != "
+                            f"{p_curr.manifest.version} (current)"
+                        )
+                except Exception:
+                    pass
+            if self._version_warnings:
+                logger.warning(
+                    "Version differences for replayed session %s: %s",
+                    replay_session,
+                    ", ".join(self._version_warnings),
+                )
+
         if replay_dates:
             cleaned_dates: list[str] = []
             for d in replay_dates:
@@ -143,6 +223,7 @@ class SessionRunner:
 
         self._stop_event = asyncio.Event()
         self._interrupted = False
+        self._killswitch_tripped = False
         self._feed_halted = False
         self._run_error: str | None = None
 
@@ -156,13 +237,17 @@ class SessionRunner:
 
         self._tick_to_intent_latencies: list[float] = []
         self._feed_delays: list[float] = []
+        self._feed_delays_by_inst: dict[str, list[float]] = {}
         self._platform_latencies: list[float] = []
+        self._signal_ages: list[float] = []
         self._bar_close_delays: list[float] = []
         self._first_tick_logged: set[InstrumentId] = set()
         self._latest_tick_ts: dict[Any, datetime] = {}
         self._latest_tick_mono: dict[Any, float] = {}
         self._latest_tick_recv_time: dict[Any, datetime] = {}
         self._last_bar_trigger_mono: dict[Any, float] = {}
+        self._last_bar_close_mono: dict[Any, float] = {}
+        self._last_bar_end_ts: dict[Any, datetime] = {}
         self._first_tick_ts: datetime | None = None
         self._last_tick_ts: datetime | None = None
         self._bars_closed: int = 0
@@ -185,8 +270,19 @@ class SessionRunner:
             return "replay"
         return str(self.mode.value if hasattr(self.mode, "value") else self.mode)
 
-    def stop(self) -> None:
+    @property
+    def version_warnings(self) -> list[str]:
+        return list(getattr(self, "_version_warnings", []))
+
+    def stop(self, reason: str = "interrupt") -> None:
         """Signal the session runner to stop event streaming and cleanly shut down."""
+        if reason == "interrupt":
+            self._interrupted = True
+        elif reason == "kill switch":
+            self._killswitch_tripped = True
+            self._killswitch_events += 1
+        elif reason == "error":
+            self._run_error = self._run_error or "Stopped due to error"
         self._stop_event.set()
 
     def run_prestart_doctor(self) -> None:
@@ -246,6 +342,20 @@ class SessionRunner:
         journal = self._init_journal()
         components: dict[str, Any] = {}
         error_to_reraise: Exception | None = None
+
+        loop = asyncio.get_running_loop()
+        installed_signals: list[signal.Signals] = []
+
+        def _handle_sig() -> None:
+            logger.info("Interrupt signal received; stopping session.")
+            self.stop(reason="interrupt")
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _handle_sig)
+                installed_signals.append(sig)
+            except (NotImplementedError, RuntimeError):
+                pass
 
         try:
             self.run_prestart_doctor()
@@ -354,6 +464,11 @@ class SessionRunner:
             self._run_error = f"Unhandled error: {exc}"
             error_to_reraise = exc
         finally:
+            for sig in installed_signals:
+                try:
+                    loop.remove_signal_handler(sig)
+                except (NotImplementedError, RuntimeError):
+                    pass
             if results_path is None:
                 results_path = self._finalize_session(components, clock, journal)
             if log_handle is not None:
@@ -366,6 +481,8 @@ class SessionRunner:
 
     def _init_clock(self) -> Clock:
         if self._is_replay:
+            if self.tick_window is not None:
+                return SimClock(initial_time=self.tick_window[0])
             initial = datetime(2026, 10, 26, 3, 45, tzinfo=UTC)
             if self.replay_dates:
                 d = self.replay_dates[0]
@@ -834,9 +951,10 @@ class SessionRunner:
             if tick_ts is not None and getattr(bar, "end_ts", None) is not None:
                 bcd = max(0.0, (tick_ts - bar.end_ts).total_seconds() * 1000.0)
                 self._bar_close_delays.append(bcd)
-            self._last_bar_trigger_mono[bar.instrument] = self._latest_tick_mono.get(
-                bar.instrument, time.monotonic()
-            )
+            now_mono = time.monotonic()
+            self._last_bar_close_mono[bar.instrument] = now_mono
+            self._last_bar_trigger_mono[bar.instrument] = now_mono
+            self._last_bar_end_ts[bar.instrument] = getattr(bar, "end_ts", self.clock.now())
             asyncio.create_task(_on_bar_closed(bar))
 
         tfs = [s.params.get("timeframe", "5m") for s in self.run_config.strategies]
@@ -851,10 +969,13 @@ class SessionRunner:
     def _on_strategy_intent(self, inst: Any, now_dt: datetime) -> None:
         self._signals_count += 1
         t_mono = time.monotonic()
-        trigger_mono = self._last_bar_trigger_mono.get(inst, t_mono)
-        lat = max(0.01, (t_mono - trigger_mono) * 1000.0)
+        close_mono = self._last_bar_close_mono.get(inst, t_mono)
+        lat = max(0.01, (t_mono - close_mono) * 1000.0)
         self._platform_latencies.append(lat)
         self._tick_to_intent_latencies.append(lat)
+        bar_end = self._last_bar_end_ts.get(inst, now_dt)
+        sig_age = max(0.0, (now_dt - bar_end).total_seconds() * 1000.0)
+        self._signal_ages.append(sig_age)
 
     def _init_recorder(self, bus: EventBus, scheduler: Scheduler) -> Recorder | None:
         if self.mode != Mode.PAPER or not getattr(self.run_config, "recording", True):
@@ -924,20 +1045,39 @@ class SessionRunner:
         # Schedule timers
         self._setup_timers(c, clock, journal)
 
-        # Warm-up registered indicators using DataService
+        # Warm-up registered indicators using DataService or saved session warm-up bars
         ind_mgr: IndicatorManager | None = c.get("ind_mgr")
-        if ind_mgr is not None and self._data_service is not None:
-            try:
-                eff_src = self.warmup_source or "upstox"
-                ind_mgr.warmup(self._data_service, session_start=clock.now(), source=eff_src)
-            except Exception as exc:
-                logger.warning("Indicator warmup error: %s", exc)
+        if ind_mgr is not None:
+            warmed = False
+            if self.replay_session:
+                sess_dir = self.runtime.paths.results / self.replay_session
+                if not sess_dir.is_dir() and Path(self.replay_session).is_dir():
+                    sess_dir = Path(self.replay_session)
+                wb_path = sess_dir / "warmup_bars.parquet"
+                if wb_path.is_file():
+                    from algodesk.data.replay import load_warmup_bars_parquet
+
+                    bars = load_warmup_bars_parquet(wb_path)
+                    ind_mgr.warmup_from_bars(bars)
+                    logger.info("Loaded %d warm-up bars from %s", len(bars), wb_path)
+                    warmed = True
+
+            if not warmed and self._data_service is not None:
+                try:
+                    eff_src = self.warmup_source or "upstox"
+                    w_start = self.tick_window[0] if self.tick_window else clock.now()
+                    ind_mgr.warmup(self._data_service, session_start=w_start, source=eff_src)
+                except Exception as exc:
+                    logger.warning("Indicator warmup error: %s", exc)
 
         # Build feed stream
         stream = self._build_event_stream(c, clock)
 
         async for ev in stream:
             if self._stop_event.is_set():
+                break
+            if c.get("killswitch") is not None and c["killswitch"].is_active():
+                self.stop(reason="kill switch")
                 break
 
             # 1. Recording
@@ -954,6 +1094,7 @@ class SessionRunner:
                 if getattr(ev, "exch_ts", None) and getattr(ev, "recv_ts", None):
                     fd = max(0.0, (ev.recv_ts - ev.exch_ts).total_seconds() * 1000.0)
                     self._feed_delays.append(fd)
+                    self._feed_delays_by_inst.setdefault(str(ev.instrument), []).append(fd)
             elif isinstance(ev, Tick):
                 if self._first_tick_ts is None:
                     self._first_tick_ts = ev.exch_ts
@@ -964,6 +1105,7 @@ class SessionRunner:
                 if getattr(ev, "exch_ts", None) and getattr(ev, "recv_ts", None):
                     fd = max(0.0, (ev.recv_ts - ev.exch_ts).total_seconds() * 1000.0)
                     self._feed_delays.append(fd)
+                    self._feed_delays_by_inst.setdefault(str(ev.instrument), []).append(fd)
                 if ev.instrument not in self._first_tick_logged:
                     self._first_tick_logged.add(ev.instrument)
                     logger.info(
@@ -1256,7 +1398,9 @@ class SessionRunner:
                         seen.add(key)
                         files.append(p)
 
-            feed = ReplayFeed(files=files, clock=clock)
+            w_start = self.tick_window[0] if self.tick_window is not None else None
+            w_end = self.tick_window[1] if self.tick_window is not None else None
+            feed = ReplayFeed(files=files, clock=clock, window_start=w_start, window_end=w_end)
 
             async def _replay_generator() -> AsyncIterator[MarketEvent]:
                 for item in feed:
@@ -1405,8 +1549,44 @@ class SessionRunner:
             if now_ist > session_open:
                 is_partial = True
 
-        if self._feed_delays:
-            sorted_fd = sorted(self._feed_delays)
+        duration_sec = (
+            (self._last_tick_ts - self._first_tick_ts).total_seconds()
+            if (self._first_tick_ts and self._last_tick_ts)
+            else 0.0
+        )
+        duration_hours = max(0.0001, duration_sec / 3600.0)
+        duration_min = max(0.1, duration_sec / 60.0)
+
+        reg_rate_val = (
+            self.runtime.params.get("feed.liquid_min_ticks_per_min")
+            if self.runtime.params is not None
+            else None
+        )
+        liquid_rate_floor: int = int(reg_rate_val) if reg_rate_val is not None else 30
+
+        feed_delay_p95_by_instrument: dict[str, float] = {}
+        liquid_instruments: list[str] = []
+        for inst_str, count in self._tick_stats.items():
+            if (count / duration_min) >= liquid_rate_floor:
+                liquid_instruments.append(inst_str)
+
+        for inst_str, delays in self._feed_delays_by_inst.items():
+            if delays:
+                s_d = sorted(delays)
+                n_d = len(s_d)
+                feed_delay_p95_by_instrument[inst_str] = round(
+                    float(s_d[min(n_d - 1, int(n_d * 0.95))]), 2
+                )
+            else:
+                feed_delay_p95_by_instrument[inst_str] = 0.0
+
+        liquid_delays: list[float] = []
+        for inst in liquid_instruments:
+            liquid_delays.extend(self._feed_delays_by_inst.get(inst, []))
+
+        effective_feed_delays = liquid_delays if liquid_delays else self._feed_delays
+        if effective_feed_delays:
+            sorted_fd = sorted(effective_feed_delays)
             n_fd = len(sorted_fd)
             p50_fd = float(sorted_fd[int(n_fd * 0.50)])
             p95_fd = float(sorted_fd[min(n_fd - 1, int(n_fd * 0.95))])
@@ -1428,6 +1608,15 @@ class SessionRunner:
             p50_plat = 0.0
             p95_plat = 0.0
 
+        if self._signal_ages:
+            sorted_sa = sorted(self._signal_ages)
+            n_sa = len(sorted_sa)
+            p50_sig_age = float(sorted_sa[int(n_sa * 0.50)])
+            p95_sig_age = float(sorted_sa[min(n_sa - 1, int(n_sa * 0.95))])
+        else:
+            p50_sig_age = 0.0
+            p95_sig_age = 0.0
+
         if self._bar_close_delays:
             sorted_bcds = sorted(self._bar_close_delays)
             n_bcds = len(sorted_bcds)
@@ -1447,12 +1636,6 @@ class SessionRunner:
         rec_rows = recorder.total_rows if recorder is not None else 0
         rec_bytes = recorder.total_bytes if recorder is not None else 0
 
-        duration_sec = (
-            (self._last_tick_ts - self._first_tick_ts).total_seconds()
-            if (self._first_tick_ts and self._last_tick_ts)
-            else 0.0
-        )
-        duration_hours = max(0.0001, duration_sec / 3600.0)
         active_insts = (
             len([k for k, v in self._tick_stats.items() if v > 0]) or len(self._tick_stats) or 1
         )
@@ -1484,9 +1667,16 @@ class SessionRunner:
         verdict_base = "FAIL" if is_fail else "PASS"
         verdict = f"{verdict_base} (partial)" if is_partial else verdict_base
 
-        stop_reason = (
-            "interrupt" if self._interrupted else ("error" if self._run_error else "end of session")
-        )
+        ks_obj = c.get("killswitch")
+        ks_active = bool(ks_obj is not None and hasattr(ks_obj, "is_active") and ks_obj.is_active())
+        if self._killswitch_tripped or ks_active or self._killswitch_events > 0:
+            stop_reason = "kill switch"
+        elif self._interrupted:
+            stop_reason = "interrupt"
+        elif bool(self._run_error):
+            stop_reason = "error"
+        else:
+            stop_reason = "end of session"
         logger.info("Session stopped: reason=%s", stop_reason)
 
         if getattr(journal, "_current_run_id", None) is not None:
@@ -1522,6 +1712,7 @@ class SessionRunner:
                     "is_fail": is_fail,
                     "is_partial": is_partial,
                     "trades": len(fills),
+                    "stop_reason": stop_reason,
                 },
             )
 
@@ -1548,6 +1739,9 @@ class SessionRunner:
             "killswitch_events": self._killswitch_events,
             "first_tick_ist": first_tick_ist_str,
             "last_tick_ist": last_tick_ist_str,
+            "first_tick_utc": self._first_tick_ts.isoformat() if self._first_tick_ts else None,
+            "last_tick_utc": self._last_tick_ts.isoformat() if self._last_tick_ts else None,
+            "stop_reason": stop_reason,
             "session_coverage_pct": round(coverage_pct, 2),
             "bars_by_timeframe": self._bars_by_tf,
             "signals": self._signals_count,
@@ -1556,9 +1750,14 @@ class SessionRunner:
             "feed_delay_p50_ms": round(p50_fd, 2),
             "feed_delay_p95_ms": round(p95_fd, 2),
             "feed_delay_p95": round(p95_fd, 2),
+            "feed_delay_p95_by_instrument": feed_delay_p95_by_instrument,
+            "liquid_instruments": liquid_instruments,
             "platform_p50_ms": round(p50_plat, 2),
             "platform_p95_ms": round(p95_plat, 2),
             "platform_p95": round(p95_plat, 2),
+            "signal_age_p50_ms": round(p50_sig_age, 2),
+            "signal_age_p95_ms": round(p95_sig_age, 2),
+            "signal_age_p95": round(p95_sig_age, 2),
             "p50_bar_close_delay_ms": round(p50_bcd, 2),
             "p95_bar_close_delay_ms": round(p95_bcd, 2),
             "bar_close_delay_p95_ms": round(p95_bcd, 2),
@@ -1612,6 +1811,9 @@ class SessionRunner:
             "checksums": prov.get("checksums", []),
             "seed": self.seed or venue_seed,
             "instrument_master_checksum": "verified",
+            "first_tick_utc": self._first_tick_ts.isoformat() if self._first_tick_ts else None,
+            "last_tick_utc": self._last_tick_ts.isoformat() if self._last_tick_ts else None,
+            "stop_reason": stop_reason,
         }
         if self.warmup_source is not None:
             manifest_info["warmup_override"] = self.warmup_source
@@ -1638,25 +1840,53 @@ class SessionRunner:
             session_text=session_md_text,
         )
 
+        ind_mgr = c.get("ind_mgr")
+        if not self._is_replay and ind_mgr is not None and getattr(ind_mgr, "warmup_bars", None):
+            try:
+                save_warmup_bars_parquet(res_path / "warmup_bars.parquet", ind_mgr.warmup_bars)
+            except Exception as exc:
+                logger.warning("Failed to save warmup_bars.parquet: %s", exc)
+
         if notify is not None:
             notify.notify_daily_summary(session_md_text)
 
-        self._export_run_events(res_path)
+        if journal is not None and hasattr(journal, "flush"):
+            try:
+                journal.flush()
+            except Exception:
+                pass
+
+        self._export_run_events(res_path, journal)
         return res_path
 
-    def _export_run_events(self, res_path: Path) -> None:
+    def _export_run_events(self, res_path: Path, journal: Journal | None = None) -> None:
         """Export session journal events to events.jsonl in results folder."""
         try:
-            worker = getattr(self, "worker_id", getattr(self, "_worker_id", None))
-            worker_suffix = f"_{worker}" if worker else ""
-            db_file = self._journal_db or (
-                self.runtime.state.journal_db.parent / f"journal_replay{worker_suffix}.db"
-                if self._is_replay
-                else self.runtime.state.journal_db
+            db_file = (
+                journal.db_path if (journal is not None and hasattr(journal, "db_path")) else None
             )
+            if db_file is None or not db_file.is_file():
+                worker = os.environ.get("PYTEST_XDIST_WORKER") or getattr(
+                    self, "worker_id", getattr(self, "_worker_id", None)
+                )
+                worker_suffix = f"_{worker}" if worker else ""
+                db_file = self._journal_db or (
+                    self.runtime.state.journal_db.parent / f"journal_replay{worker_suffix}.db"
+                    if self._is_replay
+                    else (
+                        self.runtime.state.journal_db.parent / f"journal{worker_suffix}.db"
+                        if worker
+                        else self.runtime.state.journal_db
+                    )
+                )
             if db_file.is_file():
                 reader = JournalReader(db_file)
-                evs = reader.events(run_id=self.run_id)
+                j_run_id = getattr(journal, "_current_run_id", None)
+                evs = (
+                    reader.events(run_id=j_run_id)
+                    if j_run_id
+                    else reader.events(run_id=self.run_id)
+                )
                 evs_path = res_path / "events.jsonl"
                 with open(evs_path, "w", encoding="utf-8") as f:
                     for ev in evs:
