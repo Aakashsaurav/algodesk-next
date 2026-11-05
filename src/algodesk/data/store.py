@@ -165,6 +165,8 @@ class BarStore:
             basis = "splits"
         elif key.source == "yfinance":
             basis = "total" if key.adjustment == "adjusted" else "splits"
+        elif key.source == "nse_bhavcopy":
+            basis = "none"
         else:
             basis = "splits" if key.adjustment == "raw" else "total"
 

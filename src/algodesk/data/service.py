@@ -284,6 +284,8 @@ class DataService:
             from_basis = "splits"
         elif req_key.source == "yfinance":
             from_basis = "total" if download == "adjusted" else "splits"
+        elif req_key.source == "nse_bhavcopy":
+            from_basis = "none"
         else:
             from_basis = "splits" if download == "raw" else "total"
 

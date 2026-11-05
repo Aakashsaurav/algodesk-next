@@ -179,6 +179,7 @@ Manage partitioned corporate actions storage (`data/actions/`), reconciliation, 
 - List actions and reconciliation statuses: `algodesk data actions list RELIANCE` (add `--raw` for un-reconciled actions)
 - Check corporate actions reconciliation status: `algodesk data actions check @demo5` (add `--raw` to inspect raw feeds)
 - Add operator override (requires `--reason`): `algodesk data actions override add --symbol RELIANCE --ex-date 2024-10-28 --type bonus --ratio 2.0 --reason "Confirmed via NSE circular"`
+- Verify corporate actions against raw Bhavcopy closes: `algodesk data actions verify-prices RELIANCE --from 2024-01-01 --to 2024-12-31`
 - Audit derived adjusted series vs source-adjusted series: `algodesk data actions audit RELIANCE --from 2024-01-01 --to 2024-12-31`
 
 ### 13. Paper trading and historical replay
@@ -300,7 +301,8 @@ Flat zero-volume bars (open=high=low=close with volume 0 on expected sessions) a
 
 ### Market closure inference & calendar audits
 Detect exchange holidays and special trading sessions empirically:
-- Infer closures from liquid basket: `algodesk data closures infer --exchange NSE --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--sample <SYMBOLS>]`
+- Infer closures from liquid basket: `algodesk data closures infer --exchange NSE --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--sample <SYMBOLS>] [--dry-run]`
+- Clear recorded closures: `algodesk data closures clear [--inferred] [--exchange E] [--from <YYYY-MM-DD>] [--to <YYYY-MM-DD>]`
 - Audit discrepancies between calendar and data: `algodesk data closures check --exchange NSE [--from <YYYY-MM-DD>] [--to <YYYY-MM-DD>]`
 - List recorded closures: `algodesk data closures list --exchange NSE`
 - Doctor checks: `algodesk doctor` warns when calendar coverage expiration falls within `calendar.warn_days` (default 60 days) or when unresolved closure disagreements exist.

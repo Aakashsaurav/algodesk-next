@@ -727,6 +727,38 @@ class DataManifest:
             self._rollback()
             raise
 
+    def clear_market_closures(
+        self,
+        exchange: str | None = None,
+        start_day: str | None = None,
+        end_day: str | None = None,
+        kind: str | None = None,
+    ) -> int:
+        """Clear market closures matching filters under transaction, returning count deleted."""
+        try:
+            self._begin_immediate()
+            query = "DELETE FROM market_closures WHERE 1=1"
+            params: list[Any] = []
+            if exchange:
+                query += " AND exchange = ?"
+                params.append(exchange.upper())
+            if start_day:
+                query += " AND day >= ?"
+                params.append(start_day)
+            if end_day:
+                query += " AND day <= ?"
+                params.append(end_day)
+            if kind:
+                query += " AND kind = ?"
+                params.append(kind)
+            cur = self._conn.execute(query, tuple(params))
+            deleted = int(cur.rowcount)
+            self._commit()
+            return deleted
+        except Exception:
+            self._rollback()
+            raise
+
     def close(self) -> None:
         """Close SQLite database connection."""
         self._conn.close()

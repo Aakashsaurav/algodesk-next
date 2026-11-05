@@ -273,6 +273,18 @@ description = "Audit tolerance percentage comparing derived adjusted series with
 owner = "data"
 
 [[param]]
+name = "corp.price_verification_tolerance_pct"
+type = "float"
+default = 5.0
+min = 0.1
+max = 20.0
+unit = "%"
+scope = "global"
+tighten = "down"
+description = "Tolerance percentage for price-based corporate action split and bonus factor verification"
+owner = "data"
+
+[[param]]
 name = "data.closure_sample"
 type = "str"
 default = "NSE:EQ:RELIANCE,NSE:EQ:TCS,NSE:EQ:INFY,NSE:EQ:HDFCBANK,NSE:EQ:ICICIBANK"
@@ -291,6 +303,18 @@ unit = "symbols"
 scope = "global"
 tighten = "down"
 description = "Minimum number of symbols reporting bars on a non-trading day to infer a special trading session"
+owner = "data"
+
+[[param]]
+name = "data.closure_max_pct"
+type = "float"
+default = 8.0
+min = 0.1
+max = 100.0
+unit = "%"
+scope = "global"
+tighten = "down"
+description = "Maximum percentage of expected sessions that can be inferred as closures before aborting"
 owner = "data"
 
 [[param]]

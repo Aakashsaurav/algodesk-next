@@ -253,11 +253,13 @@ class OrderManager:
                 self._submitted_times.pop(order.client_ref, None)
 
         elif kind == "reject":
-            self._transition(order, OrderState.REJECTED, reason=event.reason or "venue_reject")
+            if order.state != OrderState.REJECTED:
+                self._transition(order, OrderState.REJECTED, reason=event.reason or "venue_reject")
             self._submitted_times.pop(order.client_ref, None)
 
         elif kind == "cancel":
-            self._transition(order, OrderState.CANCELLED, reason=event.reason or "venue_cancel")
+            if order.state != OrderState.CANCELLED:
+                self._transition(order, OrderState.CANCELLED, reason=event.reason or "venue_cancel")
             self._submitted_times.pop(order.client_ref, None)
 
         elif kind in ("partial", "fill", "partially_filled", "filled"):

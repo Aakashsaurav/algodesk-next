@@ -1,0 +1,27 @@
+name = "nse_bhavcopy"
+kind = "reference"
+version = "0.1.0"
+api_version = 1
+entry = "plugin:NSEBhavcopyReferencePlugin"
+verified_on = "2026-11-04"
+sources = [
+    "https://nsearchives.nseindia.com/content/cm/",
+    "https://nsearchives.nseindia.com/content/historical/EQUITIES/",
+]
+
+[capabilities]
+bhavcopy = true
+daily_bars = true
+
+[limits.corporate_actions]
+requests_per_second = 1
+requests_per_minute = 30
+requests_per_30min = 600
+
+[limits.bhavcopy]
+requests_per_second = 1
+requests_per_minute = 30
+requests_per_30min = 600
+
+[requires]
+packages = ["httpx"]

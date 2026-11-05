@@ -6,7 +6,8 @@ from datetime import UTC, date, datetime, timedelta
 
 from algodesk.api.market import CoverageStatus, DataGap
 from algodesk.api.protocols import Calendar
-from algodesk.data.manifest import DataManifest
+from algodesk.data.closures import has_all_samples_evidence
+from algodesk.data.manifest import DataManifest, MarketClosureRecord
 
 
 class CoverageIndex:
@@ -121,14 +122,14 @@ class CoverageIndex:
         }
 
         exch = self._resolve_exchange(dataset_id)
-        closures_map: dict[str, str] = {}
+        closures_records: dict[str, MarketClosureRecord] = {}
         if hasattr(self._manifest, "list_market_closures"):
             for mc in self._manifest.list_market_closures(
                 exchange=exch,
                 start_day=start_day.isoformat(),
                 end_day=end_day.isoformat(),
             ):
-                closures_map[mc.day] = mc.kind
+                closures_records[mc.day] = mc
 
         gaps: list[DataGap] = []
         cur = start_day
@@ -140,16 +141,20 @@ class CoverageIndex:
 
         while cur <= end_day:
             day_str = cur.isoformat()
-            closure_kind = closures_map.get(day_str)
+            closure_rec = closures_records.get(day_str)
+            closure_kind = closure_rec.kind if closure_rec else None
 
             is_closed = False
             if closure_kind == "special":
                 special_count += 1
                 is_closed = False
             elif closure_kind == "inferred":
-                closed_inf_count += 1
-                is_closed = True
-            elif closure_kind == "calendar":
+                if has_all_samples_evidence(closure_rec):
+                    closed_inf_count += 1
+                    is_closed = True
+                else:
+                    is_closed = False
+            elif closure_kind in ("calendar", "exchange_file"):
                 closed_cal_count += 1
                 is_closed = True
             else:

@@ -31,6 +31,7 @@ ALLOWED_NON_PARAM_NAMES = {
     "zerodha_nse.toml": "Example fee schedule filename",
     "data_manifest.db": "Data manifest database filename",
     "data.quarantine": "Journal event type for market data quarantine",
+    "data.closures.clear": "Journal event type for market closure clearing",
     "day.parquet": "Compacted day parquet filename",
     "order.created": "Journal event type for order creation",
     "run.start": "Journal event type for run start",

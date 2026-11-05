@@ -10,9 +10,10 @@ from algodesk.api.errors import CalendarCoverageError, DataError
 from algodesk.api.manifest import PluginManifest
 from algodesk.api.market import CoverageStatus, SeriesKey
 from algodesk.api.protocols import Calendar
+from algodesk.data.closures import has_all_samples_evidence
 from algodesk.data.coverage import CoverageIndex
 from algodesk.data.layout import dataset_id_for_key
-from algodesk.data.manifest import CoverageDayRecord, DataManifest
+from algodesk.data.manifest import CoverageDayRecord, DataManifest, MarketClosureRecord
 
 _DEFAULT_EXCH_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -175,20 +176,21 @@ class GapPlanner:
         elif hasattr(key.instrument, "exchange") and key.instrument.exchange:
             inst_exch = str(key.instrument.exchange).upper()
 
-        closures_map: dict[str, str] = {}
+        closures_records: dict[str, MarketClosureRecord] = {}
         if manifest is not None and hasattr(manifest, "list_market_closures"):
             for mc in manifest.list_market_closures(
                 exchange=inst_exch,
                 start_day=start_day.isoformat(),
                 end_day=end_day.isoformat(),
             ):
-                closures_map[mc.day] = mc.kind
+                closures_records[mc.day] = mc
 
         cur = start_day
         one_day = timedelta(days=1)
         while cur <= end_day:
             day_str = cur.isoformat()
-            closure_kind = closures_map.get(day_str)
+            closure_rec = closures_records.get(day_str)
+            closure_kind = closure_rec.kind if closure_rec else None
 
             # Special session overrides weekend/calendar closure
             if closure_kind == "special":
@@ -198,8 +200,9 @@ class GapPlanner:
                 is_closed_inferred = False
 
                 if closure_kind == "inferred":
-                    is_closed_inferred = True
-                elif closure_kind == "calendar":
+                    if has_all_samples_evidence(closure_rec):
+                        is_closed_inferred = True
+                elif closure_kind in ("calendar", "exchange_file"):
                     is_closed_calendar = True
                 else:
                     if calendar is not None:

@@ -50,6 +50,9 @@ def closures_infer(
     from_date: str = typer.Option(..., "--from", help="Start date (YYYY-MM-DD)"),
     to_date: str = typer.Option(..., "--to", help="End date (YYYY-MM-DD)"),
     sample: str | None = typer.Option(None, "--sample", help="Comma-separated sample symbols"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Simulate inference without writing records"
+    ),
     json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Infer market closures and special sessions from liquid sample symbols."""
@@ -78,10 +81,15 @@ def closures_infer(
             )
             sample_symbols = [s.strip() for s in sample_param.split(",") if s.strip()]
 
-        target_min_symbols = 1
+        symbols_consensus = 1
+        safety_share: float | None = None
         if rt.params:
             try:
-                target_min_symbols = int(rt.params.get("data.closure_min_symbols"))
+                symbols_consensus = int(rt.params.get("data.closure_min_symbols"))
+            except Exception:
+                pass
+            try:
+                safety_share = float(rt.params.get("data.closure_max_pct"))
             except Exception:
                 pass
 
@@ -107,8 +115,10 @@ def closures_infer(
             start_d=start_d,
             end_d=end_d,
             sample_symbols=sample_symbols,
-            min_symbols=target_min_symbols,
+            min_symbols=symbols_consensus,
             calendar=cal,
+            dry_run=dry_run,
+            closure_max_pct=safety_share,
         )
 
         inferred_cnt = sum(1 for r in records if r.kind == "inferred")
@@ -264,3 +274,49 @@ def closures_list(
         headers = ["EXCHANGE", "DAY", "KIND", "EVIDENCE"]
         rows = [[r.exchange, r.day, r.kind, r.evidence] for r in records]
         typer.echo(format_table(headers, rows))
+
+
+@closures_app.command("clear")
+@handle_cli_errors
+def closures_clear(
+    ctx: typer.Context,
+    inferred: bool = typer.Option(False, "--inferred", help="Clear only inferred market closures"),
+    exchange: str | None = typer.Option(None, "--exchange", "-e", help="Exchange code filter"),
+    from_date: str | None = typer.Option(None, "--from", help="Start date filter (YYYY-MM-DD)"),
+    to_date: str | None = typer.Option(None, "--to", help="End date filter (YYYY-MM-DD)"),
+) -> None:
+    """Clear market closures matching filters and record a journal event."""
+    start_d = _parse_date(from_date, "--from") if from_date else None
+    end_d = _parse_date(to_date, "--to") if to_date else None
+    if start_d and end_d and start_d > end_d:
+        raise typer.BadParameter("Start date must be <= end date", param_hint="--from")
+
+    with _open_rt(ctx, ensure=False) as rt:
+        manifest = _get_manifest(rt)
+        from algodesk.cli.data import _journal_data_event
+
+        start_str = start_d.isoformat() if start_d else None
+        end_str = end_d.isoformat() if end_d else None
+        kind_filter = "inferred" if inferred else None
+
+        deleted_cnt = manifest.clear_market_closures(
+            exchange=exchange,
+            start_day=start_str,
+            end_day=end_str,
+            kind=kind_filter,
+        )
+
+        _journal_data_event(
+            rt,
+            "data.closures.clear",
+            {
+                "exchange": exchange,
+                "from": start_str,
+                "to": end_str,
+                "inferred": inferred,
+                "count": deleted_cnt,
+            },
+            caller="data.closures.clear",
+        )
+
+        typer.echo(f"Cleared {deleted_cnt} market closure record(s).")

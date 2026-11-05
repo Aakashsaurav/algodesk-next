@@ -19,6 +19,20 @@ class DetectionItem:
     details: str
 
 
+@dataclass(frozen=True, slots=True)
+class PriceVerificationResult:
+    """Outcome of price-based corporate action verification on raw closes."""
+
+    date: date
+    symbol: str
+    event_type: str
+    declared_factor: float
+    observed_factor: float
+    verdict: str  # "confirmed" | "conflict" | "suspect_event"
+    details: str
+    action_id: str | None = None
+
+
 def _trading_day_set(bars: Sequence[Bar], idx: int) -> set[date]:
     indices = [idx] + ([idx - 1] if idx > 0 else []) + ([idx + 1] if idx + 1 < len(bars) else [])
     return {bars[i].start_ts.date() for i in indices}
@@ -91,3 +105,100 @@ def _detect_absent_ratios(
                 )
             )
     return items
+
+
+def _calc_expected_factor(action: ActionRecord) -> float:
+    t = action.type.lower()
+    if t == "split":
+        if action.ratio_old is not None and action.ratio_new is not None:
+            return float(action.ratio_new) / float(action.ratio_old)
+        if action.ratio is not None and float(action.ratio) > 0.0:
+            return 1.0 / float(action.ratio)
+    elif t == "bonus":
+        if action.ratio_new is not None and action.ratio_old is not None:
+            return float(action.ratio_old) / float(action.ratio_new + action.ratio_old)
+        if action.ratio is not None and float(action.ratio) > 0.0:
+            r_val = float(action.ratio)
+            share_mult = r_val + 1.0 if r_val <= 1.0 else r_val
+            return 1.0 / share_mult
+    return 1.0
+
+
+def verify_prices_for_actions(
+    symbol: str,
+    bars: Sequence[Bar],
+    actions: Sequence[ActionRecord],
+    tolerance_pct: float = 5.0,
+    jump_pct: float = 20.0,
+) -> list[PriceVerificationResult]:
+    """Verify declared splits and bonuses against raw closes, and flag unexplained jumps."""
+    if len(bars) < 2:
+        return []
+    sorted_bars = sorted(bars, key=lambda b: b.start_ts)
+    date_to_idx = {b.start_ts.date(): i for i, b in enumerate(sorted_bars)}
+    clean_sym = symbol.split(":")[-1].strip().upper()
+    results: list[PriceVerificationResult] = []
+    action_dates: set[date] = set()
+
+    for a in actions:
+        t = a.type.lower()
+        if t not in ("split", "bonus"):
+            continue
+        action_dates.add(a.ex_date)
+        idx = date_to_idx.get(a.ex_date)
+        if idx is None or idx == 0:
+            continue
+        curr_b, prev_b = sorted_bars[idx], sorted_bars[idx - 1]
+        if curr_b.close <= 0 or prev_b.close <= 0:
+            continue
+        obs_factor = curr_b.close / prev_b.close
+        dec_factor = _calc_expected_factor(a)
+        diff = abs(obs_factor - dec_factor) / dec_factor * 100.0
+
+        if diff <= tolerance_pct:
+            verdict = "confirmed"
+            msg = (
+                f"Observed price factor {obs_factor:.4f} matches declared {dec_factor:.4f} "
+                f"within {tolerance_pct:.1f}% (diff {diff:.2f}%)"
+            )
+        else:
+            verdict = "conflict"
+            msg = (
+                f"Observed price factor {obs_factor:.4f} deviates from declared {dec_factor:.4f} "
+                f"by {diff:.2f}% (> {tolerance_pct:.1f}%)"
+            )
+        results.append(
+            PriceVerificationResult(
+                date=a.ex_date,
+                symbol=clean_sym,
+                event_type=t,
+                declared_factor=dec_factor,
+                observed_factor=obs_factor,
+                verdict=verdict,
+                details=msg,
+                action_id=a.id,
+            )
+        )
+
+    for i in range(1, len(sorted_bars)):
+        prev_b, curr_b = sorted_bars[i - 1], sorted_bars[i]
+        c_date = curr_b.start_ts.date()
+        if prev_b.close <= 0:
+            continue
+        j_diff = abs(curr_b.close / prev_b.close - 1.0) * 100.0
+        if j_diff > jump_pct and not _trading_day_set(sorted_bars, i).intersection(action_dates):
+            results.append(
+                PriceVerificationResult(
+                    date=c_date,
+                    symbol=clean_sym,
+                    event_type="jump",
+                    declared_factor=1.0,
+                    observed_factor=curr_b.close / prev_b.close,
+                    verdict="suspect_event",
+                    details=(
+                        f"Unexplained price jump of {j_diff:.1f}% "
+                        f"({prev_b.close:.2f} -> {curr_b.close:.2f}) with no corporate action"
+                    ),
+                )
+            )
+    return sorted(results, key=lambda r: r.date)

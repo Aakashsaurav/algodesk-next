@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from itertools import groupby
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import typer
@@ -17,6 +17,7 @@ import typer
 from algodesk.api import ActionRecord, Bar, InstrumentId, SeriesKey
 from algodesk.api.errors import ConfigError, DataError
 from algodesk.api.kinds import Mode, PluginKind
+from algodesk.api.protocols import DataSource
 from algodesk.cli.closures import closures_app
 from algodesk.cli.common import _open_rt, format_table, handle_cli_errors
 from algodesk.cli.secrets import _resolve_secrets_provider
@@ -30,7 +31,11 @@ from algodesk.data.catalog import (
     resolve_selector,
 )
 from algodesk.data.coverage import CoverageIndex
-from algodesk.data.detection import detect_price_anomalies
+from algodesk.data.detection import (
+    PriceVerificationResult,
+    detect_price_anomalies,
+    verify_prices_for_actions,
+)
 from algodesk.data.groups import get_group, list_group_details
 from algodesk.data.layout import dataset_id_for_key, parse_bar_file_path
 from algodesk.data.manifest import (
@@ -128,14 +133,21 @@ def _parse_data_cli_dt(val: str, is_end: bool) -> datetime:
 def _build_data_service(rt: Runtime, source: str = "yfinance") -> DataService:
     sec_prov = _resolve_secrets_provider(rt)
     p_ctx = build_context(Mode.RESEARCH, run_id=f"data_ds_{source}", secrets=sec_prov)
-    broker: Any = rt.plugins.create("broker", source, config={}, ctx=p_ctx)
-    manifests = {p.manifest.name: p.manifest for p in rt.plugins.list() if hasattr(p, "manifest")}
+    manifest = _get_manifest(rt)
     store = BarStore(
         getattr(getattr(rt, "paths", None), "data", Path("data")),
-        _get_manifest(rt),
+        manifest,
         params=rt.params,
         journal=getattr(rt, "journal", None),
     )
+    if source == "nse_bhavcopy":
+        b_ref: Any = rt.plugins.create(PluginKind.REFERENCE, "nse_bhavcopy", config={}, ctx=p_ctx)
+        b_ref._store = store
+        b_ref._manifest = manifest
+        broker: DataSource = cast(DataSource, b_ref)
+    else:
+        broker = cast(DataSource, rt.plugins.create("broker", source, config={}, ctx=p_ctx))
+    manifests = {p.manifest.name: p.manifest for p in rt.plugins.list() if hasattr(p, "manifest")}
     j = getattr(rt, "journal", None)
     cal: Any = None
     try:
@@ -1084,11 +1096,28 @@ def data_gaps(
                 )
 
         closure_counts = cov_index.last_closure_counts
-        counts_msg = (
-            f"Closures: {closure_counts['closed_calendar']} closed (calendar), "
-            f"{closure_counts['closed_inferred']} closed (inferred), "
-            f"{closure_counts['special_sessions']} special session(s)."
-        )
+        closed_inf = closure_counts["closed_inferred"]
+        total_days = (end_d - start_d).days + 1
+        inf_msg = f"{closed_inf} day(s) relied on inferred closures."
+        warning_msg = ""
+        if total_days > 0 and (closed_inf / total_days) > 0.05:
+            pct = (closed_inf / total_days) * 100.0
+            warning_msg = (
+                f"Warning: {closed_inf} days ({pct:.1f}%) relied on inferred closures, "
+                f"exceeding 5% threshold."
+            )
+
+        counts_parts = [
+            (
+                f"Closures: {closure_counts['closed_calendar']} closed (calendar), "
+                f"{closure_counts['closed_inferred']} closed (inferred), "
+                f"{closure_counts['special_sessions']} special session(s)."
+            ),
+            inf_msg,
+        ]
+        if warning_msg:
+            counts_parts.append(warning_msg)
+        counts_msg = "\n".join(counts_parts)
 
         if json_out:
             typer.echo(json.dumps(all_gaps, indent=2))
@@ -1326,10 +1355,21 @@ def _format_action_row(
     ]
 
 
-def _format_summary_counts(statuses: Sequence[str]) -> str:
+def _format_summary_counts(statuses: Sequence[str], full_taxonomy: bool = False) -> str:
     from collections import Counter
 
     counts = Counter(statuses)
+    if full_taxonomy:
+        categories = [
+            "confirmed",
+            "confirmed (implied)",
+            "unverified",
+            "conflict",
+            "manual_required",
+        ]
+        extra = sorted([k for k in counts if k not in categories])
+        all_keys = categories + extra
+        return ", ".join(f"{st}={counts.get(st, 0)}" for st in all_keys)
     return ", ".join(f"{st}={cnt}" for st, cnt in sorted(counts.items()))
 
 
@@ -1381,14 +1421,20 @@ def actions_list(
         typer.echo(f"\nSummary counts: {_format_summary_counts([r[5] for r in rows])}")
 
 
-COMPARE_COLUMNS = ["Symbol", "Date", "Type", "Sources", "Values", "Status", "Reason"]
+COMPARE_COLUMNS = ["Symbol", "Date", "Type", "Sources", "Values", "Evidence", "Status", "Reason"]
 
 
-def _format_event_values(acts: Sequence[ActionRecord]) -> str:
+def _format_event_values(acts: Sequence[ActionRecord], later_factor: float = 1.0) -> str:
     parts: list[str] = []
     for a in sorted(acts, key=lambda x: x.source.lower()):
         src = a.source or "unknown"
-        if a.ratio is not None:
+        if a.amount is not None:
+            if src.lower() != "yfinance" and later_factor != 1.0:
+                norm_val = float(a.amount) / later_factor
+                v = f"Rs {a.amount} (norm: {norm_val:.4g})"
+            else:
+                v = f"Rs {a.amount}"
+        elif a.ratio is not None:
             if a.ratio_new is not None and a.ratio_old is not None:
                 v = f"{a.ratio_new:g}:{a.ratio_old:g}"
             else:
@@ -1397,8 +1443,6 @@ def _format_event_values(acts: Sequence[ActionRecord]) -> str:
                     if isinstance(a.ratio, float) and a.ratio.is_integer()
                     else f"{a.ratio}"
                 )
-        elif a.amount is not None:
-            v = f"Rs {a.amount}"
         else:
             v = "-"
         parts.append(f"{src}: {v}")
@@ -1428,14 +1472,23 @@ def actions_compare(
             if not raw_actions:
                 continue
             reconciled = reconciler.reconcile(exchange, s, raw_actions)
+            split_bonus_factors = reconciler.get_split_bonus_factors(raw_actions)
+
             by_key: dict[tuple[date, str], list[ActionRecord]] = {}
             for a in raw_actions:
                 by_key.setdefault((a.ex_date, a.type.lower()), []).append(a)
 
             for rec in reconciled:
-                matching = by_key.get((rec.ex_date, rec.type.lower())) or [rec]
+                matching = by_key.get((rec.ex_date, rec.type.lower()))
+                if not matching:
+                    if rec.type.lower() == "bonus":
+                        matching = by_key.get((rec.ex_date, "split")) or [rec]
+                    else:
+                        matching = [rec]
                 srcs = ", ".join(sorted({a.source for a in matching if a.source}))
-                vals = _format_event_values(matching)
+                later_factor = reconciler.cumulative_factor_after(split_bonus_factors, rec.ex_date)
+                vals = _format_event_values(matching, later_factor=later_factor)
+                ev_kind = reconciler.classify_evidence(rec, matching)
                 rows.append(
                     [
                         rec.symbol,
@@ -1443,6 +1496,7 @@ def actions_compare(
                         rec.type,
                         srcs or rec.source or "-",
                         vals,
+                        ev_kind,
                         rec.status,
                         rec.reason or "-",
                     ]
@@ -1453,7 +1507,9 @@ def actions_compare(
             return
 
         typer.echo(format_table(COMPARE_COLUMNS, rows))
-        typer.echo(f"\nSummary counts: {_format_summary_counts([r[5] for r in rows])}")
+        typer.echo(
+            f"\nSummary counts: {_format_summary_counts([r[6] for r in rows], full_taxonomy=True)}"
+        )
 
 
 @actions_app.command("check")
@@ -1615,6 +1671,107 @@ def actions_audit(
             )
         else:
             typer.echo(f"\nAudit completed clean: all symbols within {tol}% tolerance.")
+
+
+VERIFY_PRICES_COLUMNS = [
+    "Date",
+    "Symbol",
+    "Type",
+    "Declared",
+    "Observed",
+    "Verdict",
+    "Details",
+]
+
+
+def _load_bars_for_verify(
+    rt: Runtime,
+    sym: str,
+    exchange: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    source: str,
+) -> list[Bar]:
+    inst = f"{exchange.upper()}:EQ:{sym.upper()}"
+    try:
+        ds = _build_data_service(rt, source=source)
+        d_slice = ds.get(inst, start_dt, end_dt, download="raw", adjust="none", source=source)
+        if d_slice.bars:
+            return list(d_slice.bars)
+    except Exception:
+        pass
+
+    try:
+        store = BarStore(rt.paths.data, _get_manifest(rt), params=rt.params)
+        key = SeriesKey(InstrumentId(inst), "bars", "1d", "raw", source)
+        s_slice = store.read(key, start_dt, end_dt)
+        if s_slice.bars:
+            return list(s_slice.bars)
+    except Exception:
+        pass
+    return []
+
+
+@actions_app.command("verify-prices")
+@handle_cli_errors
+def actions_verify_prices(
+    ctx: typer.Context,
+    selector: str = typer.Argument(..., help="Symbol, ID, or @group selector"),
+    from_date: str = typer.Option(..., "--from", help="Start date (YYYY-MM-DD)"),
+    to_date: str = typer.Option(..., "--to", help="End date (YYYY-MM-DD)"),
+    exchange: str = typer.Option("NSE", "--exchange", help="Exchange code"),
+    source: str = typer.Option("nse_bhavcopy", "--source", help="Data source for raw closes"),
+) -> None:
+    """Verify declared splits and bonuses against raw closes, and flag unexplained jumps."""
+    with _open_rt(ctx, ensure=False) as rt:
+        manifest = _get_manifest(rt)
+        store = ActionsStore(data_dir=rt.paths.data, manifest=manifest)
+        symbols = _resolve_action_symbols(rt, manifest, selector, exchange)
+        if not symbols:
+            typer.echo(f"No symbols found for selector '{selector}'.")
+            return
+
+        p = rt.params
+        reconciler = _build_reconciler(ctx, p)
+        raw_tol = p.get("corp.price_verification_tolerance_pct", "5.0") if p else 5.0
+        tol = float(raw_tol)
+        raw_jump = p.get("corp.detect_jump_pct", "20.0") if p else 20.0
+        jump_pct = float(raw_jump)
+
+        start_dt = _parse_data_cli_dt(from_date, is_end=False)
+        end_dt = _parse_data_cli_dt(to_date, is_end=True)
+
+        all_results: list[PriceVerificationResult] = []
+        for sym in symbols:
+            raw_acts = store.read(exchange, sym)
+            acts = reconciler.reconcile(exchange, sym, raw_acts)
+            bars = _load_bars_for_verify(rt, sym, exchange, start_dt, end_dt, source)
+            res_list = verify_prices_for_actions(
+                sym, bars, acts, tolerance_pct=tol, jump_pct=jump_pct
+            )
+            all_results.extend(res_list)
+
+        if not all_results:
+            typer.echo("No corporate actions or price anomalies found in range.")
+            return
+
+        rows = [
+            [
+                r.date.isoformat(),
+                r.symbol,
+                r.event_type.upper(),
+                f"{r.declared_factor:.4f}",
+                f"{r.observed_factor:.4f}",
+                r.verdict,
+                r.details,
+            ]
+            for r in all_results
+        ]
+        typer.echo(format_table(VERIFY_PRICES_COLUMNS, rows))
+        verdicts = [r.verdict for r in all_results]
+        v_counts = {v: verdicts.count(v) for v in sorted(set(verdicts))}
+        v_summary = ", ".join(f"{k}={v}" for k, v in v_counts.items())
+        typer.echo(f"\nSummary counts: {v_summary}")
 
 
 @override_app.command("add")

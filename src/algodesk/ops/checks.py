@@ -634,8 +634,13 @@ def _check_market_closure_disagreements(runtime: Runtime) -> CheckResult:
                 message=f"{total} unresolved market closure disagreement(s) found",
                 fix="Run 'algodesk data closures check' and update calendar data",
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        return CheckResult(
+            ok=False,
+            severity=Severity.WARNING,
+            message=f"Error checking market closure disagreements: {exc}",
+            fix="Run 'algodesk data closures check' and inspect manifest or calendar plugins",
+        )
     return CheckResult(ok=True, message="No unresolved market closure disagreements")
 
 
