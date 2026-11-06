@@ -293,7 +293,24 @@ def replay_cmd(
                         typer.echo(f"  - {s_id} (first: {f_ist}, last: {l_ist}, fills: {trades})")
                     raise typer.Exit(code=1)
 
-        eff = build_effective(rt.root, run_name=run_name)
+        session_warnings: list[str] = []
+        if session:
+            from algodesk.engine.replay_config import load_recorded_session_config
+
+            run_config, session_warnings = load_recorded_session_config(sess_dir, rt)
+        else:
+            eff = build_effective(rt.root, run_name=run_name)
+            if eff.run is None:
+                raise ConfigError(
+                    what=f"Run configuration '{run_name}' could not be loaded",
+                    where=f"config/runs/{run_name}.toml",
+                    fix="Verify run configuration exists and is valid",
+                )
+            run_config = eff.run
+
+        for w in session_warnings:
+            typer.echo(f"Warning: {w}")
+
         if twice:
             ts_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             run_id_a = f"{run_name}_replay_{ts_str}_a"
@@ -302,7 +319,7 @@ def replay_cmd(
             for r_id in (run_id_a, run_id_b):
                 runner_rep = SessionRunner(
                     rt,
-                    run_config=eff.run,
+                    run_config=run_config,
                     mode="replay",
                     replay_dates=parsed_dates,
                     replay_session=session,
@@ -323,7 +340,7 @@ def replay_cmd(
         else:
             runner = SessionRunner(
                 rt,
-                run_config=eff.run,
+                run_config=run_config,
                 mode="replay",
                 replay_dates=parsed_dates,
                 replay_session=session,

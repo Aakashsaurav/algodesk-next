@@ -265,7 +265,7 @@ To reproduce a specific paper run with its exact tick window, initial seed, and 
 ```bash
 algodesk replay --session <paper_run_id>
 ```
-This scopes market tick playback strictly to `[first_tick_utc, last_tick_utc]`, restores indicator warm-up from `results/<paper_run_id>/warmup_bars.parquet` (or reconstructs warm-up from the bar store up to the session start), and verifies configuration and seed alignment.
+This scopes market tick playback strictly to `[first_tick_utc, last_tick_utc]`, restores indicator warm-up from `results/<paper_run_id>/warmup_bars.parquet` (or reconstructs warm-up from the bar store up to the session start), loads the run's recorded configuration (`config.effective.txt`) and parameter snapshot (`registry.snapshot.json`), verifies fee schedule presence, and warns on commit/plugin hash divergence.
 
 **Handling multiple recorded sessions on a single day**:
 If several paper sessions were recorded on date `YYYY-MM-DD`, running:
@@ -300,12 +300,18 @@ Upstox fundamentals corporate-actions requires an active OAuth access token (`up
 - Diagnostic probe: `algodesk spike upstox-actions --symbols <symbol> --raw` (prints token type used).
 - If actions are older than `data.actions_ttl_hours` and OAuth token is absent, `algodesk doctor` issues a warning to run `algodesk login upstox`.
 
-### Actions audit
+### Actions audit & price verification
 Audit the computed dividend-adjusted series against vendor total-adjusted downloads:
 ```bash
 algodesk data actions audit <symbol> --from <YYYY-MM-DD> --to <YYYY-MM-DD>
 ```
 Reports max and median percentage differences, highlighting any symbols exceeding the tolerance threshold. If missing a series, prints the exact command to fetch it.
+
+Verify corporate action execution factors against raw Bhavcopy price jumps:
+```bash
+algodesk data actions verify-prices <symbol> --from <YYYY-MM-DD> --to <YYYY-MM-DD>
+```
+Evaluates observed raw close factor ($P_{\text{ex}} / P_{\text{prev}}$) against declared event factors and standard nominal corporate action ratios within `corp.price_verify_tolerance_pct` (default 8.0%).
 
 ### Inspecting data gaps and phantom bars
 Inspect missing trading days across series:
@@ -316,7 +322,8 @@ Flat zero-volume bars (open=high=low=close with volume 0 on expected sessions) a
 
 ### Market closure inference & calendar audits
 Detect exchange holidays and special trading sessions empirically:
-- Infer closures from liquid basket: `algodesk data closures infer --exchange NSE --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--sample <SYMBOLS>] [--dry-run]`
+- Infer closures: `algodesk data closures infer --exchange NSE --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--sample <SYMBOLS>] [--dry-run]`
+  (Evaluates official Bhavcopy archive presence first for NSE; falls back to sample symbols using presence-only retrieval that bypasses corporate action adjustment policies).
 - Clear recorded closures: `algodesk data closures clear [--inferred] [--exchange E] [--from <YYYY-MM-DD>] [--to <YYYY-MM-DD>]`
 - Audit discrepancies between calendar and data: `algodesk data closures check --exchange NSE [--from <YYYY-MM-DD>] [--to <YYYY-MM-DD>]`
 - List recorded closures: `algodesk data closures list --exchange NSE`

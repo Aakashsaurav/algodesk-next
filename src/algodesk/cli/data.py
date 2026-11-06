@@ -1798,19 +1798,19 @@ def _load_bars_for_verify(
 ) -> list[Bar]:
     inst = f"{exchange.upper()}:EQ:{sym.upper()}"
     try:
-        ds = _build_data_service(rt, source=source)
-        d_slice = ds.get(inst, start_dt, end_dt, download="raw", adjust="none", source=source)
-        if d_slice.bars:
-            return list(d_slice.bars)
-    except Exception:
-        pass
-
-    try:
         store = BarStore(rt.paths.data, _get_manifest(rt), params=rt.params)
         key = SeriesKey(InstrumentId(inst), "bars", "1d", "raw", source)
         s_slice = store.read(key, start_dt, end_dt)
         if s_slice.bars:
             return list(s_slice.bars)
+    except Exception:
+        pass
+
+    try:
+        ds = _build_data_service(rt, source=source)
+        d_slice = ds.get(inst, start_dt, end_dt, download="raw", presence_only=True, source=source)
+        if d_slice.bars:
+            return list(d_slice.bars)
     except Exception:
         pass
     return []
@@ -1837,7 +1837,15 @@ def actions_verify_prices(
 
         p = rt.params
         reconciler = _build_reconciler(ctx, p)
-        raw_tol = p.get("corp.price_verification_tolerance_pct", "5.0") if p else 5.0
+        raw_tol = (
+            (
+                p.get("corp.price_verify_tolerance_pct")
+                or p.get("corp.price_verification_tolerance_pct")
+                or 8.0
+            )
+            if p
+            else 8.0
+        )
         tol = float(raw_tol)
         raw_jump = p.get("corp.detect_jump_pct", "20.0") if p else 20.0
         jump_pct = float(raw_jump)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import date
+
+import pytest
 from typer.testing import CliRunner
 
 from algodesk.cli.app import app
@@ -74,9 +77,17 @@ def test_calendar_holidays_nse(runner: CliRunner) -> None:
     assert "Republic Day" in res.output
 
 
-def test_calendar_check_success_and_failure(runner: CliRunner) -> None:
+def test_calendar_check_success_and_failure(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # 2 days check should succeed (assuming current date in early Nov 2026
     # before special session on 2026-11-08)
+    class FixedDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return date(2026, 11, 2)
+
+    monkeypatch.setattr("algodesk.cli.fees_calendar.date", FixedDate)
     res_ok = runner.invoke(
         app,
         ["calendar", "check", "--exchange", "nse", "--days", "2"],

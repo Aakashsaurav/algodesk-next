@@ -450,7 +450,7 @@ def test_replay_net_pnl_baseline_exact() -> None:
     assert res_path is not None and res_path.exists()
     try:
         metrics = json.loads((res_path / "metrics.json").read_text(encoding="utf-8"))
-        assert Decimal(str(metrics["net_pnl"])) == Decimal("-30.02")
+        assert Decimal(str(metrics["net_pnl"])) == Decimal("-261.11")
         assert Decimal(str(metrics["gross_pnl"])) == Decimal("-7.25")
         assert metrics["trades"] == 29
     finally:

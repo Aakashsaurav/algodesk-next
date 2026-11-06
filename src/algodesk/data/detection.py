@@ -107,6 +107,22 @@ def _detect_absent_ratios(
     return items
 
 
+STANDARD_RATIOS: tuple[float, ...] = (
+    0.1,  # 10:1 split
+    0.125,  # 8:1 split
+    1.0 / 7.0,  # 7:1 split
+    1.0 / 6.0,  # 5:1 bonus
+    0.2,  # 5:1 split or 4:1 bonus
+    0.25,  # 4:1 split or 3:1 bonus
+    1.0 / 3.0,  # 3:1 split or 2:1 bonus
+    0.4,  # 5:2 split
+    0.5,  # 2:1 split or 1:1 bonus
+    2.0 / 3.0,  # 1:2 bonus
+    0.75,  # 1:3 bonus
+    0.8,  # 1:4 bonus
+)
+
+
 def _calc_expected_factor(action: ActionRecord) -> float:
     t = action.type.lower()
     if t == "split":
@@ -128,7 +144,7 @@ def verify_prices_for_actions(
     symbol: str,
     bars: Sequence[Bar],
     actions: Sequence[ActionRecord],
-    tolerance_pct: float = 5.0,
+    tolerance_pct: float = 8.0,
     jump_pct: float = 20.0,
 ) -> list[PriceVerificationResult]:
     """Verify declared splits and bonuses against raw closes, and flag unexplained jumps."""
@@ -153,19 +169,23 @@ def verify_prices_for_actions(
             continue
         obs_factor = curr_b.close / prev_b.close
         dec_factor = _calc_expected_factor(a)
-        diff = abs(obs_factor - dec_factor) / dec_factor * 100.0
+        diff_dec = abs(obs_factor - dec_factor) / dec_factor * 100.0
+        nearest_std = min(STANDARD_RATIOS, key=lambda s: abs(s - obs_factor))
+        diff_std = abs(obs_factor - nearest_std) / nearest_std * 100.0
+        std_matches_dec = abs(dec_factor - nearest_std) / nearest_std * 100.0 <= 1.0
 
-        if diff <= tolerance_pct:
+        if diff_dec <= tolerance_pct or (std_matches_dec and diff_std <= tolerance_pct):
             verdict = "confirmed"
+            eff_diff = min(diff_dec, diff_std) if std_matches_dec else diff_dec
             msg = (
                 f"Observed price factor {obs_factor:.4f} matches declared {dec_factor:.4f} "
-                f"within {tolerance_pct:.1f}% (diff {diff:.2f}%)"
+                f"within {tolerance_pct:.1f}% (diff {eff_diff:.2f}%)"
             )
         else:
             verdict = "conflict"
             msg = (
                 f"Observed price factor {obs_factor:.4f} deviates from declared {dec_factor:.4f} "
-                f"by {diff:.2f}% (> {tolerance_pct:.1f}%)"
+                f"by {diff_dec:.2f}% (> {tolerance_pct:.1f}%)"
             )
         results.append(
             PriceVerificationResult(

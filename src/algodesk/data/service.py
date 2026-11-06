@@ -235,6 +235,7 @@ class DataService:
         fill_only: bool = False,
         source: str | None = None,
         accept_unverified: bool = False,
+        presence_only: bool = False,
     ) -> DataSlice:
         """Fetch historical bars with gap planning, rate limiting, and dynamic adjustment."""
         adj_mode = adjust if adjust is not None else "total"
@@ -350,6 +351,28 @@ class DataService:
                 )
             )
         )
+        if presence_only:
+            return DataSlice(
+                key=req_key,
+                start=start,
+                end=end,
+                bars=raw_bars,
+                gaps=base_slice.gaps,
+                dataset_ids=(ds_id,),
+                checksums=base_slice.checksums,
+                source=req_key.source,
+                adjustment=download,
+                fetched_at=now_iso,
+                provenance={
+                    "dataset_ids": [ds_id],
+                    "checksums": list(base_slice.checksums),
+                    "source": req_key.source,
+                    "adjustment": download,
+                    "fetched_at": now_iso,
+                    "presence_only": True,
+                },
+            )
+
         adj_res = _apply_raw_adjustments(
             bars=raw_bars,
             key=req_key,

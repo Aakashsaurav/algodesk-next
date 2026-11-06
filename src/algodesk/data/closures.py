@@ -41,6 +41,47 @@ def has_all_samples_evidence(rec: MarketClosureRecord | None) -> bool:
     return False
 
 
+def _try_bhavcopy_presence(
+    data_service: DataService,
+    sample_symbols: Sequence[str],
+    start_d: date,
+    end_d: date,
+    tz: Any,
+    sym_bars_days: dict[str, set[date]],
+    valid_fetch_chunk_days: dict[str, set[date]],
+) -> bool:
+    """Attempt to use official Bhavcopy file presence for NSE."""
+    sources = getattr(data_service, "_sources", None)
+    if not isinstance(sources, dict):
+        return False
+    bhav_ds = sources.get("nse_bhavcopy")
+    if bhav_ds is None or not hasattr(bhav_ds, "daily_bars"):
+        return False
+    try:
+        bhav_bars = bhav_ds.daily_bars(sample_symbols, start_d, end_d)
+        if not bhav_bars:
+            return False
+        for b in bhav_bars:
+            b_ts = getattr(b, "start_ts", getattr(b, "start", None))
+            if b_ts is not None:
+                b_d = b_ts.astimezone(tz).date()
+                if start_d <= b_d <= end_d:
+                    c_sym = str(b.instrument).split(":")[-1]
+                    sym_bars_days[c_sym].add(b_d)
+                    for s in sample_symbols:
+                        if s.split(":")[-1] == c_sym:
+                            sym_bars_days[s].add(b_d)
+        cur = start_d
+        one_d = timedelta(days=1)
+        while cur <= end_d:
+            for s in sample_symbols:
+                valid_fetch_chunk_days[s].add(cur)
+            cur += one_d
+        return True
+    except Exception:
+        return False
+
+
 def infer_market_closures(
     manifest: DataManifest,
     data_service: DataService,
@@ -82,90 +123,98 @@ def infer_market_closures(
     if not isinstance(default_src, str):
         default_src = "yfinance"
 
-    # 1. Fetch sample series first and abort with a clear error if any chunk failed
-    for raw_sym in sample_symbols:
-        clean_sym = raw_sym if ":" in raw_sym else f"{exch}:EQ:{raw_sym}"
-        s_key = SeriesKey(
-            instrument=InstrumentId(clean_sym),
-            kind="bars",
-            timeframe="1d",
-            adjustment="raw",
-            source=default_src,
+    bhavcopy_used = False
+    if exch == "NSE":
+        bhavcopy_used = _try_bhavcopy_presence(
+            data_service, sample_symbols, start_d, end_d, tz, sym_bars_days, valid_fetch_chunk_days
         )
-        try:
-            d_slice = data_service.get(
-                s_key,
-                start=start_dt,
-                end=end_dt,
-                download="raw",
+
+    if not bhavcopy_used:
+        # 1. Fetch sample series with presence-only path (no adjustment view)
+        for raw_sym in sample_symbols:
+            clean_sym = raw_sym if ":" in raw_sym else f"{exch}:EQ:{raw_sym}"
+            s_key = SeriesKey(
+                instrument=InstrumentId(clean_sym),
+                kind="bars",
+                timeframe="1d",
+                adjustment="raw",
+                source=default_src,
             )
-            for bar in d_slice.bars:
-                bar_ts = getattr(bar, "start_ts", getattr(bar, "start", None))
-                if bar_ts is not None:
-                    bar_d = bar_ts.astimezone(tz).date()
-                    if start_d <= bar_d <= end_d:
-                        sym_bars_days[raw_sym].add(bar_d)
-        except Exception as exc:
-            raise DataError(
-                what=f"Sample series fetch failed for {raw_sym}: {exc}",
-                where="infer_market_closures",
-                fix="Ensure data source is accessible and retry",
-            ) from exc
-
-        # Check fetch_log for any failed chunk belonging to this symbol
-        fetch_logs = manifest._conn.execute(
-            "SELECT chunk, outcome, rows, error FROM fetch_log WHERE chunk LIKE ?",
-            (f"{clean_sym}:{default_src}:1d:%",),
-        ).fetchall()
-
-        for r in fetch_logs:
-            chunk_id, outcome, rows, err = r["chunk"], r["outcome"], r["rows"], r["error"]
             try:
-                date_part = chunk_id.rsplit(":", 1)[1]
-                c_start_s, c_end_s = date_part.split("_")
-                c_start_d = date.fromisoformat(c_start_s)
-                c_end_d = date.fromisoformat(c_end_s)
-            except Exception:
-                continue
-
-            if c_end_d < start_d or c_start_d > end_d:
-                continue
-
-            outcome_u = outcome.upper() if outcome else ""
-            if outcome_u not in ("OK", "EMPTY"):
-                raise DataError(
-                    what=(
-                        f"Sample series fetch chunk failed for {raw_sym}: chunk '{chunk_id}' "
-                        f"outcome '{outcome}' error: {err}"
-                    ),
-                    where="infer_market_closures",
-                    fix="Check data source status and resolve quarantined or failed chunks",
+                d_slice = data_service.get(
+                    s_key,
+                    start=start_dt,
+                    end=end_dt,
+                    download="raw",
+                    presence_only=True,
                 )
-            if outcome_u == "EMPTY" and err:
+                for bar in d_slice.bars:
+                    bar_ts = getattr(bar, "start_ts", getattr(bar, "start", None))
+                    if bar_ts is not None:
+                        bar_d = bar_ts.astimezone(tz).date()
+                        if start_d <= bar_d <= end_d:
+                            sym_bars_days[raw_sym].add(bar_d)
+            except Exception as exc:
                 raise DataError(
-                    what=(
-                        f"Sample series fetch chunk failed for {raw_sym}: "
-                        f"chunk '{chunk_id}' failed: {err}"
-                    ),
+                    what=f"Sample series fetch failed for {raw_sym}: {exc}",
                     where="infer_market_closures",
-                    fix="Check data source status and retry",
-                )
+                    fix="Ensure data source is accessible and retry",
+                ) from exc
 
-            if outcome_u == "OK" and rows > 0:
-                c_cur = max(c_start_d, start_d)
-                c_last = min(c_end_d, end_d)
-                while c_cur <= c_last:
-                    valid_fetch_chunk_days[raw_sym].add(c_cur)
-                    c_cur += timedelta(days=1)
+            # Check fetch_log for any failed chunk belonging to this symbol
+            fetch_logs = manifest._conn.execute(
+                "SELECT chunk, outcome, rows, error FROM fetch_log WHERE chunk LIKE ?",
+                (f"{clean_sym}:{default_src}:1d:%",),
+            ).fetchall()
 
-        ds_id = f"bars:{default_src}:1d:{clean_sym}:raw"
-        cov_recs = manifest.get_coverage_days(
-            ds_id,
-            start_day=start_d.isoformat(),
-            end_day=end_d.isoformat(),
-        )
-        for cr in cov_recs:
-            cov_by_sym_day[raw_sym][cr.day] = cr.status
+            for r in fetch_logs:
+                chunk_id, outcome, rows, err = r["chunk"], r["outcome"], r["rows"], r["error"]
+                try:
+                    date_part = chunk_id.rsplit(":", 1)[1]
+                    c_start_s, c_end_s = date_part.split("_")
+                    c_start_d = date.fromisoformat(c_start_s)
+                    c_end_d = date.fromisoformat(c_end_s)
+                except Exception:
+                    continue
+
+                if c_end_d < start_d or c_start_d > end_d:
+                    continue
+
+                outcome_u = outcome.upper() if outcome else ""
+                if outcome_u not in ("OK", "EMPTY"):
+                    raise DataError(
+                        what=(
+                            f"Sample series fetch chunk failed for {raw_sym}: chunk '{chunk_id}' "
+                            f"outcome '{outcome}' error: {err}"
+                        ),
+                        where="infer_market_closures",
+                        fix="Check data source status and resolve quarantined or failed chunks",
+                    )
+                if outcome_u == "EMPTY" and err:
+                    raise DataError(
+                        what=(
+                            f"Sample series fetch chunk failed for {raw_sym}: "
+                            f"chunk '{chunk_id}' failed: {err}"
+                        ),
+                        where="infer_market_closures",
+                        fix="Check data source status and retry",
+                    )
+
+                if outcome_u == "OK" and rows > 0:
+                    c_cur = max(c_start_d, start_d)
+                    c_last = min(c_end_d, end_d)
+                    while c_cur <= c_last:
+                        valid_fetch_chunk_days[raw_sym].add(c_cur)
+                        c_cur += timedelta(days=1)
+
+            ds_id = f"bars:{default_src}:1d:{clean_sym}:raw"
+            cov_recs = manifest.get_coverage_days(
+                ds_id,
+                start_day=start_d.isoformat(),
+                end_day=end_d.isoformat(),
+            )
+            for cr in cov_recs:
+                cov_by_sym_day[raw_sym][cr.day] = cr.status
 
     inferred_candidates: list[tuple[date, str]] = []
     special_candidates: list[tuple[date, str]] = []

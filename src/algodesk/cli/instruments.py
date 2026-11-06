@@ -158,6 +158,20 @@ def _find_latest_close_price(dm: Any, data_dir: Path, instrument: InstrumentId) 
                                 latest_px = Decimal(str(tbl[col][-1].as_py()))
                             break
 
+        # 3. Direct layout path fallback for 1d bars
+        if latest_px is None:
+            from algodesk.data.layout import instrument_partition_path
+
+            part_rel = instrument_partition_path(canonical_str)
+            bars_dir = data_dir / "bars"
+            if bars_dir.is_dir():
+                for p_file in bars_dir.glob(f"*/timeframe=1d/{part_rel}/*/daily.parquet"):
+                    if p_file.is_file():
+                        tbl = pq.read_table(p_file)
+                        if "close" in tbl.column_names and len(tbl) > 0:
+                            latest_px = Decimal(str(tbl["close"][-1].as_py()))
+                            break
+
         return latest_px
     except Exception:
         return None
