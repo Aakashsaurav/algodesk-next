@@ -424,3 +424,28 @@ scope = "global"
 tighten = "down"
 description = "Number of calendar days before contract expiry to roll over to next contract"
 owner = "data"
+
+[[param]]
+name = "data.accumulate_lag_warn_days"
+type = "int"
+default = 3
+min = 1
+max = 30
+unit = "days"
+scope = "global"
+tighten = "down"
+description = "Maximum trading days lag before data accumulation triggers a doctor warning"
+owner = "data"
+
+[[param]]
+name = "data.compare_close_tolerance_pct"
+type = "float"
+default = 0.1
+min = 0.0
+max = 10.0
+unit = "percent"
+scope = "global"
+tighten = "down"
+description = "Tolerance percentage for price differences in data compare before counting as divergence"
+owner = "data"
+

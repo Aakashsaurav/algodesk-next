@@ -347,6 +347,61 @@ Inspect changes between daily master snapshots:
 - Check capital feasibility against latest close prices: `algodesk instruments feasibility --group <GROUP_NAME> --capital <INR> [--json]`
 - Feasibility evaluates single lot requirements against capital, noting that margin requirements are not estimated.
 
+## Daily Data Operations Routine
+
+Maintain historical bar datasets and tick archives with this four-step daily operational workflow:
+
+### 1. Login & authentication
+Verify or refresh broker authentication for market data feeds:
+```bash
+algodesk login upstox
+```
+If using interactive token retrieval, complete the browser loopback flow to persist the access token in keychain/env.
+
+### 2. Pre-run preparation & health verification
+Run system diagnostics and verify that market calendar, instrument master, and data stores are sound:
+```bash
+algodesk doctor
+algodesk run --prepare
+```
+Doctor check `data.accumulation_lag` warns if historical datasets are lagging behind completed trading sessions by more than `data.accumulate_lag_warn_days` (default 3 days).
+
+### 3. Historical data accumulation
+Fetch missing completed trading sessions (1m and 1d) for the trading universe:
+```bash
+# Preview accumulation plan without network calls
+algodesk data accumulate --group demo5 --source upstox --days 5 --dry-run
+
+# Execute accumulation
+algodesk data accumulate --group demo5 --source upstox --days 5
+```
+Reports rows added, remaining missing days, and unrecoverable days beyond broker retention windows (e.g. 7 days for yfinance 1m). Records `data.accumulate` to the journal.
+
+### 4. Integrity verification, comparison & live smoke test
+Verify store integrity and compare against recorded ticks or secondary sources:
+```bash
+# Verify checksums and parquet partition schemas across datasets
+algodesk data verify
+
+# Compare rebuilt 1m bars from recorded ticks against broker 1m bars
+algodesk data compare --date 2026-11-04 --source upstox
+
+# Execute live smoke test (owner-run, network)
+algodesk data smoke --symbols RELIANCE,TCS
+```
+`data smoke` verifies that repeated `get` queries execute with zero network calls (100% cache hits), audits data gaps, verifies SQLite manifest integrity, and reports cross-source close price divergence.
+
+### 5. Safe tick archive management & vendor import
+Manage tick archives safely:
+```bash
+# Plan safe deletion of older ticks (requires typed confirmation phrase 'DELETE <N> files')
+algodesk data delete NSE:EQ:RELIANCE --kind ticks --older-than 30 --reason "Routine 30d cleanup"
+
+# Ingest vendor historical files (CSV or Parquet) using column mapping
+algodesk data import data/vendor/sample.csv --mapping config/importer_mappings/vendor.toml
+```
+Ticks are irreplaceable: `--purge` is strictly forbidden on ticks, and deleted files are moved to timestamped `.trash/<timestamp>` folders.
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |

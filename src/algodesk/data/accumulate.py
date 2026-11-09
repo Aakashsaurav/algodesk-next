@@ -1,0 +1,307 @@
+"""Data accumulation engine for AlgoDesk Next.
+
+Fetches latest complete sessions (1m and 1d) for instrument groups through
+the mode-invariant DataService.get path, tracking added rows, missing days,
+and days lost beyond source retention windows.
+"""
+
+from __future__ import annotations
+
+import zoneinfo
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
+from typing import Any
+
+from algodesk.api.errors import ConfigError, DataError
+from algodesk.api.market import InstrumentId, SeriesKey
+from algodesk.data.groups import get_group, load_groups
+
+
+@dataclass(frozen=True)
+class AccumulationPlanItem:
+    """Planned accumulation task for a single instrument and timeframe."""
+
+    instrument: str
+    timeframe: str
+    target_sessions: list[date]
+    stored_sessions: list[date]
+    fetchable_sessions: list[date]
+    lost_sessions: list[date]
+
+
+@dataclass
+class AccumulationReport:
+    """Outcome report for a data accumulation run."""
+
+    group: str
+    source: str
+    days: int
+    instruments: list[str]
+    plan_items: list[AccumulationPlanItem] = field(default_factory=list)
+    rows_added: int = 0
+    days_still_missing: int = 0
+    days_lost_beyond_window: int = 0
+    dry_run: bool = False
+
+
+def resolve_completed_sessions(
+    calendar: Any,
+    end_date: date | None = None,
+    count: int = 7,
+    now_dt: datetime | None = None,
+) -> list[date]:
+    """Find the latest complete trading sessions."""
+    ist_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+    now_ist = now_dt.astimezone(ist_tz) if now_dt else datetime.now(ist_tz)
+    today = now_ist.date()
+
+    if end_date is None:
+        cur = today - timedelta(days=1) if now_ist.time() < time(15, 30) else today
+    else:
+        cur = end_date
+
+    sessions: list[date] = []
+    cutoff = cur - timedelta(days=120)
+    while cur >= cutoff and len(sessions) < count:
+        if calendar is None or calendar.is_trading_day(cur):
+            sessions.append(cur)
+        cur -= timedelta(days=1)
+
+    sessions.reverse()
+    return sessions
+
+
+def get_source_retention_days(source: str, timeframe: str) -> int:
+    """Return max retrievable days for a source and timeframe."""
+    src = source.lower()
+    if timeframe.lower() == "1m":
+        if src == "yfinance":
+            return 7
+        if src == "upstox":
+            return 1800
+    return 36500
+
+
+def _load_stored_bars_map(data_dir: Path) -> dict[tuple[str, str], set[date]]:
+    """Scan manifest database for stored bar sessions by (instrument, timeframe)."""
+    manifest_db = data_dir / "state" / "data_manifest.db"
+    if not manifest_db.exists() and (data_dir / "manifest.db").exists():
+        manifest_db = data_dir / "manifest.db"
+    if not manifest_db.exists():
+        return {}
+
+    from algodesk.data.manifest import DataManifest
+
+    stored: dict[tuple[str, str], set[date]] = {}
+    m = DataManifest(manifest_db)
+    try:
+        parts = m.get_parts()
+        datasets = {d.dataset_id: d for d in m.list_datasets(kind="bars")}
+        for p in parts:
+            ds = datasets.get(p.dataset_id)
+            if ds and p.first_ts:
+                d_val = date.fromisoformat(p.first_ts[:10])
+                stored.setdefault((ds.instrument, ds.timeframe), set()).add(d_val)
+    finally:
+        m.close()
+    return stored
+
+
+def _resolve_instruments_for_group(group: str, groups_dir: Path) -> list[str]:
+    """Resolve members list for group name or raise ConfigError."""
+    instruments = get_group(group, groups_dir)
+    if instruments:
+        return instruments
+    all_groups = load_groups(groups_dir)
+    if group in all_groups:
+        return all_groups[group]
+    known = ", ".join(all_groups.keys()) or "none"
+    raise ConfigError(
+        what=f"Instrument group '{group}' not found or empty",
+        where="data.accumulate",
+        fix=f"Specify valid group from config/groups (available: {known})",
+    )
+
+
+def _build_plan_item(
+    inst: str,
+    tf: str,
+    sessions: list[date],
+    stored: set[date],
+    source: str,
+    today: date,
+) -> AccumulationPlanItem:
+    """Build single plan item separating stored, fetchable, and lost sessions."""
+    stored_list = [d for d in sessions if d in stored]
+    missing = [d for d in sessions if d not in stored]
+    cutoff = today - timedelta(days=get_source_retention_days(source, tf))
+
+    fetchable = [d for d in missing if d >= cutoff]
+    lost = [d for d in missing if d < cutoff]
+    return AccumulationPlanItem(
+        instrument=inst,
+        timeframe=tf,
+        target_sessions=sessions,
+        stored_sessions=stored_list,
+        fetchable_sessions=fetchable,
+        lost_sessions=lost,
+    )
+
+
+def _resolve_paths(runtime: Any) -> tuple[Path, Path]:
+    """Resolve project root and data directory from Runtime or Path."""
+    if isinstance(runtime, Path):
+        return runtime, runtime / "data"
+    root = Path(runtime.root)
+    data_dir = Path(runtime.paths.data) if hasattr(runtime, "paths") else root / "data"
+    return root, data_dir
+
+
+def plan_accumulation(
+    group: str,
+    source: str,
+    days: int,
+    runtime: Any,
+    calendar: Any = None,
+    now_dt: datetime | None = None,
+) -> tuple[list[str], list[AccumulationPlanItem]]:
+    """Build accumulation plan for group instruments across 1m and 1d."""
+    root, data_dir = _resolve_paths(runtime)
+    instruments = _resolve_instruments_for_group(group, root / "config" / "groups")
+    sessions = resolve_completed_sessions(calendar, count=days, now_dt=now_dt)
+    if not sessions:
+        raise DataError(
+            what=f"No completed trading sessions found in last {days} days",
+            where="data.accumulate",
+            fix="Check calendar coverage and system date",
+        )
+
+    ist_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+    now_ist = now_dt.astimezone(ist_tz) if now_dt else datetime.now(ist_tz)
+    stored_map = _load_stored_bars_map(data_dir)
+
+    items: list[AccumulationPlanItem] = []
+    for inst in instruments:
+        for tf in ("1m", "1d"):
+            stored = stored_map.get((inst, tf), set())
+            items.append(_build_plan_item(inst, tf, sessions, stored, source, now_ist.date()))
+
+    return instruments, items
+
+
+def _fetch_item_bars(
+    item: AccumulationPlanItem,
+    source: str,
+    ds: Any,
+) -> tuple[int, bool]:
+    """Fetch bars for a single plan item, returning (rows_added, success)."""
+    if not item.fetchable_sessions:
+        return 0, True
+    start_date = min(item.fetchable_sessions)
+    end_date = max(item.fetchable_sessions)
+    utc = UTC
+    start_dt = datetime.combine(start_date, time(0, 0), tzinfo=utc)
+    end_dt = datetime.combine(end_date, time(23, 59, 59), tzinfo=utc)
+
+    key = SeriesKey(
+        instrument=InstrumentId(item.instrument),
+        kind="bars",
+        timeframe=item.timeframe,
+        adjustment="raw",
+        source=source,
+    )
+    try:
+        d_slice = ds.get(series=key, start=start_dt, end=end_dt, download="raw", fill_only=True)
+        return (len(d_slice.bars) if d_slice else 0), True
+    except Exception:
+        return 0, False
+
+
+def _run_fetches(
+    plan_items: Sequence[AccumulationPlanItem], source: str, ds: Any
+) -> tuple[int, int]:
+    rows_added, missing_after = 0, 0
+    for it in plan_items:
+        added, ok = _fetch_item_bars(it, source, ds)
+        rows_added += added
+        if not ok:
+            missing_after += len(it.fetchable_sessions)
+    return rows_added, missing_after
+
+
+def execute_accumulation(
+    group: str,
+    source: str,
+    days: int,
+    runtime: Any,
+    dry_run: bool = False,
+    data_service: Any = None,
+    calendar: Any = None,
+    now_dt: datetime | None = None,
+) -> AccumulationReport:
+    """Execute data accumulation for group, fetching missing bars and journaling."""
+    instruments, plan_items = plan_accumulation(
+        group=group,
+        source=source,
+        days=days,
+        runtime=runtime,
+        calendar=calendar,
+        now_dt=now_dt,
+    )
+    total_lost = sum(len(it.lost_sessions) for it in plan_items)
+    report = AccumulationReport(
+        group=group,
+        source=source,
+        days=days,
+        instruments=instruments,
+        plan_items=plan_items,
+        days_lost_beyond_window=total_lost,
+        dry_run=dry_run,
+    )
+    if dry_run:
+        report.days_still_missing = sum(len(it.fetchable_sessions) for it in plan_items)
+        return report
+
+    if data_service is None:
+        raise DataError(
+            what="DataService is required to execute accumulation",
+            where="data.accumulate",
+            fix="Pass an active DataService or execute via 'algodesk data accumulate'",
+        )
+
+    rows_added, missing_after = _run_fetches(plan_items, source, data_service)
+    report.rows_added = rows_added
+    report.days_still_missing = missing_after
+    _log_accumulation_event(
+        runtime, group, source, days, rows_added, missing_after, total_lost, instruments
+    )
+    return report
+
+
+def _log_accumulation_event(
+    runtime: Any,
+    group: str,
+    source: str,
+    days: int,
+    rows: int,
+    missing: int,
+    lost: int,
+    instruments: list[str],
+) -> None:
+    """Record durable data.accumulate event in journal if available."""
+    if hasattr(runtime, "journal") and runtime.journal is not None:
+        runtime.journal.append(
+            "data.accumulate",
+            {
+                "group": group,
+                "source": source,
+                "days": days,
+                "rows_added": rows,
+                "days_missing": missing,
+                "days_lost": lost,
+                "instruments": instruments,
+            },
+            durable=True,
+        )

@@ -155,7 +155,7 @@ def test_cli_doctor_check_ids_include_devtools(runner: CliRunner) -> None:
     assert res.exit_code in (0, 1)
     data = json.loads(res.output)
     check_ids = [r["id"] for r in data["results"]]
-    assert len(check_ids) == 23
+    assert len(check_ids) == 24
     assert "disk.ticks_projection" in check_ids
     assert "budget.dependencies" in check_ids
     assert "budget.size" in check_ids
@@ -164,6 +164,7 @@ def test_cli_doctor_check_ids_include_devtools(runner: CliRunner) -> None:
     assert "secrets.scan" in check_ids
     assert "data.verify_quick" in check_ids
     assert "data.quarantine" in check_ids
+    assert "data.accumulation_lag" in check_ids
     assert "calendar.coverage_horizon" in check_ids
     assert "data.closure_disagreements" in check_ids
     assert "data.warmup_source" in check_ids

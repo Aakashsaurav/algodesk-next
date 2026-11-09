@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import tomllib
 from collections.abc import Callable
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -743,6 +744,122 @@ def _check_instrument_master_diff(runtime: Runtime) -> CheckResult:
     return CheckResult(ok=True, message="Instrument master diff: no universe members affected")
 
 
+def _find_latest_complete_trading_day(cal: Any, today: date, now_ist: datetime) -> date:
+    """Determine the latest trading session that has completed market close."""
+    check_date = today if now_ist.time() >= time(15, 30) else today - timedelta(days=1)
+    while check_date >= today - timedelta(days=60) and not cal.is_trading_day(check_date):
+        check_date -= timedelta(days=1)
+    return check_date
+
+
+def _compute_instrument_lag(
+    instruments: list[str],
+    latest_by_inst: dict[str, date],
+    latest_complete_date: date,
+    cal: Any,
+    warn_days: int,
+) -> tuple[int, str | None]:
+    """Calculate maximum trading days lag across instruments."""
+    max_lag, lagging_inst = 0, None
+    for inst in instruments:
+        last_dt = latest_by_inst.get(inst)
+        if last_dt is None:
+            lag = warn_days + 1
+        elif last_dt >= latest_complete_date:
+            lag = 0
+        else:
+            cur = last_dt + timedelta(days=1)
+            lag = 0
+            while cur <= latest_complete_date:
+                if cal.is_trading_day(cur):
+                    lag += 1
+                cur += timedelta(days=1)
+        if lag > max_lag:
+            max_lag, lagging_inst = lag, inst
+    return max_lag, lagging_inst
+
+
+def _load_latest_1m_bar_dates(manifest_db: Path) -> dict[str, date]:
+    """Scan manifest for latest 1m bar dates by instrument."""
+    from algodesk.data.manifest import DataManifest
+
+    m = DataManifest(manifest_db)
+    latest_by_inst: dict[str, date] = {}
+    try:
+        datasets = {ds.dataset_id: ds for ds in m.list_datasets(kind="bars", timeframe="1m")}
+        for p in m.get_parts():
+            if (ds := datasets.get(p.dataset_id)) and p.first_ts:
+                p_date = date.fromisoformat(p.first_ts[:10])
+                if ds.instrument not in latest_by_inst or p_date > latest_by_inst[ds.instrument]:
+                    latest_by_inst[ds.instrument] = p_date
+    finally:
+        m.close()
+    return latest_by_inst
+
+
+def _check_data_accumulation_lag(runtime: Runtime) -> CheckResult:
+    """Doctor check: warns if data accumulation lag exceeds data.accumulate_lag_warn_days."""
+    warn_days = 3
+    if runtime.params is not None:
+        try:
+            val = runtime.params.get("data.accumulate_lag_warn_days")
+            if val is not None:
+                warn_days = int(val)
+        except Exception:
+            pass
+
+    manifest_db = runtime.paths.data / "state" / "data_manifest.db"
+    if not manifest_db.exists() and (runtime.paths.data / "manifest.db").exists():
+        manifest_db = runtime.paths.data / "manifest.db"
+    if not manifest_db.exists():
+        return CheckResult(
+            ok=True, message="No data manifest found, skipping accumulation lag check"
+        )
+
+    import zoneinfo
+
+    from algodesk.api import Mode, PluginKind
+    from algodesk.data.groups import get_group, load_groups
+    from algodesk.ops.context import build_context
+
+    now_ist = datetime.now(zoneinfo.ZoneInfo("Asia/Kolkata"))
+    try:
+        p_ctx = build_context(Mode.RESEARCH, run_id="doctor_accumulate_lag", params=runtime.params)
+        cal = runtime.plugins.create(
+            PluginKind.CALENDAR, "exchange", config={"exchange": "nse"}, ctx=p_ctx
+        )
+    except Exception:
+        return CheckResult(
+            ok=True, message="Calendar not available, skipping accumulation lag check"
+        )
+
+    latest_complete_date = _find_latest_complete_trading_day(cal, now_ist.date(), now_ist)
+    groups_dir = runtime.root / "config" / "groups"
+    instruments = get_group("demo5", groups_dir) or [
+        m for g in load_groups(groups_dir).values() for m in g
+    ]
+    if not instruments:
+        return CheckResult(ok=True, message="No instruments configured for accumulation check")
+
+    latest_by_inst = _load_latest_1m_bar_dates(manifest_db)
+    max_lag, lagging_inst = _compute_instrument_lag(
+        instruments, latest_by_inst, latest_complete_date, cal, warn_days
+    )
+    if max_lag > warn_days:
+        return CheckResult(
+            ok=False,
+            severity=Severity.WARNING,
+            message=(
+                f"Accumulation lag is {max_lag} trading day(s) for {lagging_inst} "
+                f"(exceeds {warn_days} days)"
+            ),
+            fix="Run 'algodesk data accumulate' to backfill intraday bars",
+        )
+    return CheckResult(
+        ok=True, message=f"Accumulation lag is within threshold ({max_lag} <= {warn_days} days)"
+    )
+
+
 def _build_data_doctor_checks(runtime: Runtime) -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -779,6 +896,11 @@ def _build_data_doctor_checks(runtime: Runtime) -> list[DoctorCheck]:
             id="instruments.diff_warnings",
             severity=Severity.WARNING,
             run=lambda: _check_instrument_master_diff(runtime),
+        ),
+        DoctorCheck(
+            id="data.accumulation_lag",
+            severity=Severity.WARNING,
+            run=lambda: _check_data_accumulation_lag(runtime),
         ),
     ]
 

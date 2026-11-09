@@ -152,6 +152,14 @@ Short decision records (context, decision, reason) in the order they were taken.
 3. *Recorded replay configuration and parameter restoration*: `algodesk replay --session <id>` loads recorded `config.effective.txt` and `registry.snapshot.json` directly from the session directory instead of reading current workspace files. Preserves strategy product (defaulting to delivery/`cnc` if absent in older runs), applies recorded parameter registry values with strict validation (refusing on invalid or unrecognized keys), verifies fee schedule presence, and warns on code or plugin commit hash divergence.
 4. *Instrument feasibility and path encoding for IDs with spaces*: `instruments feasibility` evaluates lot size, lot value, and capital affordability from latest stored close prices, resolving partitioned file paths for instruments with spaces (such as `NSE:INDEX:NIFTY 50` mapped to `symbol=NIFTY_50` or `symbol=NIFTY 50`) without path resolution errors.
 
+**ADR-059 Historical data accumulation, source comparison, irreplaceable tick deletion safety, and vendor file import.**
+1. *Group-based accumulation and lag monitoring*: `algodesk data accumulate [--group G] [--source S] [--days N]` fetches completed historical sessions (1m and 1d) for instrument groups via `DataService.get`, recording rows added, missing days, and unrecoverable days beyond source retention windows. Journals `data.accumulate` and supports `--dry-run`. Doctor check `data.accumulation_lag` warns when missing sessions exceed `data.accumulate_lag_warn_days`.
+2. *Tick reconstruction and cross-source comparison*: `algodesk data compare --date D [--symbols A,B] [--source S]` builds in-memory 1m bars from recorded ticks using `BarBuilder(timeframes=("1m",))` and compares close prices and volume against source bars (max diff, median diff, count above `data.compare_close_tolerance_pct`). Never mutates or corrects stored records.
+3. *Irreplaceable tick deletion safety*: Market ticks cannot be re-downloaded from brokers and are treated as irreplaceable. `algodesk data delete <selector> --kind ticks [--older-than DAYS]` enforces typed phrase confirmation (`DELETE <N> files`), moves records to timestamped trash directories, and strictly forbids `--purge` bypassing trash on tick data.
+4. *Vendor file import plugin*: Broker plugin `importer` (`plugins/brokers/importer`) ingests external CSV or Parquet files using flexible column mappings, resolves symbols through `InstrumentId`, routes data through `BarValidator` and `BarStore` (or `write_ticks_parquet`), and uses the source file SHA-256 hash as dataset version.
+5. *Live data smoke verification*: `algodesk data smoke --symbols A,B` runs two sequential fetches of 1d and 1m bars, asserting that the second pass executes zero network requests (100% cache hits), audits data gaps, verifies manifest integrity, and evaluates maximum close price divergence against a secondary source.
+
+
 
 
 

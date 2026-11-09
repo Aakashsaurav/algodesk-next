@@ -36,6 +36,14 @@ AlgoDesk provides a unified command-line workbench:
 - `algodesk docs index`: Regenerate deterministic living documentation index docs/INDEX.md.
 - `algodesk lint [--json]`: Run AST architecture rules over core code and plugins.
 - `algodesk secrets scan`: Scan codebase for exposed secrets, tokens, and cloud keys.
+- `algodesk data get SYMBOL TIMEFRAME START END`: Retrieve historical bar slices with rate-limiting, caching, dynamic backward adjustment, and resampling.
+- `algodesk data accumulate [--group G] [--source S] [--days N] [--dry-run]`: Fetch completed historical sessions (1m/1d) for groups, journal progress, and report missing/lost days.
+- `algodesk data compare --date D [--symbols A,B] [--source S]`: Rebuild 1m bars from recorded ticks and compare close/volume differences against source bars.
+- `algodesk data delete SELECTOR --kind <bars|ticks> [--older-than N] --reason R`: Safely delete data with timestamped trash; typed confirmation required for ticks; `--purge` blocked on ticks.
+- `algodesk data import PATH --mapping FILE [--dry-run]`: Ingest vendor CSV or Parquet files through schema validation and stores with SHA-256 provenance.
+- `algodesk data smoke [--symbols A,B]`: Live smoke verification testing zero network requests on run 2, gaps, manifest integrity, and cross-source diff.
+- `algodesk data verify`: Validate SHA-256 checksums, row counts, and schema conformance across datasets.
+- `algodesk data status`: Report dataset counts, bar/tick partition files, row totals, disk storage, and quarantine stats.
 
 #### Exit Codes
 

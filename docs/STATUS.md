@@ -4,28 +4,38 @@ Owner: Aakash · Version: 1.0 · Date: 30 October 2026
 
 ## Summary
 
-Milestone M0 and all M1 tasks (M1-1 through M1-8) are complete. The workbench features deterministic order state machine transitions, write-ahead journaling, pre-trade risk evaluation without short-circuiting, atomic kill-switch controls, conservative paper execution with trade-through limit fills, bit-for-bit replay equivalence, and end-to-end session observability. M1-8 delivers JSON file logging, M1 design 8.1 journal lifecycle events (`proc.stats`, `latency.stats`, `run.start/end`), console status lines, `algodesk session report`, dated Zerodha NSE/BSE fee schedules (2026-04-01 STT notice, options pricing with exercise guard), verified NSE 2026 calendar data, and 16 reference fee vectors. No live trading exists and none is planned before PRD gates are met.
+Milestones M0, M1, and M2 are complete. AlgoDesk Next provides a pluggable trading workbench for Indian markets with layered TOML configuration, parameter registry audit trails, hash-chained journaling, scrubbed JSON logging, deterministic execution engine, and bit-for-bit replay equivalence. Milestone M2 delivers the historical market data layer: RateLimiter, GapPlanner, Fetcher, BarStore, QuarantineManager, BarValidator, CorporateActions, Bhavcopy reference ingestion, contract-aware partition layout, accumulation, tick-source compare, trash-safe tick deletion, vendor file import plugin, and live smoke tests.
 
 ## Milestones
 
 | M | Name | State |
 |---|---|---|
 | M0 | Foundations | Done |
-| M1 | Walking skeleton | Done (M1 acceptance checklist complete) |
-| M2 | Data layer | M2 design approved v1.1 |
-| M3 to M9 | Indicators, backtester, risk, Zerodha, remote, live | Not started |
+| M1 | Walking skeleton | Done (M1 checklist complete) |
+| M2 | Data layer | Done (M2 checklist complete) |
+| M3 to M9 | Indicators, backtest, risk, Zerodha, remote, live | Not started |
 
 ## M1 acceptance checklist
 
 - Two live paper sessions with replay and results compare.
 - Fee vectors verified by hand.
-- Measured numbers: tick-to-intent p95, memory, recorder rows and bytes per day, journal growth.
+- Measured numbers: tick-to-intent p95, memory, recorder rows/bytes, journal growth.
+
+## M2 acceptance checklist
+
+M2 design (section 1.4) success criteria mapped to commands and tests:
+1. **Identical get produces zero network calls**: `tests/core/data/test_m2_9_smoke.py`, `algodesk data smoke --symbols RELIANCE,TCS`.
+2. **Quarantine & crash resilience**: Corrupt bars quarantined; good data never overwritten; `tests/core/data/test_m2_validator_quarantine_verify.py`.
+3. **`data verify` clean on real cache**: `algodesk data verify`, `tests/core/data/test_manifest.py`.
+4. **5m/1h/1w rebuilt equals tick-built (FR-DAT-8)**: `tests/core/data/test_m2_9_compare.py`, `algodesk data compare --date 2026-11-04`.
+5. **Adjusted view matches source-adjusted; conflict refusal**: `tests/core/data/test_m2_adjusted_views.py`, `algodesk data actions audit RELIANCE --from 2026-01-01 --to 2026-11-01`.
+6. **Contract-aware partitions & rollover**: `tests/core/data/test_m2_3b_cp2_layout_migration.py`, `algodesk data migrate-ids --dry-run`.
+7. **Quality gates & budget pass**: `bash scripts/check.sh` -> `CHECK: PASS`.
 
 ## What exists
 
-Plugin contracts and manifests; layered configuration; parameter registry; plugin gating and conformance; hash-chained journal; scrubbed JSON logging; full `algodesk` CLI; budget, docs, lint and secret-scan tools; API index generator; domain market and trading types; central market hours and exchange calendar plugin (`nse`, `bse`, `mcx`); `FeeEngine` and `zerodha_nse` schedule; builtin indicators (`SMA`, `EMA`, `RSI`); secrets providers (`keychain`, `env`); `yfinance` and official `upstox` broker plugin with OAuth loopback and Protobuf feed; deterministic clocks, scheduler, and event bus; session manager and bar builder; Parquet recorder, daily compaction, and replay feed; SQLite manifest, data catalog, and trash deletion; instrument groups; `OrderManager` state machine with write-ahead journaling; `PortfolioLedger` with exact arithmetic and mark-to-market snapshots; `RiskEngine` with non-short-circuiting rules; `KillSwitch` atomic persistence; `venues/sim` plugin (depth matching, latency jitter, trade-through limit fills); `SessionRunner` paper and replay coordinator; `StrategyRuntime` with read-only context and fault isolation; `strategies/sma_cross` demo plugin; `notifiers/telegram` plugin with rate-limiting and circuit breaking; `ResultsWriter` 8-artifact bundles; M1 doctor checks; hermetic test isolation fixture (`tmp_project`); conftest session guard; `run --prepare` and `plugins test --all`; `results compare` metrics and event sequence diffing; and safety property test suites.
+Plugin contracts and manifests; parameter registry; append-only journal; scrubbed logging; full CLI; fee engine; order state machine; risk engine; simulated venue; session runner; deterministic replay; market data store, rate limiter, gap planner, corporate actions reconciler, calendar closures, and vendor importer plugin.
 
 ## Open decisions
 
-None blocking M1.
-
+None blocking M2.

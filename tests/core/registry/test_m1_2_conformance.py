@@ -51,3 +51,11 @@ def test_conformance_broker_upstox() -> None:
         plugin = rt.plugins.create("broker", "upstox", config={}, ctx=p_ctx)
         assert base_contract_problems(plugin) == []
         assert data_source_problems(plugin) == []
+
+
+def test_conformance_broker_importer() -> None:
+    with open_runtime(ensure=False) as rt:
+        p_ctx = build_context(Mode.RESEARCH, run_id="conf_importer")
+        plugin = rt.plugins.create("broker", "importer", config={}, ctx=p_ctx)
+        assert base_contract_problems(plugin) == []
+        assert data_source_problems(plugin) == []

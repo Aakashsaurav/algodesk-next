@@ -336,6 +336,253 @@ def data_list(
         typer.echo(format_table(headers, [_coverage_row(r) for r in rows]))
 
 
+@data_app.command("accumulate")
+@handle_cli_errors
+def data_accumulate(
+    ctx: typer.Context,
+    group: str = typer.Option("demo5", "--group", "-g", help="Instrument group name"),
+    source: str = typer.Option("yfinance", "--source", "-s", help="Data source broker plugin"),
+    days: int = typer.Option(7, "--days", "-d", help="Number of complete sessions to accumulate"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Display accumulation plan without fetching"
+    ),
+) -> None:
+    """Fetch latest complete sessions for an instrument group into the store."""
+    from algodesk.data.accumulate import execute_accumulation
+
+    with _open_rt(ctx, ensure=False) as rt:
+        report = execute_accumulation(
+            group=group,
+            source=source,
+            days=days,
+            runtime=rt,
+            data_service=_build_data_service(rt, source) if not dry_run else None,
+            dry_run=dry_run,
+        )
+
+        if dry_run:
+            typer.echo(f"Accumulation Plan: group={group}, source={source}, target_sessions={days}")
+            headers = ["INSTRUMENT", "TF", "TARGET", "STORED", "FETCHABLE", "LOST"]
+            rows = [
+                [
+                    it.instrument,
+                    it.timeframe,
+                    str(len(it.target_sessions)),
+                    str(len(it.stored_sessions)),
+                    str(len(it.fetchable_sessions)),
+                    str(len(it.lost_sessions)),
+                ]
+                for it in report.plan_items
+            ]
+            typer.echo(format_table(headers, rows))
+            typer.echo(
+                f"\nSummary: {report.days_still_missing} session-timeframe(s) to fetch, "
+                f"{report.days_lost_beyond_window} session(s) lost beyond retention window."
+            )
+            return
+
+        typer.echo(
+            f"Accumulation complete for group '{group}' ({source}):\n"
+            f"  - Rows added: {report.rows_added}\n"
+            f"  - Days still missing: {report.days_still_missing}\n"
+            f"  - Days lost beyond source window: {report.days_lost_beyond_window}"
+        )
+
+
+@data_app.command("compare")
+@handle_cli_errors
+def data_compare(
+    ctx: typer.Context,
+    date_val: str = typer.Option(..., "--date", "-d", help="Trading date (YYYY-MM-DD)"),
+    symbols: str | None = typer.Option(
+        None, "--symbols", "-s", help="Comma-separated symbols to compare"
+    ),
+    source: str = typer.Option(
+        "yfinance", "--source", help="Data source broker plugin to compare against"
+    ),
+) -> None:
+    """Compare in-memory tick-built 1m bars against vendor source 1m bars."""
+    from algodesk.data.compare import compare_ticks_with_source
+
+    try:
+        d = date.fromisoformat(date_val)
+    except ValueError:
+        raise typer.BadParameter("Invalid date format, expected YYYY-MM-DD") from None
+
+    sym_list = [s.strip() for s in symbols.split(",")] if symbols else None
+    with _open_rt(ctx, ensure=False) as rt:
+        from algodesk.engine.bars import BarBuilder
+
+        def _make_builder(on_close: Any) -> Any:
+            return BarBuilder(timeframes=("1m",), fill_empty_bars=False, on_bar_closed=on_close)
+
+        rep = compare_ticks_with_source(
+            date_val=d,
+            symbols=sym_list,
+            source=source,
+            runtime=rt,
+            data_service=_build_data_service(rt, source),
+            builder_factory=_make_builder,
+        )
+        headers = [
+            "SYMBOL",
+            "BUILT",
+            "SOURCE",
+            "MATCHED",
+            "MAX CLOSE DIFF",
+            "MEDIAN CLOSE DIFF",
+            "ABOVE TOL",
+            "MAX VOL DIFF",
+            "MEDIAN VOL DIFF",
+        ]
+        rows = [
+            [
+                r.symbol,
+                str(r.built_count),
+                str(r.source_count),
+                str(r.matched_count),
+                f"{r.max_close_diff:.4f}",
+                f"{r.median_close_diff:.4f}",
+                str(r.count_above_tolerance),
+                str(r.max_volume_diff),
+                f"{r.median_volume_diff:.2f}",
+            ]
+            for r in rep.results
+        ]
+        typer.echo(
+            f"Comparison on {date_val} vs source '{source}' (tolerance: {rep.tolerance_pct}%):"
+        )
+        typer.echo(format_table(headers, rows))
+
+
+@data_app.command("import")
+@handle_cli_errors
+def data_import(
+    ctx: typer.Context,
+    path: str = typer.Argument(..., help="Path to vendor CSV or Parquet file"),
+    mapping: str = typer.Option(
+        ..., "--mapping", "-m", help="Path to column mapping TOML or JSON file"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Validate and plan import without writing"
+    ),
+) -> None:
+    """Import vendor market data file using column mapping definition."""
+    from algodesk.data.importer import import_vendor_file
+
+    with _open_rt(ctx, ensure=False) as rt:
+        manifest = _get_manifest(rt)
+        store = BarStore(rt.paths.data, manifest, params=rt.params)
+        validator = BarValidator(
+            rt.paths.data, manifest, params=rt.params, journal=getattr(rt, "journal", None)
+        )
+
+        res = import_vendor_file(
+            file_path=Path(path),
+            mapping_path=Path(mapping),
+            runtime=rt,
+            store=store,
+            validator=validator,
+            dry_run=dry_run,
+        )
+
+        status_str = "Planned (dry-run)" if dry_run else "Imported"
+        inst_summary = ", ".join(res.instruments)
+        typer.echo(
+            f"Successfully {status_str} {res.rows_count} {res.kind} row(s) for {inst_summary}:\n"
+            f"  - Timeframe: {res.timeframe}\n"
+            f"  - First timestamp: {res.first_ts}\n"
+            f"  - Last timestamp: {res.last_ts}\n"
+            f"  - File SHA-256: {res.sha256}"
+        )
+
+
+@data_app.command("smoke")
+@handle_cli_errors
+def data_smoke(
+    ctx: typer.Context,
+    symbols: str = typer.Option(
+        "RELIANCE,TCS", "--symbols", "-s", help="Comma-separated symbols to smoke test"
+    ),
+) -> None:
+    """Run smoke test verifying caching, zero-network repeated gets, gaps, and cross-source diff."""
+    from algodesk.data.smoke import run_data_smoke
+
+    sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    with _open_rt(ctx, ensure=False) as rt:
+        report = run_data_smoke(
+            symbols=sym_list,
+            runtime=rt,
+            data_service_primary=_build_data_service(rt, "upstox"),
+            data_service_secondary=_build_data_service(rt, "yfinance"),
+        )
+
+        headers = ["SYMBOL", "RUN2 REQS", "GAPS", "VERIFY", "MAX CLOSE DIFF (SRC2)"]
+        rows = [
+            [
+                r.symbol,
+                f"{r.network_requests_run2} (PASS)"
+                if r.network_requests_run2 == 0
+                else f"{r.network_requests_run2} (FAIL)",
+                str(r.gaps_count),
+                "OK" if r.verify_passed else "FAIL",
+                f"{r.max_close_diff_vs_source2:.4f}",
+            ]
+            for r in report.results
+        ]
+        typer.echo(
+            f"Data Smoke Test Report ({report.primary_source} vs {report.secondary_source}):"
+        )
+        typer.echo(format_table(headers, rows))
+        if report.overall_passed:
+            typer.echo("\nSmoke check: PASS (zero network calls on repeated get, store verified)")
+        else:
+            typer.echo("\nSmoke check: FAIL")
+            raise typer.Exit(code=1)
+
+
+def _render_and_confirm_delete(
+    plan: Any,
+    kind: str | None,
+    purge: bool,
+    yes: bool,
+    dry_run: bool = False,
+) -> None:
+    """Render delete plan table and prompt for confirmation."""
+    headers = ["INSTRUMENT", "DATE", "KIND", "ROWS", "BYTES", "PATH"]
+    table_rows = [
+        [f.instrument, f.date, f.kind, str(f.rows), str(f.bytes), f.path] for f in plan.files
+    ]
+    if table_rows:
+        typer.echo(format_table(headers, table_rows))
+
+    for inst in plan.no_data_instruments:
+        typer.echo(f"{inst}: no data")
+
+    typer.echo(
+        f"Plan: {plan.total_files} file(s) across {len(plan.instruments)} instrument(s) "
+        f"({plan.total_bytes} bytes, {plan.total_rows} rows)"
+    )
+
+    if dry_run or plan.total_files == 0:
+        if plan.total_files == 0:
+            typer.echo("No files found matching selector(s).")
+        return
+
+    has_ticks = (kind == "ticks") or any(f.kind == "ticks" for f in plan.files)
+    if has_ticks and purge:
+        raise typer.BadParameter(
+            "Ticks are irreplaceable and cannot be permanently purged bypassing trash."
+        )
+
+    if (kind == "ticks") or (not yes):
+        expected = f"DELETE {plan.total_files} files"
+        resp = typer.prompt(f"Type '{expected}' to confirm")
+        if resp.strip() != expected:
+            typer.echo("Deletion aborted.")
+            raise typer.Exit(code=1)
+
+
 @data_app.command("delete")
 @handle_cli_errors
 def data_delete(
@@ -343,6 +590,9 @@ def data_delete(
     selectors: list[str] = typer.Argument(..., help="Symbol, ID, glob, or @group selector(s)"),
     from_date: str | None = typer.Option(None, "--from", help="Start date (YYYY-MM-DD)"),
     to_date: str | None = typer.Option(None, "--to", help="End date (YYYY-MM-DD)"),
+    older_than: int | None = typer.Option(
+        None, "--older-than", help="Delete files older than N days"
+    ),
     kind: str | None = typer.Option(None, "--kind", help="Data kind (ticks, bars)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Display deletion plan without deleting"),
     purge: bool = typer.Option(False, "--purge", help="Permanently delete files bypassing trash"),
@@ -356,6 +606,15 @@ def data_delete(
         groups_dir = rt.root / "config" / "groups"
         data_dir = rt.paths.data
 
+        if older_than is not None:
+            if older_than < 0:
+                raise typer.BadParameter("--older-than must be non-negative")
+            from datetime import date, timedelta
+
+            cutoff_date = (date.today() - timedelta(days=older_than)).isoformat()
+            if to_date is None:
+                to_date = cutoff_date
+
         plan = plan_delete(
             selectors,
             manifest,
@@ -364,37 +623,11 @@ def data_delete(
             kind=kind,
             groups_dir=groups_dir,
         )
-
-        headers = ["INSTRUMENT", "DATE", "KIND", "ROWS", "BYTES", "PATH"]
-        table_rows = [
-            [f.instrument, f.date, f.kind, str(f.rows), str(f.bytes), f.path] for f in plan.files
-        ]
-        if table_rows:
-            typer.echo(format_table(headers, table_rows))
-
-        # List @group members or selectors without data as "no data"
-        for inst in plan.no_data_instruments:
-            typer.echo(f"{inst}: no data")
-
-        typer.echo(
-            f"Plan: {plan.total_files} file(s) across {len(plan.instruments)} instrument(s) "
-            f"({plan.total_bytes} bytes, {plan.total_rows} rows)"
-        )
-
-        if dry_run:
+        if dry_run or plan.total_files == 0:
+            _render_and_confirm_delete(plan, kind, purge, yes=True, dry_run=dry_run)
             return
 
-        if plan.total_files == 0:
-            typer.echo("No files found matching selector(s).")
-            return
-
-        if not yes:
-            expected = f"DELETE {plan.total_files} files"
-            resp = typer.prompt(f"Type '{expected}' to confirm")
-            if resp.strip() != expected:
-                typer.echo("Deletion aborted.")
-                raise typer.Exit(code=1)
-
+        _render_and_confirm_delete(plan, kind, purge, yes, dry_run=False)
         raw_trash_days = rt.params.get("data.trash_days") if rt.params else None
         trash_days = int(raw_trash_days) if raw_trash_days is not None else None
         lock_path = rt.state.journal_db.with_name(f"{rt.state.journal_db.name}.lock")

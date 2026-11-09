@@ -1,0 +1,34 @@
+name = "importer"
+kind = "broker"
+version = "0.1.0"
+api_version = 1
+entry = "plugin:ImporterBrokerPlugin"
+config_schema = "config_schema:ImporterConfig"
+modes_allowed = ["research", "backtest"]
+order_capable = false
+verified_on = "2026-11-06"
+sources = ["AlgoDesk Next Vendor File Ingestion Specification §11.4"]
+
+[capabilities]
+history = true
+stream = false
+realtime = false
+live_suitable = false
+official_api = false
+delay_seconds = 0
+
+[limits.history]
+requests_per_second = 100
+requests_per_minute = 1000
+requests_per_30min = 10000
+
+[max_span]
+"1m" = 365
+"1d" = 36500
+
+[retention]
+"1m" = 3650
+"1d" = 36500
+
+[requires]
+packages = ["pyarrow", "pydantic", "pytest"]
