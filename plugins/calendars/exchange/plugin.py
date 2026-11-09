@@ -76,6 +76,13 @@ class ExchangeCalendarPlugin(PluginBase):
         specials = self._data.get("special", [])
         return [s for s in specials if s.get("timings_pending", False)]
 
+    def is_special(self, d: date) -> bool:
+        """Return True if date is a configured special trading session."""
+        for s in self._data.get("special", []):
+            if s.get("date") == d:
+                return True
+        return False
+
     def holidays(self, year: int | None = None) -> list[dict[str, Any]]:
         """Return declared holiday list, optionally filtered by year."""
         all_h = self._data.get("holiday", [])

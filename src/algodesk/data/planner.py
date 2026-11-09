@@ -80,6 +80,7 @@ class FetchPlan:
     closed_calendar_days: tuple[date, ...] = ()
     closed_inferred_days: tuple[date, ...] = ()
     special_session_days: tuple[date, ...] = ()
+    empty_days: tuple[date, ...] = ()
 
     @property
     def has_work(self) -> bool:
@@ -102,6 +103,7 @@ class GapPlanner:
         chunk_days: int = 30,
         as_of: datetime | None = None,
         exchange_tz: tzinfo | None = None,
+        refresh: bool = False,
     ) -> FetchPlan:
         """Construct pure FetchPlan for key between start and end."""
         if start > end:
@@ -166,6 +168,7 @@ class GapPlanner:
         closed_inferred: list[date] = []
         special_sessions: list[date] = []
         unavailable: list[date] = []
+        empty: list[date] = []
 
         inst_str = str(key.instrument).upper()
         inst_exch = "NSE"
@@ -239,6 +242,9 @@ class GapPlanner:
                     closed.append(cur)
                 elif rec.status == CoverageStatus.UNAVAILABLE:
                     unavailable.append(cur)
+                elif rec.status == CoverageStatus.EMPTY and not refresh:
+                    # EMPTY days are final after data.fetch_retries until --refresh
+                    empty.append(cur)
                 else:
                     missing.append(cur)
             else:
@@ -343,4 +349,5 @@ class GapPlanner:
             closed_calendar_days=tuple(closed_calendar),
             closed_inferred_days=tuple(closed_inferred),
             special_session_days=tuple(special_sessions),
+            empty_days=tuple(empty),
         )

@@ -49,8 +49,16 @@ def _try_bhavcopy_presence(
     tz: Any,
     sym_bars_days: dict[str, set[date]],
     valid_fetch_chunk_days: dict[str, set[date]],
+    manifest: DataManifest | None = None,
+    file_present_days: set[date] | None = None,
+    absent_weekday_days: set[date] | None = None,
 ) -> bool:
-    """Attempt to use official Bhavcopy file presence for NSE."""
+    """Attempt to use official Bhavcopy file presence for NSE.
+
+    Returns True if bhavcopy is reachable, False if unreachable.
+    For NSE, bhavcopy file presence is authoritative:
+    file exists means open or special; HTTP 404 on a weekday means closed.
+    """
     sources = getattr(data_service, "_sources", None)
     if not isinstance(sources, dict):
         return False
@@ -58,14 +66,16 @@ def _try_bhavcopy_presence(
     if bhav_ds is None or not hasattr(bhav_ds, "daily_bars"):
         return False
     try:
+        if manifest is not None and getattr(bhav_ds, "_manifest", None) is None:
+            bhav_ds._manifest = manifest
         bhav_bars = bhav_ds.daily_bars(sample_symbols, start_d, end_d)
-        if not bhav_bars:
-            return False
-        for b in bhav_bars:
+        for b in bhav_bars or []:
             b_ts = getattr(b, "start_ts", getattr(b, "start", None))
             if b_ts is not None:
                 b_d = b_ts.astimezone(tz).date()
                 if start_d <= b_d <= end_d:
+                    if file_present_days is not None:
+                        file_present_days.add(b_d)
                     c_sym = str(b.instrument).split(":")[-1]
                     sym_bars_days[c_sym].add(b_d)
                     for s in sample_symbols:
@@ -76,6 +86,17 @@ def _try_bhavcopy_presence(
         while cur <= end_d:
             for s in sample_symbols:
                 valid_fetch_chunk_days[s].add(cur)
+            if hasattr(bhav_ds, "_fetch_file_content"):
+                try:
+                    cnt = bhav_ds._fetch_file_content(cur)
+                    if cnt is not None:
+                        if file_present_days is not None:
+                            file_present_days.add(cur)
+                    elif cur.weekday() < 5:
+                        if absent_weekday_days is not None:
+                            absent_weekday_days.add(cur)
+                except Exception:
+                    pass
             cur += one_d
         return True
     except Exception:
@@ -123,10 +144,21 @@ def infer_market_closures(
     if not isinstance(default_src, str):
         default_src = "yfinance"
 
+    bhav_file_present_days: set[date] = set()
+    bhav_absent_weekday_days: set[date] = set()
     bhavcopy_used = False
     if exch == "NSE":
         bhavcopy_used = _try_bhavcopy_presence(
-            data_service, sample_symbols, start_d, end_d, tz, sym_bars_days, valid_fetch_chunk_days
+            data_service,
+            sample_symbols,
+            start_d,
+            end_d,
+            tz,
+            sym_bars_days,
+            valid_fetch_chunk_days,
+            manifest=manifest,
+            file_present_days=bhav_file_present_days,
+            absent_weekday_days=bhav_absent_weekday_days,
         )
 
     if not bhavcopy_used:
@@ -225,13 +257,29 @@ def infer_market_closures(
     while cur <= end_d:
         day_str = cur.isoformat()
         is_cal_open = True
+        is_cal_special = False
         if calendar is not None:
+            if hasattr(calendar, "is_special"):
+                is_cal_special = calendar.is_special(cur)
+            else:
+                for s in getattr(calendar, "_data", {}).get("special", []):
+                    if s.get("date") == cur:
+                        is_cal_special = True
+                        break
             try:
                 is_cal_open = calendar.is_trading_day(cur)
             except CalendarCoverageError:
                 is_cal_open = cur.weekday() < 5
         else:
             is_cal_open = cur.weekday() < 5
+
+        existing_mc = (
+            manifest.get_market_closure(exch, day_str)
+            if hasattr(manifest, "get_market_closure")
+            else None
+        )
+        if existing_mc and existing_mc.kind == "special":
+            is_cal_special = True
 
         symbols_with_bars = [s for s in sample_symbols if cur in sym_bars_days[s]]
         symbols_no_bar: list[str] = []
@@ -247,28 +295,91 @@ def infer_market_closures(
                 if cur not in sym_bars_days[s]:
                     symbols_no_bar.append(s)
 
-        if is_cal_open:
-            expected_sessions += 1
-            if len(symbols_with_bars) == 0 and len(symbols_no_bar) == len(sample_symbols):
+        if bhavcopy_used:
+            # For NSE, bhavcopy file presence is authoritative:
+            # file exists means open or special; HTTP 404 on a weekday means closed.
+            if cur in bhav_file_present_days:
+                if cur.weekday() >= 5 or is_cal_special:
+                    evidence = json.dumps(
+                        {
+                            "source": "nse_bhavcopy",
+                            "status": "file_present",
+                            "is_weekend": cur.weekday() >= 5,
+                        }
+                    )
+                    special_candidates.append((cur, evidence))
+                else:
+                    # Weekday with bhavcopy file present -> OPEN session
+                    expected_sessions += 1
+            elif cur in bhav_absent_weekday_days or (
+                existing_mc and existing_mc.kind == "exchange_file"
+            ):
+                # Weekday HTTP 404 -> authoritative CLOSED
+                expected_sessions += 1
                 evidence = json.dumps(
                     {
-                        "type": "inferred_closure",
-                        "sample_count": len(sample_symbols),
-                        "missing_symbols": sorted(symbols_no_bar),
-                        "all_samples": True,
+                        "source": "nse_bhavcopy",
+                        "status": "absent",
+                        "attempts": 2,
                     }
                 )
                 inferred_candidates.append((cur, evidence))
-        else:
-            if len(symbols_with_bars) >= min_symbols:
+            elif is_cal_special:
+                # Special session on calendar, report as special session
                 evidence = json.dumps(
                     {
                         "type": "special_session",
-                        "reporting_count": len(symbols_with_bars),
-                        "reporting_symbols": sorted(symbols_with_bars),
+                        "status": "special session, source has no bars",
+                        "source": "nse_bhavcopy",
                     }
                 )
                 special_candidates.append((cur, evidence))
+        else:
+            # Bhavcopy is unreachable or exchange != NSE. Sample symbols decide.
+            # Sample symbols never override a calendar special session;
+            # a special session with no source bars is reported as
+            # "special session, source has no bars", not as a closure.
+            if is_cal_special:
+                if len(symbols_with_bars) >= min_symbols:
+                    evidence = json.dumps(
+                        {
+                            "type": "special_session",
+                            "reporting_count": len(symbols_with_bars),
+                            "reporting_symbols": sorted(symbols_with_bars),
+                        }
+                    )
+                else:
+                    evidence = json.dumps(
+                        {
+                            "type": "special_session",
+                            "status": "special session, source has no bars",
+                            "sample_count": len(sample_symbols),
+                            "reporting_count": len(symbols_with_bars),
+                        }
+                    )
+                special_candidates.append((cur, evidence))
+            elif is_cal_open:
+                expected_sessions += 1
+                if len(symbols_with_bars) == 0 and len(symbols_no_bar) == len(sample_symbols):
+                    evidence = json.dumps(
+                        {
+                            "type": "inferred_closure",
+                            "sample_count": len(sample_symbols),
+                            "missing_symbols": sorted(symbols_no_bar),
+                            "all_samples": True,
+                        }
+                    )
+                    inferred_candidates.append((cur, evidence))
+            else:
+                if len(symbols_with_bars) >= min_symbols:
+                    evidence = json.dumps(
+                        {
+                            "type": "special_session",
+                            "reporting_count": len(symbols_with_bars),
+                            "reporting_symbols": sorted(symbols_with_bars),
+                        }
+                    )
+                    special_candidates.append((cur, evidence))
 
         cur += one_day
 

@@ -1,7 +1,7 @@
 # NSE trading calendar data for 2022-2026 (equity, F&O, currency segments).
 # Sources:
 # 2022: Official NSE circular Download Ref No: NSE/CMTR/50560 (Circular Ref. No: 117/2021) dated 2021-12-10
-# 2023: Official NSE circular Download Ref No: NSE/CMTR/54757 (Circular Ref. No: 150/2022) dated 2022-12-08
+# 2023: Official NSE circular Download Ref No: NSE/CMTR/54757 (Circular Ref. No: 150/2022) dated 2022-12-08 (Bakri Id shifted to 2023-06-29 per NSE bhavcopy archive evidence)
 # 2024: Official NSE circular Download Ref No: NSE/CMTR/59722 (Circular Ref. No: 154/2023) dated 2023-12-12 + ad-hoc circulars
 # 2025: Official NSE circular Download Ref No: NSE/CMTR/65587 (Circular Ref. No: 170/2024) dated 2024-12-13
 # 2026: Official NSE circular verified by owner on 2026-10-30
@@ -134,9 +134,12 @@ name = "Maharashtra Day"
 closed = ["all"]
 
 [[holiday]]
-date = 2023-06-28
+date = 2023-06-29
 name = "Bakri Id (Eid al-Adha)"
 closed = ["all"]
+source = "NSE bhavcopy archive evidence"
+evidence_date = 2023-06-29
+verified_on = 2026-11-09
 
 [[holiday]]
 date = 2023-08-15

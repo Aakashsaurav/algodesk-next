@@ -166,6 +166,12 @@ Short decision records (context, decision, reason) in the order they were taken.
 4. *Verdict differentiation*: Operator interrupts record verdict `STOPPED` and stop reason `interrupt` (`is_fail=False`), distinguishing intended shutdowns from errors, feed halts, and risk breaches (`FAIL`). `session report` displays the stop reason explicitly.
 5. *Granular compare diagnostics*: `results compare` reports the first differing signal, order, or fill formatted with both timestamps and prices alongside any metric difference.
 
+**ADR-061 Exchange evidence-based calendar corrections, authoritative Bhavcopy closure inference, and robust cache smoke testing.**
+1. *Authoritative exchange Bhavcopy evidence for calendar data*: Verified NSE holiday calendar against official daily Bhavcopy archives. Bakri Id 2023 was officially shifted from 2023-06-28 to 2023-06-29 (confirmed via HTTP 200 on June 28 with 91,088 bytes and HTTP 404 on June 29). Corrected `plugins/calendars/exchange/data/nse.toml` with explicit `source`, `evidence_date`, and `verified_on`.
+2. *Authoritative closure inference and special session preservation*: For NSE, official Bhavcopy file presence is authoritative: an existing file proves regular or special trading session, while HTTP 404 on a weekday proves exchange closure. Sample symbols decide only when Bhavcopy is unreachable. Missing bars in sample symbols never override declared calendar special sessions; special sessions without source bars are reported as `"special session, source has no bars"` rather than closures.
+3. *Finality of EMPTY days past retry cap*: Once historical data fetching exhausts `data.fetch_retries` (or source returns no bars for an expected session), the day is recorded as `CoverageStatus.EMPTY`. `GapPlanner.plan` treats `EMPTY` days as final unless `--refresh` is explicitly requested, avoiding redundant repeated network queries.
+4. *Zero-network smoke testing and partial session exclusion*: `data smoke` checks that repeated `DataService.get` requests execute zero network calls across complete, closed, or retry-exhausted empty days. In-progress/incomplete intraday sessions (`CoverageStatus.PARTIAL`) before settlement deadline are excluded from failure checks and listed in the smoke report, and any network requests made are explicitly itemized. Timestamp boundaries are resolved in exchange timezone to avoid date spillover.
+
 
 
 

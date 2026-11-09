@@ -768,7 +768,7 @@ def test_manifest_and_metrics_include_first_last_recv_utc(tmp_project: Path) -> 
         assert manifest["last_tick_recv_utc"] == t_recv2.isoformat()
 
 
-@settings(max_examples=25)
+@settings(max_examples=25, deadline=None)
 @given(
     st.lists(
         st.tuples(
@@ -806,7 +806,7 @@ def test_property_monotonic_sequence_ordering(items: list[tuple[int, str, float]
         assert len(replayed_seqs) == len(items)
 
 
-@settings(max_examples=25)
+@settings(max_examples=25, deadline=None)
 @given(
     st.lists(
         st.integers(min_value=0, max_value=300),

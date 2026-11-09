@@ -139,19 +139,38 @@ class Fetcher:
                         b.start_ts.astimezone(self._store.exchange_tz).date() for b in clean_bars
                     }
                     missing_chunk_days = [d for d in chunk.days if d not in returned_days]
-                    cov_empty = [
-                        CoverageDayRecord(
-                            dataset_id=ds_id,
-                            day=d.isoformat(),
-                            status=CoverageStatus.EMPTY,
-                            rows=0,
-                            expected_rows=0,
-                            part_path="",
-                            fetched_at=finished_iso,
-                            note="Expected session returned no bars from source",
+                    cov_idx = (
+                        self._store.coverage_index
+                        if hasattr(self._store, "coverage_index")
+                        else None
+                    )
+                    now_check = datetime.now(UTC)
+                    cov_empty = []
+                    for d in missing_chunk_days:
+                        c_status = CoverageStatus.EMPTY
+                        c_note = "Expected session returned no bars from source"
+                        if cov_idx is not None:
+                            try:
+                                eval_st = cov_idx.evaluate_day_status(
+                                    ds_id, d, has_bars=False, as_of=now_check
+                                )
+                                if eval_st == CoverageStatus.PARTIAL:
+                                    c_status = CoverageStatus.PARTIAL
+                                    c_note = "Current session in progress / incomplete"
+                            except Exception:
+                                pass
+                        cov_empty.append(
+                            CoverageDayRecord(
+                                dataset_id=ds_id,
+                                day=d.isoformat(),
+                                status=c_status,
+                                rows=0,
+                                expected_rows=0,
+                                part_path="",
+                                fetched_at=finished_iso,
+                                note=c_note,
+                            )
                         )
-                        for d in missing_chunk_days
-                    ]
                     if cov_empty:
                         manifest.record_coverage_days(cov_empty)
 

@@ -236,6 +236,7 @@ class DataService:
         source: str | None = None,
         accept_unverified: bool = False,
         presence_only: bool = False,
+        refresh: bool = False,
     ) -> DataSlice:
         """Fetch historical bars with gap planning, rate limiting, and dynamic adjustment."""
         adj_mode = adjust if adjust is not None else "total"
@@ -310,6 +311,7 @@ class DataService:
             source_manifest=src_manifest,
             chunk_days=chunk_days,
             exchange_tz=self._exchange_tz,
+            refresh=refresh,
         )
         if plan.has_work:
             Fetcher(

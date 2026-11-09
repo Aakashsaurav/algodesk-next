@@ -337,7 +337,7 @@ Flat zero-volume bars (open=high=low=close with volume 0 on expected sessions) a
 ### Market closure inference & calendar audits
 Detect exchange holidays and special trading sessions empirically:
 - Infer closures: `algodesk data closures infer --exchange NSE --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--sample <SYMBOLS>] [--dry-run]`
-  (Evaluates official Bhavcopy archive presence first for NSE; falls back to sample symbols using presence-only retrieval that bypasses corporate action adjustment policies).
+  (Evaluates official Bhavcopy archive presence first for NSE: file exists proves open or special; HTTP 404 on weekday proves closed. Sample symbols decide only when Bhavcopy is unreachable and never override declared calendar special sessions; special sessions without source bars report as "special session, source has no bars", not closures).
 - Clear recorded closures: `algodesk data closures clear [--inferred] [--exchange E] [--from <YYYY-MM-DD>] [--to <YYYY-MM-DD>]`
 - Audit discrepancies between calendar and data: `algodesk data closures check --exchange NSE [--from <YYYY-MM-DD>] [--to <YYYY-MM-DD>]`
 - List recorded closures: `algodesk data closures list --exchange NSE`
@@ -403,7 +403,7 @@ algodesk data compare --date 2026-11-04 --source upstox
 # Execute live smoke test (owner-run, network)
 algodesk data smoke --symbols RELIANCE,TCS
 ```
-`data smoke` verifies that repeated `get` queries execute with zero network calls (100% cache hits), audits data gaps, verifies SQLite manifest integrity, and reports cross-source close price divergence.
+`data smoke` verifies that repeated `get` queries execute with zero network calls (100% cache hits) across COMPLETE, CLOSED, or retry-exhausted EMPTY days. In-progress sessions (`CoverageStatus.PARTIAL`) before settlement deadline are excluded from failure checks and listed, and any network calls made on Run 2 are itemized. EMPTY days are final after `data.fetch_retries` until refetched via `algodesk data get ... --refresh`.
 
 ### 5. Safe tick archive management & vendor import
 Manage tick archives safely:

@@ -168,8 +168,19 @@ def _build_data_service(rt: Runtime, source: str = "yfinance") -> DataService:
         )
     except Exception:
         pass
+    sources_dict: dict[str, DataSource] = {source: broker}
+    if source != "nse_bhavcopy":
+        try:
+            b_ref_aux: Any = rt.plugins.create(
+                PluginKind.REFERENCE, "nse_bhavcopy", config={}, ctx=p_ctx
+            )
+            b_ref_aux._store = store
+            b_ref_aux._manifest = manifest
+            sources_dict["nse_bhavcopy"] = cast(DataSource, b_ref_aux)
+        except Exception:
+            pass
     return DataService(
-        {source: broker},
+        sources_dict,
         source,
         store,
         None,
@@ -194,6 +205,7 @@ def data_get(
     accept_unverified: bool = typer.Option(False, "--accept-unverified", help="Accept unverified"),
     fill_only: bool = typer.Option(False, "--fill-only", help="Fetch and commit without table"),
     source: str = typer.Option("yfinance", "--source", help="Data source broker plugin"),
+    refresh: bool = typer.Option(False, "--refresh", help="Force refetch of EMPTY days"),
 ) -> None:
     """Fetch and display historical market data bars in a table."""
     start_dt, end_dt = _parse_data_cli_dt(start, is_end=False), _parse_data_cli_dt(end, is_end=True)
@@ -217,6 +229,7 @@ def data_get(
             adjust=adjust,
             fill_only=fill_only,
             accept_unverified=accept_unverified,
+            refresh=refresh,
         )
 
     if fill_only:
@@ -522,7 +535,7 @@ def data_smoke(
             [
                 r.symbol,
                 f"{r.network_requests_run2} (PASS)"
-                if r.network_requests_run2 == 0
+                if (r.network_requests_run2 == 0 or (report.overall_passed and r.partial_sessions))
                 else f"{r.network_requests_run2} (FAIL)",
                 str(r.gaps_count),
                 "OK" if r.verify_passed else "FAIL",
@@ -534,6 +547,18 @@ def data_smoke(
             f"Data Smoke Test Report ({report.primary_source} vs {report.secondary_source}):"
         )
         typer.echo(format_table(headers, rows))
+
+        if report.partial_sessions:
+            part_str = ", ".join(sorted(set(report.partial_sessions)))
+            typer.echo(f"\nPartial sessions (current incomplete session): {part_str}")
+
+        if report.run2_requests:
+            typer.echo(f"\nRun 2 network requests ({len(report.run2_requests)} made):")
+            for req in report.run2_requests:
+                typer.echo(f"  - {req.get('key')} [{req.get('start')} to {req.get('end')}]")
+        else:
+            typer.echo("\nRun 2 made 0 network requests.")
+
         if report.overall_passed:
             typer.echo("\nSmoke check: PASS (zero network calls on repeated get, store verified)")
         else:

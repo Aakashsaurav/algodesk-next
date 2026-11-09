@@ -27,6 +27,8 @@ class SymbolSmokeResult:
     gaps_count: int
     verify_passed: bool
     max_close_diff_vs_source2: float
+    partial_sessions: tuple[str, ...] = ()
+    run2_requests: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass
@@ -38,6 +40,8 @@ class SmokeReport:
     secondary_source: str
     results: list[SymbolSmokeResult] = field(default_factory=list)
     overall_passed: bool = True
+    partial_sessions: list[str] = field(default_factory=list)
+    run2_requests: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _resolve_smoke_dates(
@@ -58,9 +62,11 @@ def _resolve_smoke_dates(
     sessions.reverse()
 
     utc = UTC
-    end_dt = datetime.combine(cur, time(23, 59, 59), tzinfo=utc)
-    start_1d = datetime.combine(cur - timedelta(days=30), time(0, 0), tzinfo=utc)
-    start_1m = datetime.combine(sessions[0] if sessions else cur, time(0, 0), tzinfo=utc)
+    end_dt = datetime.combine(cur, time(23, 59, 59), tzinfo=ist_tz).astimezone(utc)
+    start_1d = datetime.combine(cur - timedelta(days=30), time(0, 0), tzinfo=ist_tz).astimezone(utc)
+    start_1m = datetime.combine(
+        sessions[0] if sessions else cur, time(0, 0), tzinfo=ist_tz
+    ).astimezone(utc)
     return start_1d, start_1m, end_dt, end_dt
 
 
@@ -155,15 +161,24 @@ def _smoke_single_symbol(
     runtime: Any,
 ) -> SymbolSmokeResult:
     """Execute smoke test passes for a single symbol."""
-    gaps, s_1d, _ = _execute_run(ds_pri, sym, start_1d, start_1m, end_dt, primary_source)
+    gaps, s_1d, s_1m = _execute_run(ds_pri, sym, start_1d, start_1m, end_dt, primary_source)
 
     src_plugin = ds_pri._resolve_source(primary_source)
     orig_history = src_plugin.history
-    call_count = 0
+    run2_reqs: list[dict[str, Any]] = []
 
     def _instrumented_history(*args: Any, **kwargs: Any) -> Any:
-        nonlocal call_count
-        call_count += 1
+        k = args[0] if args else kwargs.get("key")
+        st = args[1] if len(args) > 1 else kwargs.get("start")
+        en = args[2] if len(args) > 2 else kwargs.get("end")
+        run2_reqs.append(
+            {
+                "symbol": sym,
+                "key": str(k),
+                "start": str(st),
+                "end": str(en),
+            }
+        )
         return orig_history(*args, **kwargs)
 
     src_plugin.history = _instrumented_history
@@ -172,15 +187,24 @@ def _smoke_single_symbol(
     finally:
         src_plugin.history = orig_history
 
+    partial_days: set[str] = set()
+    for s_slice in (s_1d, s_1m):
+        if s_slice and hasattr(s_slice, "gaps"):
+            for g in s_slice.gaps:
+                if str(getattr(g, "status", "")).upper() == "PARTIAL":
+                    partial_days.add(str(getattr(g, "day", "")))
+
     sec_diff = _measure_secondary_diff(ds_sec, sym, start_1d, end_dt, secondary_source, s_1d)
     verify_ok = _verify_manifest_integrity(runtime)
 
     return SymbolSmokeResult(
         symbol=sym,
-        network_requests_run2=call_count,
+        network_requests_run2=len(run2_reqs),
         gaps_count=gaps,
         verify_passed=verify_ok,
         max_close_diff_vs_source2=round(sec_diff, 4),
+        partial_sessions=tuple(sorted(partial_days)),
+        run2_requests=tuple(run2_reqs),
     )
 
 
@@ -223,7 +247,15 @@ def run_data_smoke(
             runtime,
         )
         report.results.append(res)
-        if res.network_requests_run2 > 0 or not res.verify_passed:
+        report.run2_requests.extend(res.run2_requests)
+        for ps in res.partial_sessions:
+            if ps not in report.partial_sessions:
+                report.partial_sessions.append(ps)
+
+        if not res.verify_passed:
             report.overall_passed = False
+        elif res.network_requests_run2 > 0:
+            if not res.partial_sessions:
+                report.overall_passed = False
 
     return report
