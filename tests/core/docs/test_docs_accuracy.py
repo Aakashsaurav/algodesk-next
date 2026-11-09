@@ -49,6 +49,7 @@ ALLOWED_NON_PARAM_NAMES = {
     "feed.connected": "Journal event type for feed connected",
     "tick.stats": "Journal event type for tick stats",
     "bar.stats": "Journal event type for bar stats",
+    "bar.timer_close": "Journal event type for timer-driven bar close",
     "proc.stats": "Journal event type for process stats",
     "latency.stats": "Journal event type for latency stats",
     "risk.decision": "Journal event type for risk decision",

@@ -118,12 +118,10 @@ def _derive_instrument_from_file_path(path: Path) -> InstrumentId:
 
 @dataclass(order=True)
 class _ReplayItem:
-    recv_ts: datetime
-    exch_ts: datetime
-    instrument_str: str
-    seq: int
+    sort_key: tuple[Any, ...]
     event: Tick | Quote = field(compare=False)
     stream_idx: int = field(compare=False)
+    seq: int | None = field(compare=False, default=None)
 
 
 class _StreamReader:
@@ -134,6 +132,7 @@ class _StreamReader:
         "_current_batch",
         "_idx",
         "_instrument",
+        "_last_seq",
         "_path",
         "_window_end",
         "_window_start",
@@ -150,11 +149,16 @@ class _StreamReader:
         self._instrument = _derive_instrument_from_file_path(path)
         self._window_start = window_start
         self._window_end = window_end
+        self._last_seq: int | None = None
         parquet_file = pq.ParquetFile(path)
         self._batch_iter = parquet_file.iter_batches(batch_size=batch_size)
         self._current_batch: list[dict[str, Any]] = []
         self._idx = 0
         self._fetch_next_batch()
+
+    @property
+    def last_seq(self) -> int | None:
+        return self._last_seq
 
     def _fetch_next_batch(self) -> None:
         try:
@@ -170,9 +174,12 @@ class _StreamReader:
             if self._idx >= len(self._current_batch):
                 self._fetch_next_batch()
             if not self._current_batch:
+                self._last_seq = None
                 return None
             row = self._current_batch[self._idx]
             self._idx += 1
+            raw_seq = row.get("seq")
+            self._last_seq = int(raw_seq) if raw_seq is not None else None
             ev = row_to_market_event(self._instrument, row)
             if ev is None:
                 continue
@@ -186,7 +193,14 @@ class _StreamReader:
 class ReplayFeed:
     """K-way merge replay feed driving a SimClock with optional tick window."""
 
-    __slots__ = ("_batch_size", "_clock", "_files", "_window_end", "_window_start")
+    __slots__ = (
+        "_batch_size",
+        "_clock",
+        "_current_seq",
+        "_files",
+        "_window_end",
+        "_window_start",
+    )
 
     def __init__(
         self,
@@ -201,8 +215,14 @@ class ReplayFeed:
         self._batch_size = batch_size
         self._window_start = window_start
         self._window_end = window_end
+        self._current_seq: int | None = None
 
-    def __iter__(self) -> Iterator[MarketEvent]:
+    @property
+    def current_seq(self) -> int | None:
+        """Return the sequence number of the most recently yielded event."""
+        return self._current_seq
+
+    def iter_with_seq(self) -> Iterator[tuple[MarketEvent, int | None]]:
         heap: list[_ReplayItem] = []
         streams: list[_StreamReader] = []
         seq = 0
@@ -218,15 +238,18 @@ class ReplayFeed:
             ev = reader.next_event()
             if ev is not None:
                 seq += 1
+                r_seq = reader.last_seq
+                if r_seq is not None:
+                    sort_key: tuple[Any, ...] = (0, r_seq, idx)
+                else:
+                    sort_key = (1, ev.recv_ts, ev.exch_ts, str(ev.instrument), seq, idx)
                 heapq.heappush(
                     heap,
                     _ReplayItem(
-                        recv_ts=ev.recv_ts,
-                        exch_ts=ev.exch_ts,
-                        instrument_str=str(ev.instrument),
-                        seq=seq,
+                        sort_key=sort_key,
                         event=ev,
                         stream_idx=idx,
+                        seq=r_seq,
                     ),
                 )
 
@@ -234,29 +257,44 @@ class ReplayFeed:
             if self._window_start is not None:
                 if self._clock.now() < self._window_start:
                     self._clock.set_time(self._window_start)
-            elif heap and self._clock.now() < heap[0].recv_ts:
-                self._clock.set_time(heap[0].recv_ts)
+            elif heap and self._clock.now() < heap[0].event.recv_ts:
+                self._clock.set_time(heap[0].event.recv_ts)
 
         while heap:
             item = heapq.heappop(heap)
+            self._current_seq = item.seq
             if self._clock is not None and hasattr(self._clock, "set_time"):
                 if self._clock.now() < item.event.recv_ts:
                     self._clock.set_time(item.event.recv_ts)
 
-            yield item.event
+            yield (item.event, item.seq)
 
             reader = streams[item.stream_idx]
             next_ev = reader.next_event()
             if next_ev is not None:
                 seq += 1
+                r_seq = reader.last_seq
+                if r_seq is not None:
+                    sort_key = (0, r_seq, item.stream_idx)
+                else:
+                    sort_key = (
+                        1,
+                        next_ev.recv_ts,
+                        next_ev.exch_ts,
+                        str(next_ev.instrument),
+                        seq,
+                        item.stream_idx,
+                    )
                 heapq.heappush(
                     heap,
                     _ReplayItem(
-                        recv_ts=next_ev.recv_ts,
-                        exch_ts=next_ev.exch_ts,
-                        instrument_str=str(next_ev.instrument),
-                        seq=seq,
+                        sort_key=sort_key,
                         event=next_ev,
                         stream_idx=item.stream_idx,
+                        seq=r_seq,
                     ),
                 )
+
+    def __iter__(self) -> Iterator[MarketEvent]:
+        for ev, _ in self.iter_with_seq():
+            yield ev

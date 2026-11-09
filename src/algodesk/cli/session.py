@@ -136,9 +136,17 @@ def session_report_cmd(
             (target_dir / "SUMMARY.md").read_text() if (target_dir / "SUMMARY.md").exists() else ""
         )
         verdict = (
-            "FAIL"
-            if ("Verdict: FAIL" in session_text or "Verdict: FAIL" in summary_text)
-            else "PASS"
+            "STOPPED"
+            if (
+                "Verdict: STOPPED" in session_text
+                or "Verdict: STOPPED" in summary_text
+                or metrics.get("stop_reason") == "interrupt"
+            )
+            else (
+                "FAIL"
+                if ("Verdict: FAIL" in session_text or "Verdict: FAIL" in summary_text)
+                else "PASS"
+            )
         )
         is_partial = (
             metrics.get("is_partial", False)
@@ -152,6 +160,13 @@ def session_report_cmd(
         typer.echo(f"Session Report: {target_dir.name}")
         typer.echo("=" * 60)
         typer.echo(f"Verdict:              {verdict}")
+        stop_reason = metrics.get("stop_reason")
+        if not stop_reason:
+            for line in session_text.splitlines():
+                if line.startswith("Stop Reason:"):
+                    stop_reason = line.replace("Stop Reason:", "").strip()
+        if stop_reason:
+            typer.echo(f"Stop Reason:          {stop_reason}")
         fail_reason = metrics.get("fail_reason")
         if verdict.startswith("FAIL") and not fail_reason:
             for line in session_text.splitlines():

@@ -49,6 +49,7 @@ class Recorder:
     __slots__ = (
         "_buffers",
         "_bus",
+        "_current_seq",
         "_data_dir",
         "_disk_halted",
         "_flush_seconds",
@@ -86,11 +87,12 @@ class Recorder:
         self._source = source
         self._on_system_event = on_system_event
 
-        self._buffers: dict[InstrumentId, list[Tick | Quote]] = {}
+        self._buffers: dict[InstrumentId, list[tuple[Tick | Quote, int | None]]] = {}
         self._part_seq: dict[tuple[InstrumentId, str], int] = {}
         self._disk_halted = False
         self._total_rows = 0
         self._total_bytes = 0
+        self._current_seq = 0
 
         if self._bus is not None:
             self._bus.subscribe(MarketEvent, self.on_market_event, critical=False)
@@ -115,7 +117,7 @@ class Recorder:
         """Return total bytes written to disk."""
         return self._total_bytes
 
-    def on_market_event(self, event: MarketEvent) -> None:
+    def on_market_event(self, event: MarketEvent, seq: int | None = None) -> None:
         """Buffer incoming market event with isolated error handling and disk guard."""
         try:
             if isinstance(event, FeedStatus):
@@ -123,8 +125,10 @@ class Recorder:
             if not self._check_disk():
                 return
             inst = event.instrument
+            if seq is not None:
+                self._current_seq = max(self._current_seq, seq)
             buf = self._buffers.setdefault(inst, [])
-            buf.append(event)
+            buf.append((event, seq))
             if len(buf) >= self._max_buffer_rows:
                 self._flush_instrument(inst)
         except Exception:
@@ -179,12 +183,19 @@ class Recorder:
             logger.warning("Recorder flush failed: %s", exc)
         return written
 
+    def close(self) -> None:
+        """Flush buffer and finalize recorder state."""
+        self.flush()
+
     def _flush_instrument(self, instrument: InstrumentId) -> str | None:
         buf = self._buffers.pop(instrument, [])
         if not buf:
             return None
 
-        d_str = buf[0].exch_ts.date().isoformat()
+        events = [item[0] for item in buf]
+        seqs = [item[1] for item in buf]
+
+        d_str = events[0].exch_ts.date().isoformat()
         pdir = self.partition_dir(instrument, d_str)
         pdir.mkdir(parents=True, exist_ok=True)
 
@@ -204,15 +215,19 @@ class Recorder:
         filename = f"part-{seq:04d}.parquet"
         file_path = pdir / filename
 
-        table = events_to_table(buf)
+        table = events_to_table(events)
+        if any(s is not None for s in seqs):
+            table = table.append_column(
+                "seq", pa.array([s if s is not None else 0 for s in seqs], type=pa.int64())
+            )
         pq.write_table(table, file_path, compression="zstd")
 
         size_bytes = file_path.stat().st_size
         self._total_rows += len(buf)
         self._total_bytes += size_bytes
         sha256 = _compute_sha256(file_path)
-        first_ts = buf[0].exch_ts.isoformat()
-        last_ts = buf[-1].exch_ts.isoformat()
+        first_ts = events[0].exch_ts.isoformat()
+        last_ts = events[-1].exch_ts.isoformat()
         created_ts = datetime.now(UTC).isoformat()
 
         rec = FileRecord(

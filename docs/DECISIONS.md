@@ -159,6 +159,13 @@ Short decision records (context, decision, reason) in the order they were taken.
 4. *Vendor file import plugin*: Broker plugin `importer` (`plugins/brokers/importer`) ingests external CSV or Parquet files using flexible column mappings, resolves symbols through `InstrumentId`, routes data through `BarValidator` and `BarStore` (or `write_ticks_parquet`), and uses the source file SHA-256 hash as dataset version.
 5. *Live data smoke verification*: `algodesk data smoke --symbols A,B` runs two sequential fetches of 1d and 1m bars, asserting that the second pass executes zero network requests (100% cache hits), audits data gaps, verifies manifest integrity, and evaluates maximum close price divergence against a secondary source.
 
+**ADR-060 Deterministic paper-replay equivalence, monotonic tick sequencing, timer close playback, and graceful stop.**
+1. *Monotonic sequence numbers*: Every tick receives a monotonic sequence number at arrival during live sessions, stored in partition Parquet files under column `seq` (`int64`). Replay merges partitions ordered primarily by `seq`, preventing cross-instrument feed latency skew from altering global arrival ordering.
+2. *Deterministic bar closing and late tick rejection*: Live timer boundary bar closes log `bar.timer_close` events with `(instrument, timeframe, end_ts, seq)`. Replay explicitly triggers timer closes at the identical tick sequence number via `BarBuilder.close_bar_timer`. Late ticks arriving with `exch_ts < last_closed_end` are dropped identically without reopening duplicate completed bars.
+3. *Graceful interrupt lifecycle*: Operator Ctrl-C cancels the active live feed reader task, cleanly awaits `stream.aclose()`, flushes and closes the recorder, and writes results without destroyed task or pending generator warnings.
+4. *Verdict differentiation*: Operator interrupts record verdict `STOPPED` and stop reason `interrupt` (`is_fail=False`), distinguishing intended shutdowns from errors, feed halts, and risk breaches (`FAIL`). `session report` displays the stop reason explicitly.
+5. *Granular compare diagnostics*: `results compare` reports the first differing signal, order, or fill formatted with both timestamps and prices alongside any metric difference.
+
 
 
 

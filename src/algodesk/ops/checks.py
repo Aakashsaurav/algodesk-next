@@ -747,7 +747,12 @@ def _check_instrument_master_diff(runtime: Runtime) -> CheckResult:
 def _find_latest_complete_trading_day(cal: Any, today: date, now_ist: datetime) -> date:
     """Determine the latest trading session that has completed market close."""
     check_date = today if now_ist.time() >= time(15, 30) else today - timedelta(days=1)
-    while check_date >= today - timedelta(days=60) and not cal.is_trading_day(check_date):
+    while check_date >= today - timedelta(days=60):
+        try:
+            if cal.is_trading_day(check_date):
+                break
+        except Exception:
+            pass
         check_date -= timedelta(days=1)
     return check_date
 
@@ -771,8 +776,11 @@ def _compute_instrument_lag(
             cur = last_dt + timedelta(days=1)
             lag = 0
             while cur <= latest_complete_date:
-                if cal.is_trading_day(cur):
-                    lag += 1
+                try:
+                    if cal.is_trading_day(cur):
+                        lag += 1
+                except Exception:
+                    pass
                 cur += timedelta(days=1)
         if lag > max_lag:
             max_lag, lagging_inst = lag, inst

@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 
 from algodesk.api.market import Bar, InstrumentId, Tick
 from algodesk.engine.bus import EventBus
@@ -60,6 +61,7 @@ class BarBuilder:
         "_late_tick_count",
         "_on_bar_closed",
         "_on_system_event",
+        "_on_timer_bar_closed",
         "_scheduler",
         "_session_manager",
         "_tf_seconds",
@@ -76,6 +78,7 @@ class BarBuilder:
         fill_empty_bars: bool = True,
         on_bar_closed: Callable[[Bar], None] | None = None,
         on_system_event: Callable[[SystemEvent], None] | None = None,
+        on_timer_bar_closed: Callable[[InstrumentId, str, datetime], None] | None = None,
     ) -> None:
         self._timeframes = list(timeframes)
         self._tf_seconds = {tf: parse_timeframe_seconds(tf) for tf in self._timeframes}
@@ -86,6 +89,7 @@ class BarBuilder:
         self._fill_empty_bars = fill_empty_bars
         self._on_bar_closed = on_bar_closed
         self._on_system_event = on_system_event
+        self._on_timer_bar_closed = on_timer_bar_closed
 
         self._active_bars: dict[tuple[InstrumentId, str], _ActiveBar] = {}
         self._last_cumulative_vol: dict[InstrumentId, float] = {}
@@ -159,7 +163,7 @@ class BarBuilder:
         active = self._active_bars.get(key)
         if active is not None:
             if tick.exch_ts < active.start_ts:
-                self._handle_late_tick(tick, active)
+                self._handle_late_tick(tick, active.start_ts)
                 return
             if tick.exch_ts >= active.end_ts:
                 self._close_active_bar(key, p_start)
@@ -167,6 +171,9 @@ class BarBuilder:
 
         if active is None:
             last_end = self._last_closed_end.get(key)
+            if last_end is not None and tick.exch_ts < last_end:
+                self._handle_late_tick(tick, last_end)
+                return
             if last_end is not None and last_end < p_start and self._fill_empty_bars:
                 self._fill_empty(tick.instrument, tf, last_end, p_start, tf_sec)
             active = _ActiveBar(
@@ -190,11 +197,11 @@ class BarBuilder:
             active.volume += vol_delta
             active.ticks_count += 1
 
-    def _handle_late_tick(self, tick: Tick, active: _ActiveBar) -> None:
+    def _handle_late_tick(self, tick: Tick, threshold_ts: datetime) -> None:
         self._late_tick_count += 1
         msg = (
             f"Late tick for {tick.instrument} at {tick.exch_ts.isoformat()} "
-            f"arrived after bar {active.start_ts.isoformat()}"
+            f"arrived after bar {threshold_ts.isoformat()}"
         )
         evt = SystemEvent(
             kind="feed.late_tick",
@@ -230,7 +237,28 @@ class BarBuilder:
     ) -> None:
         active = self._active_bars.get(key)
         if active is not None and active.end_ts <= period_end:
+            inst, tf = key
+            if self._on_timer_bar_closed is not None:
+                self._on_timer_bar_closed(inst, tf, period_end)
             self._close_active_bar(key, period_end)
+
+    def close_bar_timer(
+        self,
+        instrument: Any,
+        timeframe: str,
+        period_end: datetime,
+    ) -> None:
+        """Explicitly close bar by timer boundary (used during deterministic replay)."""
+        key = (instrument, timeframe)
+        active = self._active_bars.get(key)
+        if active is not None and active.end_ts <= period_end:
+            self._close_active_bar(key, period_end)
+            return
+        for k, act in list(self._active_bars.items()):
+            if str(k[0]) == str(instrument) and k[1] == timeframe:
+                if act.end_ts <= period_end:
+                    self._close_active_bar(k, period_end)
+                return
 
     def _close_active_bar(
         self,

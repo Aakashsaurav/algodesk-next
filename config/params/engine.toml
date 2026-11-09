@@ -57,3 +57,15 @@ tighten = "down"
 description = "Interval in seconds between periodic tick, bar and proc stats emission"
 owner = "engine"
 
+[[param]]
+name = "engine.feed_poll_timeout_ms"
+type = "int"
+default = 100
+min = 1
+max = 5000
+unit = "ms"
+scope = "global"
+tighten = "down"
+description = "Timeout in milliseconds for polling market event queue during live session execution"
+owner = "engine"
+

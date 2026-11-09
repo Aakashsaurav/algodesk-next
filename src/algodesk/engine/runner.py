@@ -154,7 +154,10 @@ class SessionRunner:
             if not self.tick_window:
                 w_start: datetime | None = None
                 w_end: datetime | None = None
-                if m_data.get("first_tick_utc") and m_data.get("last_tick_utc"):
+                if m_data.get("first_tick_recv_utc") and m_data.get("last_tick_recv_utc"):
+                    w_start = datetime.fromisoformat(m_data["first_tick_recv_utc"])
+                    w_end = datetime.fromisoformat(m_data["last_tick_recv_utc"])
+                elif m_data.get("first_tick_utc") and m_data.get("last_tick_utc"):
                     w_start = datetime.fromisoformat(m_data["first_tick_utc"])
                     w_end = datetime.fromisoformat(m_data["last_tick_utc"])
                 elif m_data.get("first_tick_ist") and m_data.get("last_tick_ist"):
@@ -163,6 +166,22 @@ class SessionRunner:
                 if w_start and w_end:
                     self.tick_window = (w_start, w_end)
 
+            events_jsonl = sess_path / "events.jsonl"
+            self._timer_closes_by_seq: dict[int, list[dict[str, Any]]] = {}
+            if events_jsonl.is_file():
+                try:
+                    for line in events_jsonl.read_text(encoding="utf-8").splitlines():
+                        if not line.strip():
+                            continue
+                        e = json.loads(line)
+                        if e.get("kind") == "bar.timer_close":
+                            p = e.get("payload_json", {})
+                            if isinstance(p, str):
+                                p = json.loads(p)
+                            if "seq" in p:
+                                self._timer_closes_by_seq.setdefault(int(p["seq"]), []).append(p)
+                except Exception as exc:
+                    logger.debug("Failed loading timer close events from %s: %s", events_jsonl, exc)
             from algodesk.results.compare import _get_configured_plugins
 
             active_p = _get_configured_plugins(sess_path)
@@ -187,6 +206,8 @@ class SessionRunner:
                     replay_session,
                     ", ".join(self._version_warnings),
                 )
+        else:
+            self._timer_closes_by_seq = {}
 
         if replay_dates:
             cleaned_dates: list[str] = []
@@ -250,6 +271,11 @@ class SessionRunner:
         self._last_bar_end_ts: dict[Any, datetime] = {}
         self._first_tick_ts: datetime | None = None
         self._last_tick_ts: datetime | None = None
+        self._first_tick_recv_ts: datetime | None = None
+        self._last_tick_recv_ts: datetime | None = None
+        self._tick_seq: int = 0
+        self._active_feed_task: asyncio.Task[Any] | None = None
+        self._active_feed_stream: Any = None
         self._bars_closed: int = 0
         self._bars_by_tf: dict[str, int] = {}
         self._signals_count: int = 0
@@ -284,6 +310,12 @@ class SessionRunner:
         elif reason == "error":
             self._run_error = self._run_error or "Stopped due to error"
         self._stop_event.set()
+        if (
+            hasattr(self, "_active_feed_task")
+            and self._active_feed_task is not None
+            and not self._active_feed_task.done()
+        ):
+            self._active_feed_task.cancel()
 
     def run_prestart_doctor(self) -> None:
         """Run diagnostic checks before starting; refuse to run on critical failures."""
@@ -598,7 +630,9 @@ class SessionRunner:
         )
 
         session_mgr, scheduler = self._init_scheduling(clock, p_ctx)
-        bar_builder = self._init_bar_builder(session_mgr, bus, scheduler, ind_mgr, buf, strat_rt)
+        bar_builder = self._init_bar_builder(
+            session_mgr, bus, scheduler, ind_mgr, buf, strat_rt, journal=journal
+        )
         recorder = self._init_recorder(bus, scheduler)
 
         def _on_fill_event(fe: FillEvent) -> None:
@@ -934,8 +968,21 @@ class SessionRunner:
         ind_mgr: IndicatorManager,
         buf: BarBuffer,
         strat_rt: StrategyRuntime,
+        journal: Journal | None = None,
     ) -> BarBuilder:
         assert self.run_config is not None
+
+        def _on_timer_close(inst: Any, tf: str, end_ts: datetime) -> None:
+            if journal is not None:
+                journal.append(
+                    "bar.timer_close",
+                    {
+                        "instrument": str(inst),
+                        "timeframe": tf,
+                        "end_ts": end_ts.isoformat(),
+                        "seq": self._tick_seq,
+                    },
+                )
 
         async def _on_bar_closed(bar: Any) -> None:
             buf.append(bar)
@@ -964,6 +1011,7 @@ class SessionRunner:
             bus=bus,
             scheduler=scheduler,
             on_bar_closed=_on_bar_sync,
+            on_timer_bar_closed=_on_timer_close,
         )
 
     def _on_strategy_intent(self, inst: Any, now_dt: datetime) -> None:
@@ -1120,18 +1168,23 @@ class SessionRunner:
 
         # Build feed stream
         stream = self._build_event_stream(c, clock)
+        self._active_feed_stream = stream
 
-        async for ev in stream:
-            if self._stop_event.is_set():
-                break
-            if c.get("killswitch") is not None and c["killswitch"].is_active():
-                self.stop(reason="kill switch")
-                break
+        async def _dispatch_market_event(ev_item: Any) -> None:
+            if isinstance(ev_item, tuple):
+                ev, seq_opt = ev_item
+            else:
+                ev, seq_opt = ev_item, None
+            if seq_opt is not None:
+                self._tick_seq = seq_opt
+            else:
+                self._tick_seq += 1
+            curr_seq = self._tick_seq
 
             # 1. Recording
             if c["recorder"] is not None:
                 try:
-                    c["recorder"].on_market_event(ev)
+                    c["recorder"].on_market_event(ev, seq=curr_seq)
                 except Exception as exc:
                     notify.notify_error(f"Recorder disk full or error: {exc}", "recorder")
 
@@ -1147,6 +1200,9 @@ class SessionRunner:
                 if self._first_tick_ts is None:
                     self._first_tick_ts = ev.exch_ts
                 self._last_tick_ts = ev.exch_ts
+                if self._first_tick_recv_ts is None:
+                    self._first_tick_recv_ts = ev.recv_ts
+                self._last_tick_recv_ts = ev.recv_ts
                 self._latest_tick_ts[ev.instrument] = ev.exch_ts
                 self._latest_tick_mono[ev.instrument] = time.monotonic()
                 self._latest_tick_recv_time[ev.instrument] = clock.now()
@@ -1163,6 +1219,12 @@ class SessionRunner:
                         format_ist(ev.exch_ts),
                     )
                 c["bar_builder"].on_tick(ev)
+                if self._is_replay and curr_seq in self._timer_closes_by_seq:
+                    for tc in self._timer_closes_by_seq[curr_seq]:
+                        inst_id = tc["instrument"]
+                        tf = tc["timeframe"]
+                        end_ts = datetime.fromisoformat(tc["end_ts"])
+                        c["bar_builder"].close_bar_timer(inst_id, tf, end_ts)
                 self._tick_stats[str(ev.instrument)] = (
                     self._tick_stats.get(str(ev.instrument), 0) + 1
                 )
@@ -1209,6 +1271,90 @@ class SessionRunner:
 
             # 5. Check OMS timeouts
             await c["oms"].check_timeouts()
+
+        if self._is_replay:
+            async for ev_item in stream:
+                if self._stop_event.is_set():
+                    break
+                if c.get("killswitch") is not None and c["killswitch"].is_active():
+                    self.stop(reason="kill switch")
+                    break
+                await _dispatch_market_event(ev_item)
+        else:
+            to_val = (
+                self.runtime.params.get("engine.feed_poll_timeout_ms")
+                if self.runtime.params is not None
+                else None
+            )
+            poll_timeout = float(to_val) / 1000.0 if to_val is not None else 0.1
+
+            queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1000)
+            feed_stopped = asyncio.Event()
+            feed_error: Exception | None = None
+
+            async def _feed_worker() -> None:
+                nonlocal feed_error
+                try:
+                    async for item in stream:
+                        await queue.put(item)
+                        if self._stop_event.is_set():
+                            break
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.error("Feed error: %s", exc)
+                    self._run_error = str(exc)
+                    feed_error = exc
+                finally:
+                    if hasattr(stream, "aclose"):
+                        try:
+                            await stream.aclose()
+                        except Exception:
+                            pass
+                    feed_stopped.set()
+
+            feed_task = asyncio.create_task(_feed_worker())
+            self._active_feed_task = feed_task
+
+            try:
+                while True:
+                    if self._stop_event.is_set():
+                        break
+                    if c.get("killswitch") is not None and c["killswitch"].is_active():
+                        self.stop(reason="kill switch")
+                        break
+
+                    try:
+                        ev_item = await asyncio.wait_for(queue.get(), timeout=poll_timeout)
+                    except TimeoutError:
+                        if feed_stopped.is_set() and queue.empty():
+                            if feed_error is not None:
+                                raise feed_error from None
+                            break
+                        c["scheduler"].advance_to(clock.now())
+                        c["scheduler"].fire_due()
+                        await c["oms"].check_timeouts()
+                        continue
+
+                    await _dispatch_market_event(ev_item)
+
+                if feed_stopped.is_set() and queue.empty() and feed_error is not None:
+                    raise feed_error
+            finally:
+                self._stop_event.set()
+                if not feed_task.done():
+                    feed_task.cancel()
+                    try:
+                        await feed_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                if hasattr(stream, "aclose"):
+                    try:
+                        await stream.aclose()
+                    except Exception:
+                        pass
+                self._active_feed_task = None
+                self._active_feed_stream = None
 
         # Drain pending bar tasks and venue events after stream ends
         await asyncio.sleep(0)
@@ -1427,7 +1573,9 @@ class SessionRunner:
         for vevent in events:
             oms.apply_venue_event(vevent)
 
-    def _build_event_stream(self, c: dict[str, Any], clock: Clock) -> AsyncIterator[MarketEvent]:
+    def _build_event_stream(
+        self, c: dict[str, Any], clock: Clock
+    ) -> AsyncIterator[tuple[MarketEvent, int | None]]:
         if self._is_replay:
             files: list[Path] = []
             seen: set[str] = set()
@@ -1450,11 +1598,24 @@ class SessionRunner:
             w_end = self.tick_window[1] if self.tick_window is not None else None
             feed = ReplayFeed(files=files, clock=clock, window_start=w_start, window_end=w_end)
 
-            async def _replay_generator() -> AsyncIterator[MarketEvent]:
-                for item in feed:
-                    yield item
+            class _ReplayStreamWrapper:
+                def __init__(self, feed: ReplayFeed) -> None:
+                    self._feed = feed
+                    self._iter = feed.iter_with_seq()
 
-            return _replay_generator()
+                def __aiter__(self) -> _ReplayStreamWrapper:
+                    return self
+
+                async def __anext__(self) -> tuple[MarketEvent, int | None]:
+                    try:
+                        return next(self._iter)
+                    except StopIteration:
+                        raise StopAsyncIteration from None
+
+                async def aclose(self) -> None:
+                    self._iter = iter(())
+
+            return _ReplayStreamWrapper(feed)
 
         # Paper live mode stream
         ds_name = (
@@ -1482,7 +1643,19 @@ class SessionRunner:
         ds: Any = self.runtime.plugins.create(PluginKind.BROKER, ds_name, config=ds_cfg, ctx=p_ctx)
         inst_ids = list(c["instruments"].keys())
         stream_res: AsyncIterator[MarketEvent] = ds.stream(inst_ids)
-        return stream_res
+
+        async def _live_stream_wrapper() -> AsyncIterator[tuple[MarketEvent, int | None]]:
+            try:
+                async for ev in stream_res:
+                    yield (ev, None)
+            finally:
+                if hasattr(stream_res, "aclose"):
+                    try:
+                        await stream_res.aclose()
+                    except Exception:
+                        pass
+
+        return _live_stream_wrapper()
 
     def _finalize_session(
         self,
@@ -1500,6 +1673,7 @@ class SessionRunner:
         if recorder is not None:
             try:
                 recorder.flush()
+                recorder.close()
                 recorder.compact(clock.now().date())
             except Exception as exc:
                 logger.warning("Recorder compaction error: %s", exc)
@@ -1711,21 +1885,32 @@ class SessionRunner:
             is_partial = False
             journal_growth = 0
 
-        is_fail = self._interrupted or self._feed_halted or bool(self._run_error)
-        verdict_base = "FAIL" if is_fail else "PASS"
-        verdict = f"{verdict_base} (partial)" if is_partial else verdict_base
-
         ks_obj = c.get("killswitch")
         ks_active = bool(ks_obj is not None and hasattr(ks_obj, "is_active") and ks_obj.is_active())
         if self._killswitch_tripped or ks_active or self._killswitch_events > 0:
             stop_reason = "kill switch"
-        elif self._interrupted:
-            stop_reason = "interrupt"
+            is_fail = True
         elif bool(self._run_error):
             stop_reason = "error"
+            is_fail = True
+        elif self._feed_halted:
+            stop_reason = "feed halt"
+            is_fail = True
+        elif self._interrupted:
+            stop_reason = "interrupt"
+            is_fail = False
         else:
             stop_reason = "end of session"
-        logger.info("Session stopped: reason=%s", stop_reason)
+            is_fail = False
+
+        if self._interrupted:
+            verdict_base = "STOPPED"
+        elif is_fail:
+            verdict_base = "FAIL"
+        else:
+            verdict_base = "PASS"
+        verdict = f"{verdict_base} (partial)" if is_partial else verdict_base
+        logger.info("Session stopped: reason=%s verdict=%s", stop_reason, verdict)
 
         if getattr(journal, "_current_run_id", None) is not None:
             if self._run_error:
@@ -1767,7 +1952,7 @@ class SessionRunner:
         fail_reason_str = (
             str(self._run_error)
             if is_fail and self._run_error
-            else ("Feed halted / interrupted" if is_fail else None)
+            else ("Feed halted / risk breach" if is_fail else None)
         )
         metrics = {
             "date": date_str,
@@ -1789,6 +1974,12 @@ class SessionRunner:
             "last_tick_ist": last_tick_ist_str,
             "first_tick_utc": self._first_tick_ts.isoformat() if self._first_tick_ts else None,
             "last_tick_utc": self._last_tick_ts.isoformat() if self._last_tick_ts else None,
+            "first_tick_recv_utc": (
+                self._first_tick_recv_ts.isoformat() if self._first_tick_recv_ts else None
+            ),
+            "last_tick_recv_utc": (
+                self._last_tick_recv_ts.isoformat() if self._last_tick_recv_ts else None
+            ),
             "stop_reason": stop_reason,
             "session_coverage_pct": round(coverage_pct, 2),
             "bars_by_timeframe": self._bars_by_tf,
@@ -1861,6 +2052,12 @@ class SessionRunner:
             "instrument_master_checksum": "verified",
             "first_tick_utc": self._first_tick_ts.isoformat() if self._first_tick_ts else None,
             "last_tick_utc": self._last_tick_ts.isoformat() if self._last_tick_ts else None,
+            "first_tick_recv_utc": (
+                self._first_tick_recv_ts.isoformat() if self._first_tick_recv_ts else None
+            ),
+            "last_tick_recv_utc": (
+                self._last_tick_recv_ts.isoformat() if self._last_tick_recv_ts else None
+            ),
             "stop_reason": stop_reason,
         }
         if self.warmup_source is not None:
@@ -1871,6 +2068,7 @@ class SessionRunner:
             f"Session {self.run_name} ({mode_str}) completed on {date_str}.\n"
             f"Net P&L: ₹{net_pnl:.2f} | Trades: {len(fills)} | Max Drawdown: {max_dd:.2f}%\n"
             f"Verdict: {summary_info['verdict']}\n"
+            f"Stop Reason: {stop_reason}\n"
         )
         if is_partial:
             session_md_text += "Run Type: partial (started after session open)\n"

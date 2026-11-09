@@ -278,6 +278,20 @@ Compare performance metrics and ordered event sequences (signals, risk decisions
 ```bash
 algodesk results compare <paper_run_id> <replay_run_id>
 ```
+On any divergence, `results compare` prints the exact first differing signal, order, or fill with both timestamps and prices (e.g., `signals[31]: A [ts=..., price=...] != B [ts=..., price=...] (metrics.gross_pnl: -20.7 != -20.3)`).
+
+**Graceful shutdown and operator interrupts**:
+For sessions of 60 minutes or longer, prevent OS system sleep using `caffeinate -i algodesk run demo_paper_fast`.
+Stopping an active paper session cleanly via Ctrl-C (`SIGINT` or `SIGTERM`) cancels the feed reader task, cleanly awaits generator closing (`stream.aclose()`), flushes and closes the parquet recorder, cancels open orders, marks to market, and records verdict `STOPPED` with stop reason `interrupt`.
+Verify session status and stop reason via:
+```bash
+algodesk session report <run_id>
+```
+Which prints:
+```text
+Verdict:              STOPPED
+Stop Reason:          interrupt
+```
 Verify bit-identical deterministic replay determinism:
 ```bash
 algodesk replay --dates 2026-10-26 --run demo_paper --twice

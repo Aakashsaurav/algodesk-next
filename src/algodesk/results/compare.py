@@ -65,8 +65,9 @@ def _extract_sequences(events: Sequence[dict[str, Any]]) -> dict[str, list[dict[
             try:
                 payload = json.loads(payload)
             except Exception:
-                # pyrefly: ignore[implicit-any-empty-container]
                 payload = {}
+
+        ev_ts = payload.get("ts") or payload.get("created_ts") or ev.get("ts_utc")
 
         if kind == "signal":
             signals.append(
@@ -75,6 +76,9 @@ def _extract_sequences(events: Sequence[dict[str, Any]]) -> dict[str, list[dict[
                     "instrument": str(payload.get("instrument")),
                     "side": str(payload.get("side")),
                     "qty": int(payload.get("qty", 0)),
+                    "intent_id": payload.get("intent_id"),
+                    "_ts": ev_ts,
+                    "_price": payload.get("price", "N/A"),
                 }
             )
         elif kind == "risk.decision":
@@ -83,6 +87,8 @@ def _extract_sequences(events: Sequence[dict[str, Any]]) -> dict[str, list[dict[
                     "allow": bool(payload.get("allow")),
                     "rule": payload.get("rule"),
                     "reason": payload.get("reason"),
+                    "_ts": ev_ts,
+                    "_price": "N/A",
                 }
             )
         elif kind == "order.created":
@@ -95,6 +101,8 @@ def _extract_sequences(events: Sequence[dict[str, Any]]) -> dict[str, list[dict[
                     "type": str(spec.get("type")),
                     "price": str(spec.get("price")),
                     "product": str(spec.get("product")),
+                    "_ts": ev_ts,
+                    "_price": spec.get("price"),
                 }
             )
         elif kind == "fill":
@@ -105,6 +113,8 @@ def _extract_sequences(events: Sequence[dict[str, Any]]) -> dict[str, list[dict[
                     "qty": int(payload.get("qty", 0)),
                     "price": str(payload.get("price")),
                     "charges_total": str(payload.get("charges_total")),
+                    "_ts": ev_ts,
+                    "_price": payload.get("price"),
                 }
             )
 
@@ -135,17 +145,57 @@ def _compare_metrics(
     return None
 
 
+def _item_semantic_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Compare items ignoring internal tracking metadata (_ts, _price)."""
+    keys = (set(a.keys()) | set(b.keys())) - {"_ts", "_price"}
+    return all(a.get(k) == b.get(k) for k in keys)
+
+
+def _format_item_diff(
+    name: str,
+    idx: int,
+    item_a: dict[str, Any] | None,
+    item_b: dict[str, Any] | None,
+) -> str:
+    if item_a is None and item_b is not None:
+        p_b = item_b.get("_price")
+        ts_b = item_b.get("_ts")
+        return f"{name}[{idx}]: A [missing] != B [ts={ts_b}, price={p_b}]"
+    if item_a is not None and item_b is None:
+        p_a = item_a.get("_price")
+        ts_a = item_a.get("_ts")
+        return f"{name}[{idx}]: A [ts={ts_a}, price={p_a}] != B [missing]"
+    assert item_a is not None and item_b is not None
+    ts_a = item_a.get("_ts")
+    ts_b = item_b.get("_ts")
+    price_a = item_a.get("_price")
+    price_b = item_b.get("_price")
+    inst_a = item_a.get("instrument", "")
+    inst_b = item_b.get("instrument", "")
+    side_a = item_a.get("side", "")
+    side_b = item_b.get("side", "")
+    return (
+        f"{name}[{idx}]: A [ts={ts_a}, price={price_a}, inst={inst_a}, side={side_a}] "
+        f"!= B [ts={ts_b}, price={price_b}, inst={inst_b}, side={side_b}]"
+    )
+
+
 def _compare_sequence_items(
     name: str,
     seq_a: list[dict[str, Any]],
     seq_b: list[dict[str, Any]],
 ) -> str | None:
-    """Compare two ordered sequences of event items and return first difference."""
+    """Compare two ordered event lists and return first difference with timestamps/prices."""
+    common_len = min(len(seq_a), len(seq_b))
+    for idx in range(common_len):
+        if not _item_semantic_equal(seq_a[idx], seq_b[idx]):
+            return _format_item_diff(name, idx, seq_a[idx], seq_b[idx])
     if len(seq_a) != len(seq_b):
-        return f"{name} count: {len(seq_a)} != {len(seq_b)}"
-    for idx, (item_a, item_b) in enumerate(zip(seq_a, seq_b, strict=True)):
-        if item_a != item_b:
-            return f"{name}[{idx}]: {item_a} != {item_b}"
+        idx = common_len
+        item_a = seq_a[idx] if idx < len(seq_a) else None
+        item_b = seq_b[idx] if idx < len(seq_b) else None
+        diff_str = _format_item_diff(name, idx, item_a, item_b)
+        return f"{name} count ({len(seq_a)} != {len(seq_b)}): {diff_str}"
     return None
 
 
@@ -250,10 +300,7 @@ def compare_runs(
     m_path_b = dir_b / "metrics.json"
     m_a = json.loads(m_path_a.read_text(encoding="utf-8")) if m_path_a.is_file() else {}
     m_b = json.loads(m_path_b.read_text(encoding="utf-8")) if m_path_b.is_file() else {}
-
     diff_metric = _compare_metrics(m_a, m_b)
-    if diff_metric is not None:
-        return False, _attach_version_diffs(dir_a, dir_b, diff_metric)
 
     # 2. Extract and compare journal event sequences
     events_a = _load_events_for_run(r_path, run_a, dir_a)
@@ -261,10 +308,18 @@ def compare_runs(
     seqs_a = _extract_sequences(events_a)
     seqs_b = _extract_sequences(events_b)
 
-    for seq_name in ("signals", "risk_decisions", "orders", "fills"):
+    diff_seq: str | None = None
+    for seq_name in ("signals", "orders", "fills", "risk_decisions"):
         diff_seq = _compare_sequence_items(seq_name, seqs_a[seq_name], seqs_b[seq_name])
         if diff_seq is not None:
-            return False, _attach_version_diffs(dir_a, dir_b, diff_seq)
+            break
+
+    if diff_seq is not None:
+        detail = f"{diff_seq} ({diff_metric})" if diff_metric else diff_seq
+        return False, _attach_version_diffs(dir_a, dir_b, detail)
+
+    if diff_metric is not None:
+        return False, _attach_version_diffs(dir_a, dir_b, diff_metric)
 
     v_diffs = _format_version_differences(dir_a, dir_b)
     if v_diffs:
