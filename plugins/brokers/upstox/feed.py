@@ -15,6 +15,7 @@ import websockets
 
 from algodesk.api import (
     AlgoDeskError,
+    FeedAuthError,
     FeedStatus,
     InstrumentId,
     Level,
@@ -62,6 +63,12 @@ class UpstoxWebSocketFeed:
         timeout = float(self._param("upstox.request_timeout_s", 15.0))
         with httpx.Client(transport=self._transport, timeout=timeout) as client:
             resp = client.get(url, headers=headers)
+            if resp.status_code == 401:
+                raise FeedAuthError(
+                    what="Upstox feed authorization failed with HTTP 401",
+                    where="UpstoxWebSocketFeed.authorize_feed",
+                    fix="run algodesk login upstox",
+                )
             if resp.status_code != 200:
                 raise AlgoDeskError(
                     what=f"Feed authorization failed with HTTP {resp.status_code}",
@@ -125,7 +132,9 @@ class UpstoxWebSocketFeed:
 
         try:
             ws_url = ws_url_override or self.authorize_feed(token)
-            async for ev in self._stream_with_reconnect(ws_url, upstox_keys):
+            async for ev in self._stream_with_reconnect(
+                ws_url, upstox_keys, token=token, ws_url_override=ws_url_override
+            ):
                 yield ev
         finally:
             self._is_running = False
@@ -137,17 +146,22 @@ class UpstoxWebSocketFeed:
         self,
         ws_url: str,
         upstox_keys: list[str],
+        token: str = "",
+        ws_url_override: str | None = None,
     ) -> AsyncIterator[MarketEvent]:
         base_delay = float(self._param("upstox.reconnect_base_delay_s", 1.0))
         max_delay = float(self._param("upstox.reconnect_max_delay_s", 30.0))
         jitter = float(self._param("upstox.reconnect_jitter_s", 0.5))
         attempt = 0
         disconnect_ts: datetime | None = None
+        reauth_done = False
 
         while self._is_running:
             try:
                 async with websockets.connect(ws_url) as ws:
                     attempt = 0
+                    disconnect_ts = None
+                    reauth_done = False
                     now_utc = datetime.now(UTC)
                     yield FeedStatus(state="connected", ts=now_utc, details="WebSocket connected")
                     if disconnect_ts is not None:
@@ -174,9 +188,42 @@ class UpstoxWebSocketFeed:
                             for ev in self._decode_frame(msg):
                                 yield ev
 
-            except (websockets.ConnectionClosed, OSError, asyncio.CancelledError) as exc:
+            except (websockets.ConnectionClosed, OSError, asyncio.CancelledError, Exception) as exc:
                 if not self._is_running or isinstance(exc, asyncio.CancelledError):
                     break
+
+                is_401 = False
+                status_code = getattr(exc, "status_code", None)
+                if status_code == 401:
+                    is_401 = True
+                elif (
+                    "401" in str(exc)
+                    or "HTTP 401" in str(exc)
+                    or "InvalidStatus" in type(exc).__name__
+                ):
+                    is_401 = True
+
+                if is_401:
+                    if not reauth_done and token and not ws_url_override:
+                        reauth_done = True
+                        try:
+                            ws_url = self.authorize_feed(token)
+                            continue
+                        except Exception as auth_exc:
+                            raise FeedAuthError(
+                                what=(
+                                    "Upstox WebSocket feed authentication rejected (HTTP 401): "
+                                    f"{auth_exc}"
+                                ),
+                                where="UpstoxWebSocketFeed._stream_with_reconnect",
+                                fix="run algodesk login upstox",
+                            ) from auth_exc
+                    raise FeedAuthError(
+                        what=f"Upstox WebSocket feed connection rejected: {exc}",
+                        where="UpstoxWebSocketFeed._stream_with_reconnect",
+                        fix="run algodesk login upstox",
+                    ) from exc
+
                 disconnect_ts = datetime.now(UTC)
                 yield FeedStatus(state="disconnected", ts=disconnect_ts, details=str(exc))
                 delay = min(base_delay * (2**attempt), max_delay) + random.uniform(0.0, jitter)

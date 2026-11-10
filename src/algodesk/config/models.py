@@ -87,6 +87,7 @@ class RunMeta(BaseModel):
 
     name: str
     mode: Mode
+    stop_time: str | None = None
 
 
 class FeesConfig(BaseModel):

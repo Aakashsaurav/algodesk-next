@@ -34,6 +34,30 @@ description = "Tolerance in milliseconds for scheduler timer dispatch"
 owner = "engine"
 
 [[param]]
+name = "engine.session_end_grace_s"
+type = "int"
+default = 0
+min = 0
+max = 3600
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Grace period in seconds after market close before transitioning market to CLOSING"
+owner = "engine"
+
+[[param]]
+name = "feed.stale_seconds"
+type = "float"
+default = 30.0
+min = 1.0
+max = 3600.0
+unit = "s"
+scope = "global"
+tighten = "down"
+description = "Seconds without ticks during open market hours before flagging feed gap and reconnecting"
+owner = "engine"
+
+[[param]]
 name = "run.status_seconds"
 type = "int"
 default = 30

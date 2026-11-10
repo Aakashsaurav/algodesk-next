@@ -274,7 +274,11 @@ def replay_cmd(
                             m_data = json.loads(m_file.read_text(encoding="utf-8"))
                         except Exception:
                             continue
-                        is_paper = m_data.get("mode") == "paper" or "_paper_" in p.name
+                        is_paper = m_data.get("mode") == "paper" or (
+                            m_data.get("mode") != "replay"
+                            and "_paper_" in p.name
+                            and "_replay_" not in p.name
+                        )
                         if is_paper and (
                             m_data.get("date") == d or f"_paper_{d_nodash}_" in p.name
                         ):
@@ -292,6 +296,21 @@ def replay_cmd(
                         trades = s_metrics.get("trades", s_metrics.get("fills", 0))
                         typer.echo(f"  - {s_id} (first: {f_ist}, last: {l_ist}, fills: {trades})")
                     raise typer.Exit(code=1)
+                elif len(matching_sessions) == 1 and len(parsed_dates) == 1:
+                    session = matching_sessions[0][0]
+                    sess_dir = rt.paths.results / session
+                    sum_path = sess_dir / "SUMMARY.md"
+                    if sum_path.is_file():
+                        for line in sum_path.read_text(encoding="utf-8").splitlines():
+                            if "Session " in line:
+                                parts = line.split("Session ")
+                                if len(parts) > 1:
+                                    inferred = parts[1].split()[0]
+                                    if inferred:
+                                        run_name = inferred
+                                        break
+                    if run_name == "demo_paper" and "_paper_" in session:
+                        run_name = session.split("_paper_")[0]
 
         session_warnings: list[str] = []
         if session:

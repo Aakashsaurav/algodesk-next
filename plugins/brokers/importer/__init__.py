@@ -3,4 +3,3 @@
 from .plugin import ImporterBrokerPlugin
 
 __all__ = ["ImporterBrokerPlugin"]
-

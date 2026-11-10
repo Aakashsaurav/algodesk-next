@@ -428,7 +428,7 @@ owner = "data"
 [[param]]
 name = "data.accumulate_lag_warn_days"
 type = "int"
-default = 3
+default = 5
 min = 1
 max = 30
 unit = "days"

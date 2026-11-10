@@ -27,12 +27,14 @@ from algodesk.api import (
     AlgoDeskError,
     Bar,
     ConfigError,
+    FeedAuthError,
     Fill,
     FillEvent,
     Instrument,
     InstrumentId,
     Mode,
     OrderEventMsg,
+    OrderState,
     PluginContext,
     PluginKind,
     Position,
@@ -56,7 +58,7 @@ from algodesk.engine.context import BarBuffer, build_strategy_context
 from algodesk.engine.indicator_manager import IndicatorManager
 from algodesk.engine.notify import NotifyBridge
 from algodesk.engine.scheduler import Scheduler
-from algodesk.engine.sessions import SessionManager
+from algodesk.engine.sessions import MarketState, SessionManager
 from algodesk.engine.strategy_runtime import StrategyRuntime
 from algodesk.fees.engine import FeeEngine
 from algodesk.journal.store import JournalReader
@@ -168,20 +170,43 @@ class SessionRunner:
 
             events_jsonl = sess_path / "events.jsonl"
             self._timer_closes_by_seq: dict[int, list[dict[str, Any]]] = {}
+            self._recorded_events_by_seq: dict[int, list[dict[str, Any]]] = {}
+            self._recorded_stop_seq: int | None = None
+            self._recorded_stop_reason: str | None = None
             if events_jsonl.is_file():
                 try:
                     for line in events_jsonl.read_text(encoding="utf-8").splitlines():
                         if not line.strip():
                             continue
                         e = json.loads(line)
-                        if e.get("kind") == "bar.timer_close":
-                            p = e.get("payload_json", {})
-                            if isinstance(p, str):
-                                p = json.loads(p)
-                            if "seq" in p:
-                                self._timer_closes_by_seq.setdefault(int(p["seq"]), []).append(p)
+                        k = e.get("kind")
+                        p = e.get("payload_json", {})
+                        if isinstance(p, str):
+                            p = json.loads(p)
+                        seq = p.get("seq")
+                        if k == "bar.timer_close" and seq is not None:
+                            self._timer_closes_by_seq.setdefault(int(seq), []).append(p)
+                        if (
+                            k
+                            in (
+                                "bar.timer_close",
+                                "timer.strategy",
+                                "market.closing",
+                                "portfolio.snapshot",
+                                "run.end",
+                            )
+                            and seq is not None
+                        ):
+                            self._recorded_events_by_seq.setdefault(int(seq), []).append(
+                                {"kind": k, "payload": p}
+                            )
+                        if k == "run.end":
+                            self._recorded_stop_seq = (
+                                int(p.get("seq", 0)) if p.get("seq") is not None else None
+                            )
+                            self._recorded_stop_reason = p.get("stop_reason")
                 except Exception as exc:
-                    logger.debug("Failed loading timer close events from %s: %s", events_jsonl, exc)
+                    logger.debug("Failed loading recorded events from %s: %s", events_jsonl, exc)
             from algodesk.results.compare import _get_configured_plugins
 
             active_p = _get_configured_plugins(sess_path)
@@ -208,6 +233,9 @@ class SessionRunner:
                 )
         else:
             self._timer_closes_by_seq = {}
+            self._recorded_events_by_seq = {}
+            self._recorded_stop_seq = None
+            self._recorded_stop_reason = None
 
         if replay_dates:
             cleaned_dates: list[str] = []
@@ -243,10 +271,12 @@ class SessionRunner:
             self.run_id = f"{self.run_name}_{mode_str}_{ts_str}_{rand_suffix}"
 
         self._stop_event = asyncio.Event()
+        self._stop_reason: str | None = None
         self._interrupted = False
         self._killswitch_tripped = False
         self._feed_halted = False
         self._run_error: str | None = None
+        self._last_feed_gap_alert_time: datetime = datetime.min.replace(tzinfo=UTC)
 
         self._fills: list[Fill] = []
         self._tick_stats: dict[str, int] = {}
@@ -302,6 +332,7 @@ class SessionRunner:
 
     def stop(self, reason: str = "interrupt") -> None:
         """Signal the session runner to stop event streaming and cleanly shut down."""
+        self._stop_reason = reason
         if reason == "interrupt":
             self._interrupted = True
         elif reason == "kill switch":
@@ -309,6 +340,8 @@ class SessionRunner:
             self._killswitch_events += 1
         elif reason == "error":
             self._run_error = self._run_error or "Stopped due to error"
+        elif reason == "feed_auth":
+            self._run_error = self._run_error or "Feed authentication failed"
         self._stop_event.set()
         if (
             hasattr(self, "_active_feed_task")
@@ -472,6 +505,13 @@ class SessionRunner:
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     logger.info("Session interrupted gracefully; generating results.")
                     self._interrupted = True
+                except FeedAuthError as exc:
+                    logger.error(
+                        "Session stopped due to feed auth error: %s; writing results.", exc
+                    )
+                    self._stop_reason = "feed_auth"
+                    self._run_error = str(exc)
+                    error_to_reraise = exc
                 except AlgoDeskError as exc:
                     logger.error("Session stopped due to error: %s; writing results.", exc)
                     self._run_error = str(exc)
@@ -487,6 +527,11 @@ class SessionRunner:
                         journal.end_run(end_st)
                     except Exception:
                         pass
+        except FeedAuthError as exc:
+            logger.error("Session startup feed auth error: %s; writing results.", exc)
+            self._stop_reason = "feed_auth"
+            self._run_error = str(exc)
+            error_to_reraise = exc
         except AlgoDeskError as exc:
             logger.error("Session initialization failed: %s; writing results.", exc)
             self._run_error = str(exc)
@@ -686,6 +731,7 @@ class SessionRunner:
             "ind_mgr": ind_mgr,
             "buf": buf,
             "scheduler": scheduler,
+            "session_mgr": session_mgr,
             "bar_builder": bar_builder,
             "recorder": recorder,
             "fee_engine": fee_engine,
@@ -954,9 +1000,10 @@ class SessionRunner:
                 cal = self.runtime.plugins.create(
                     PluginKind.CALENDAR, c.plugin, config={"exchange": exch}, ctx=p_ctx
                 )
-                cal_plugins[exch] = cal
+                cal_plugins[exch.upper()] = cal
             except Exception as exc:
                 logger.debug("Could not create calendar for %s: %s", exch, exc)
+
         session_mgr = SessionManager(calendars=cal_plugins, scheduler=scheduler, clock=clock)
         return session_mgr, scheduler
 
@@ -1104,6 +1151,96 @@ class SessionRunner:
 
         return res
 
+    async def _apply_recorded_events(
+        self,
+        seq: int,
+        c: dict[str, Any],
+        clock: Clock,
+        journal: Journal,
+    ) -> None:
+        if not self._recorded_events_by_seq or seq not in self._recorded_events_by_seq:
+            return
+        events = self._recorded_events_by_seq.pop(seq)
+        for ev in events:
+            kind = ev["kind"]
+            p = ev["payload"]
+            if kind == "bar.timer_close":
+                inst_id = p["instrument"]
+                tf = p["timeframe"]
+                end_ts = datetime.fromisoformat(p["end_ts"])
+                c["bar_builder"].close_bar_timer(inst_id, tf, end_ts)
+            elif kind == "timer.strategy":
+                name = p.get("name", "exit_time")
+                journal.append(
+                    "timer.strategy", {"name": name, "seq": seq, "ts": clock.now().isoformat()}
+                )
+                await c["strat_rt"].dispatch_timer(name)
+                await self._drain_venue_events(c)
+            elif kind == "market.closing":
+                m = p.get("market")
+                if m and "session_mgr" in c:
+                    session_mgr: SessionManager = c["session_mgr"]
+                    session_mgr.transition(m, MarketState.CLOSING, "close timer")
+                    journal.append(
+                        "market.closing",
+                        {"market": m, "seq": seq, "ts": clock.now().isoformat()},
+                    )
+                    oms = c.get("oms")
+                    if oms is not None:
+                        for ref, ord_obj in list(oms.orders.items()):
+                            inst = getattr(ord_obj, "instrument", None) or getattr(
+                                getattr(ord_obj, "spec", None), "instrument", None
+                            )
+                            if inst is not None and session_mgr.market_key(inst) == m:
+                                if hasattr(ord_obj, "state") and ord_obj.state in (
+                                    OrderState.CREATED,
+                                    OrderState.SUBMITTED,
+                                    OrderState.ACKNOWLEDGED,
+                                    OrderState.PARTIALLY_FILLED,
+                                ):
+                                    try:
+                                        await oms.cancel(ref)
+                                    except Exception:
+                                        pass
+                    await self._drain_venue_events(c)
+                    ledger = c.get("ledger")
+                    if ledger is not None:
+                        for q in self._latest_quotes.values():
+                            if session_mgr.market_key(q.instrument) == m:
+                                ledger.mark(q)
+                    session_mgr.transition(m, MarketState.REPORTING, "session end")
+                    session_mgr.transition(m, MarketState.STOPPED, "reporting done")
+            elif kind == "portfolio.snapshot":
+                ledger = c.get("ledger")
+                if ledger is not None:
+                    snap = ledger.snapshot()
+                    eq_val = float(snap.equity)
+                    pt_dict = {
+                        "ts": clock.now().isoformat(),
+                        "ts_ist": format_ist(clock.now()),
+                        "equity": eq_val,
+                        "cash": float(snap.cash),
+                        "unrealized": float(ledger.unrealized),
+                        "realized": float(ledger.realized),
+                        "drawdown": compute_max_drawdown(
+                            [pt["equity"] for pt in self._equity_curve] + [eq_val]
+                        ),
+                    }
+                    self._equity_curve.append(pt_dict)
+                    journal.append(
+                        "portfolio.snapshot",
+                        {
+                            "equity": pt_dict["equity"],
+                            "cash": pt_dict["cash"],
+                            "unrealized": pt_dict["unrealized"],
+                            "realized": pt_dict["realized"],
+                            "seq": seq,
+                            "ts": clock.now().isoformat(),
+                        },
+                    )
+            elif kind == "run.end":
+                self.stop(reason=p.get("stop_reason", "end of session"))
+
     async def _execute_session(
         self,
         c: dict[str, Any],
@@ -1219,12 +1356,8 @@ class SessionRunner:
                         format_ist(ev.exch_ts),
                     )
                 c["bar_builder"].on_tick(ev)
-                if self._is_replay and curr_seq in self._timer_closes_by_seq:
-                    for tc in self._timer_closes_by_seq[curr_seq]:
-                        inst_id = tc["instrument"]
-                        tf = tc["timeframe"]
-                        end_ts = datetime.fromisoformat(tc["end_ts"])
-                        c["bar_builder"].close_bar_timer(inst_id, tf, end_ts)
+                if self._is_replay:
+                    await self._apply_recorded_events(curr_seq, c, clock, journal)
                 self._tick_stats[str(ev.instrument)] = (
                     self._tick_stats.get(str(ev.instrument), 0) + 1
                 )
@@ -1280,6 +1413,20 @@ class SessionRunner:
                     self.stop(reason="kill switch")
                     break
                 await _dispatch_market_event(ev_item)
+                if (
+                    self._recorded_stop_seq is not None
+                    and self._tick_seq >= self._recorded_stop_seq
+                ):
+                    self.stop(reason=self._recorded_stop_reason or "end of session")
+                    break
+
+            # If stream finished, apply any remaining recorded events
+            remaining_seqs = sorted(self._recorded_events_by_seq.keys())
+            for rem_seq in remaining_seqs:
+                await self._apply_recorded_events(rem_seq, c, clock, journal)
+
+            if self._recorded_stop_seq is not None and not self._stop_event.is_set():
+                self.stop(reason=self._recorded_stop_reason or "end of session")
         else:
             to_val = (
                 self.runtime.params.get("engine.feed_poll_timeout_ms")
@@ -1301,6 +1448,10 @@ class SessionRunner:
                             break
                 except asyncio.CancelledError:
                     pass
+                except FeedAuthError as exc:
+                    logger.error("Feed authentication rejected: %s", exc)
+                    feed_error = exc
+                    self.stop(reason="feed_auth")
                 except Exception as exc:
                     logger.error("Feed error: %s", exc)
                     self._run_error = str(exc)
@@ -1328,6 +1479,31 @@ class SessionRunner:
                         ev_item = await asyncio.wait_for(queue.get(), timeout=poll_timeout)
                     except TimeoutError:
                         if feed_stopped.is_set() and queue.empty():
+                            if isinstance(feed_error, FeedAuthError):
+                                oms = c.get("oms")
+                                if oms is not None:
+                                    for ref, ord_obj in list(oms.orders.items()):
+                                        if hasattr(ord_obj, "state") and ord_obj.state in (
+                                            OrderState.CREATED,
+                                            OrderState.SUBMITTED,
+                                            OrderState.ACKNOWLEDGED,
+                                            OrderState.PARTIALLY_FILLED,
+                                        ):
+                                            try:
+                                                await oms.cancel(ref)
+                                            except Exception:
+                                                pass
+                                await self._drain_venue_events(c)
+                                journal.append(
+                                    "feed.auth_failed",
+                                    {
+                                        "error": str(feed_error),
+                                        "seq": self._tick_seq,
+                                        "ts": clock.now().isoformat(),
+                                    },
+                                )
+                                notify.notify_error(f"Feed auth failed: {feed_error}", "feed")
+                                raise feed_error from None
                             if feed_error is not None:
                                 raise feed_error from None
                             break
@@ -1366,6 +1542,19 @@ class SessionRunner:
         notify: NotifyBridge = c["notify"]
         strat_rt: StrategyRuntime = c["strat_rt"]
         ledger: PortfolioLedger = c["ledger"]
+        session_mgr: SessionManager = c["session_mgr"]
+
+        universe_insts = list(c.get("instruments", {}).values())
+        if not universe_insts:
+            symbols = getattr(getattr(self.run_config, "universe", None), "symbols", None) or []
+            universe_markets = {session_mgr.market_key(s) for s in symbols}
+        else:
+            universe_markets = {session_mgr.market_key(inst.id) for inst in universe_insts}
+
+        for m in universe_markets:
+            if session_mgr.state(m) == MarketState.STOPPED:
+                session_mgr.transition(m, MarketState.STARTING, "session setup")
+                session_mgr.transition(m, MarketState.RUNNING, "session start")
 
         hb_val = (
             self.runtime.params.get("runtime.heartbeat_seconds")
@@ -1404,21 +1593,26 @@ class SessionRunner:
                     "cash": pt_dict["cash"],
                     "unrealized": pt_dict["unrealized"],
                     "realized": pt_dict["realized"],
+                    "seq": self._tick_seq,
+                    "ts": clock.now().isoformat(),
                 },
             )
 
-        snap_val = (
-            self.runtime.params.get("runtime.equity_snapshot_interval_seconds")
-            if self.runtime.params is not None
-            else None
-        )
-        snap_sec = float(snap_val or 60.0)
-        scheduler.schedule_repeating(
-            "portfolio_snapshot",
-            start=now_dt + timedelta(seconds=snap_sec),
-            interval_seconds=snap_sec,
-            callback=_snapshot_portfolio,
-        )
+        replay_has_events = bool(self._is_replay and self._recorded_events_by_seq)
+
+        if not replay_has_events:
+            snap_val = (
+                self.runtime.params.get("runtime.equity_snapshot_interval_seconds")
+                if self.runtime.params is not None
+                else None
+            )
+            snap_sec = float(snap_val or 60.0)
+            scheduler.schedule_repeating(
+                "portfolio_snapshot",
+                start=now_dt + timedelta(seconds=snap_sec),
+                interval_seconds=snap_sec,
+                callback=_snapshot_portfolio,
+            )
 
         def _emit_proc_stats() -> None:
             usage = resource.getrusage(resource.RUSAGE_SELF)
@@ -1536,22 +1730,252 @@ class SessionRunner:
             callback=_print_status_line,
         )
 
-        # Strategy exit timer
-        for s in self.run_config.strategies:
-            exit_time_str = s.params.get("exit_time", "15:15")
+        now_ist = clock.now().astimezone(IST)
+        d = now_ist.date()
+
+        def _dispatch_async(coro: Any) -> None:
             try:
-                hh, mm = map(int, exit_time_str.split(":"))
-                exit_dt = datetime(
-                    now_dt.year, now_dt.month, now_dt.day, hh, mm, tzinfo=now_dt.tzinfo
+                loop = asyncio.get_running_loop()
+                loop.create_task(coro)
+            except RuntimeError:
+                asyncio.run(coro)
+
+        if not replay_has_events:
+            # Strategy exit timer
+            for s in self.run_config.strategies:
+                exit_time_str = s.params.get("exit_time", "15:15")
+                try:
+                    hh, mm = map(int, exit_time_str.split(":"))
+                    exit_dt = datetime(
+                        now_ist.year, now_ist.month, now_ist.day, hh, mm, tzinfo=IST
+                    ).astimezone(UTC)
+                    if exit_dt > clock.now():
+
+                        async def _fire_strat_exit() -> None:
+                            journal.append(
+                                "timer.strategy",
+                                {
+                                    "name": "exit_time",
+                                    "seq": self._tick_seq,
+                                    "ts": clock.now().isoformat(),
+                                },
+                            )
+                            await strat_rt.dispatch_timer("exit_time")
+                            await self._drain_venue_events(c)
+
+                        scheduler.schedule_at(
+                            "strategy_exit",
+                            due=exit_dt,
+                            callback=lambda: _dispatch_async(_fire_strat_exit()),
+                        )
+                except Exception:
+                    pass
+
+            # Market-aware close timers
+            grace_val = (
+                self.runtime.params.get("engine.session_end_grace_s")
+                if self.runtime.params is not None
+                else None
+            )
+            grace_s = float(grace_val or 0.0)
+
+            for m in universe_markets:
+                exch, seg = m.split(":")
+                cal = session_mgr.get_calendar(exch)
+                if cal is None:
+                    continue
+                sessions = (
+                    cal.sessions(d, segment=seg.lower())
+                    if cal.is_trading_day(d, segment=seg.lower())
+                    else []
                 )
-                if exit_dt > now_dt:
+                tradable_sessions = [sess for sess in sessions if sess.tradable]
+                if not tradable_sessions:
+                    continue
+                close_utc = max(sess.end for sess in tradable_sessions)
+                close_with_grace = close_utc + timedelta(seconds=grace_s)
+
+                if close_with_grace > clock.now():
+
+                    def _make_market_close_cb(target_market: str) -> Callable[..., None]:
+                        async def _action() -> None:
+                            session_mgr.transition(
+                                target_market, MarketState.CLOSING, "market close"
+                            )
+                            journal.append(
+                                "market.closing",
+                                {
+                                    "market": target_market,
+                                    "seq": self._tick_seq,
+                                    "ts": clock.now().isoformat(),
+                                },
+                            )
+                            oms = c.get("oms")
+                            if oms is not None:
+                                for ref, ord_obj in list(oms.orders.items()):
+                                    inst = getattr(ord_obj, "instrument", None) or getattr(
+                                        getattr(ord_obj, "spec", None), "instrument", None
+                                    )
+                                    if (
+                                        inst is not None
+                                        and session_mgr.market_key(inst) == target_market
+                                    ):
+                                        if hasattr(ord_obj, "state") and ord_obj.state in (
+                                            OrderState.CREATED,
+                                            OrderState.SUBMITTED,
+                                            OrderState.ACKNOWLEDGED,
+                                            OrderState.PARTIALLY_FILLED,
+                                        ):
+                                            try:
+                                                await oms.cancel(ref)
+                                            except Exception as exc:
+                                                logger.debug(
+                                                    "Error cancelling %s on close: %s", ref, exc
+                                                )
+                            await self._drain_venue_events(c)
+                            ledger = c.get("ledger")
+                            if ledger is not None:
+                                for q in self._latest_quotes.values():
+                                    if session_mgr.market_key(q.instrument) == target_market:
+                                        ledger.mark(q)
+                            session_mgr.transition(
+                                target_market, MarketState.REPORTING, "session reporting"
+                            )
+                            session_mgr.transition(
+                                target_market, MarketState.STOPPED, "market stopped"
+                            )
+
+                            if all(
+                                session_mgr.state(mk) == MarketState.STOPPED
+                                for mk in universe_markets
+                            ):
+                                logger.info("All markets stopped; ending session.")
+                                self.stop(reason="end of session")
+
+                        def _on_market_close(_: str = "") -> None:
+                            _dispatch_async(_action())
+
+                        return _on_market_close
+
                     scheduler.schedule_at(
-                        "strategy_exit",
-                        due=exit_dt,
-                        callback=lambda: asyncio.create_task(strat_rt.dispatch_timer("exit_time")),
+                        f"market_close_{m}",
+                        due=close_with_grace,
+                        callback=_make_market_close_cb(m),
                     )
-            except Exception:
-                pass
+
+            # run.stop_time (optional)
+            stop_time_str = getattr(getattr(self.run_config, "run", None), "stop_time", None)
+            if stop_time_str:
+                try:
+                    parts = list(map(int, stop_time_str.split(":")))
+                    hh = parts[0]
+                    mm = parts[1]
+                    ss = parts[2] if len(parts) > 2 else 0
+                    stop_dt = datetime(
+                        now_ist.year, now_ist.month, now_ist.day, hh, mm, ss, tzinfo=IST
+                    ).astimezone(UTC)
+                    if stop_dt > clock.now():
+
+                        async def _stop_time_action() -> None:
+                            logger.info(
+                                "run.stop_time (%s IST) reached; shutting down.", stop_time_str
+                            )
+                            for mk in universe_markets:
+                                if session_mgr.state(mk) not in (
+                                    MarketState.CLOSING,
+                                    MarketState.REPORTING,
+                                    MarketState.STOPPED,
+                                ):
+                                    session_mgr.transition(mk, MarketState.CLOSING, "run stop time")
+                                    journal.append(
+                                        "market.closing",
+                                        {
+                                            "market": mk,
+                                            "seq": self._tick_seq,
+                                            "ts": clock.now().isoformat(),
+                                        },
+                                    )
+                                    oms = c.get("oms")
+                                    if oms is not None:
+                                        for ref, ord_obj in list(oms.orders.items()):
+                                            inst = getattr(ord_obj, "instrument", None) or getattr(
+                                                getattr(ord_obj, "spec", None), "instrument", None
+                                            )
+                                            if (
+                                                inst is not None
+                                                and session_mgr.market_key(inst) == mk
+                                            ):
+                                                if hasattr(ord_obj, "state") and ord_obj.state in (
+                                                    OrderState.CREATED,
+                                                    OrderState.SUBMITTED,
+                                                    OrderState.ACKNOWLEDGED,
+                                                    OrderState.PARTIALLY_FILLED,
+                                                ):
+                                                    try:
+                                                        await oms.cancel(ref)
+                                                    except Exception:
+                                                        pass
+                                    await self._drain_venue_events(c)
+                                    session_mgr.transition(
+                                        mk, MarketState.REPORTING, "session reporting"
+                                    )
+                                    session_mgr.transition(
+                                        mk, MarketState.STOPPED, "market stopped"
+                                    )
+                            self.stop(reason="end of session")
+
+                        scheduler.schedule_at(
+                            "run_stop_time",
+                            due=stop_dt,
+                            callback=lambda: _dispatch_async(_stop_time_action()),
+                        )
+                except Exception as exc:
+                    logger.warning("Failed scheduling run.stop_time '%s': %s", stop_time_str, exc)
+
+        # Stale feed monitoring during open market hours
+        stale_val = (
+            self.runtime.params.get("feed.stale_seconds")
+            if self.runtime.params is not None
+            else None
+        )
+        stale_sec = float(stale_val or 30.0)
+
+        def _check_feed_staleness() -> None:
+            if not any(session_mgr.state(mk) == MarketState.RUNNING for mk in universe_markets):
+                return
+            last_ts = self._last_tick_recv_ts or self._first_tick_recv_ts
+            if last_ts is None:
+                return
+            stale_dur = (clock.now() - last_ts).total_seconds()
+            if stale_dur >= stale_sec:
+                if (clock.now() - self._last_feed_gap_alert_time).total_seconds() >= stale_sec:
+                    self._last_feed_gap_alert_time = clock.now()
+                    self._feed_gaps += 1
+                    msg = f"Feed stale: no tick received for {stale_dur:.1f}s during market hours"
+                    journal.append(
+                        "feed.gap",
+                        {
+                            "state": "gap",
+                            "details": msg,
+                            "seq": self._tick_seq,
+                            "ts": clock.now().isoformat(),
+                        },
+                    )
+                    notify.notify_feed_status(
+                        FeedStatus(
+                            state="gap",
+                            ts=clock.now(),
+                            details=msg,
+                        )
+                    )
+
+        check_int = min(10.0, max(2.0, stale_sec / 2.0))
+        scheduler.schedule_repeating(
+            "check_feed_staleness",
+            start=now_dt + timedelta(seconds=check_int),
+            interval_seconds=check_int,
+            callback=_check_feed_staleness,
+        )
 
     async def _drain_venue_events(self, c: dict[str, Any]) -> None:
         venue = c["venue"]
@@ -1887,9 +2311,15 @@ class SessionRunner:
 
         ks_obj = c.get("killswitch")
         ks_active = bool(ks_obj is not None and hasattr(ks_obj, "is_active") and ks_obj.is_active())
-        if self._killswitch_tripped or ks_active or self._killswitch_events > 0:
+        if self._stop_reason == "feed_auth":
+            stop_reason = "feed_auth"
+            is_fail = True
+        elif self._killswitch_tripped or ks_active or self._killswitch_events > 0:
             stop_reason = "kill switch"
             is_fail = True
+        elif self._stop_reason == "end of session":
+            stop_reason = "end of session"
+            is_fail = False
         elif bool(self._run_error):
             stop_reason = "error"
             is_fail = True
@@ -1946,6 +2376,8 @@ class SessionRunner:
                     "is_partial": is_partial,
                     "trades": len(fills),
                     "stop_reason": stop_reason,
+                    "seq": self._tick_seq,
+                    "ts": clock.now().isoformat(),
                 },
             )
 

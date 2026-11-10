@@ -19,6 +19,7 @@ from algodesk.api import (
     CheckResult,
     DataError,
     DoctorCheck,
+    FeedAuthError,
     Instrument,
     InstrumentId,
     LoginRequest,
@@ -126,7 +127,7 @@ def _parse_upstox_action(
             amt_val = None
 
     text = str(ev.get("details") or ev.get("description") or name_raw)
-    reason = None
+    reason = ""
     if ev_type in ("split", "bonus") and ratio_val is None:
         status = "unverified"
         reason = "Missing ratio in Upstox response"
@@ -529,10 +530,10 @@ class UpstoxBrokerPlugin(PluginBase):
         self.require("stream")
         token = self.resolve_active_token()
         if not token:
-            raise AlgoDeskError(
+            raise FeedAuthError(
                 what="No valid Upstox authentication token found for streaming",
                 where="UpstoxBrokerPlugin.stream",
-                fix="Run 'algodesk login upstox' or configure an analytics token",
+                fix="run algodesk login upstox",
             )
         async for ev in self._feed.stream(
             instruments, token=token, ws_url_override=self._ws_url_override

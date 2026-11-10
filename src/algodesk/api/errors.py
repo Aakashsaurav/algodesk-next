@@ -72,3 +72,7 @@ class RateLimitError(DataError):
 
 class AuthError(PluginError):
     """Authentication or token resolution for a service or broker failed."""
+
+
+class FeedAuthError(AuthError):
+    """Feed authentication or connection rejected (e.g. HTTP 401)."""

@@ -220,9 +220,9 @@ class UpstoxInstrumentManager:
         exchange = raw_exch if raw_exch else "NSE"
         seg_type = str(row.get("segment") or seg_prefix).strip().upper()
         itype = str(row.get("instrument_type") or "").strip().upper()
-        trading_symbol = str(
-            row.get("tradingsymbol") or row.get("trading_symbol") or identifier
-        ).strip().upper()
+        trading_symbol = (
+            str(row.get("tradingsymbol") or row.get("trading_symbol") or identifier).strip().upper()
+        )
 
         if itype == "FUT":
             canonical_seg = "FUT"
@@ -231,8 +231,27 @@ class UpstoxInstrumentManager:
         elif itype == "INDEX" or "INDEX" in seg_type:
             canonical_seg = "INDEX"
         elif "EQ" in seg_type or itype in (
-            "EQ", "EQUITY", "A", "B", "T", "BE", "SM", "BZ", "Z", "M", "MT",
-            "ST", "E", "P", "X", "XT", "G", "GS", "TB", "GB", "F"
+            "EQ",
+            "EQUITY",
+            "A",
+            "B",
+            "T",
+            "BE",
+            "SM",
+            "BZ",
+            "Z",
+            "M",
+            "MT",
+            "ST",
+            "E",
+            "P",
+            "X",
+            "XT",
+            "G",
+            "GS",
+            "TB",
+            "GB",
+            "F",
         ):
             canonical_seg = "EQ"
         elif "COM" in seg_type and itype == "COM":
@@ -258,13 +277,14 @@ class UpstoxInstrumentManager:
             expiry = self._parse_upstox_expiry(raw_exp)
             if expiry is None:
                 raise DataError(
-                    what=f"Cannot map Upstox record '{key}': missing or invalid expiry date ({raw_exp!r})",
+                    what=(
+                        f"Cannot map Upstox record '{key}': missing or invalid expiry date "
+                        f"({raw_exp!r})"
+                    ),
                     where="UpstoxInstrumentManager._map_row",
                     fix="Verify expiry field in master record",
                 )
-            und = str(
-                row.get("underlying_symbol") or row.get("asset_symbol") or ""
-            ).strip().upper()
+            und = str(row.get("underlying_symbol") or row.get("asset_symbol") or "").strip().upper()
             if not und:
                 und = trading_symbol.split()[0]
             underlying = und
@@ -286,13 +306,19 @@ class UpstoxInstrumentManager:
                         strike = k_dec.normalize()
                 except Exception as e:
                     raise DataError(
-                        what=f"Cannot map Upstox option record '{key}': invalid strike price {raw_strike!r}",
+                        what=(
+                            f"Cannot map Upstox option record '{key}': invalid strike price "
+                            f"{raw_strike!r}"
+                        ),
                         where="UpstoxInstrumentManager._map_row",
                         fix="Verify strike_price in master record",
                     ) from e
                 if itype not in ("CE", "PE"):
                     raise DataError(
-                        what=f"Cannot map Upstox option record '{key}': invalid option type {itype!r}",
+                        what=(
+                            f"Cannot map Upstox option record '{key}': invalid option type "
+                            f"{itype!r}"
+                        ),
                         where="UpstoxInstrumentManager._map_row",
                         fix="Option instrument_type must be CE or PE",
                     )
@@ -315,9 +341,7 @@ class UpstoxInstrumentManager:
         if tick <= Decimal(0):
             tick = Decimal("0.05")
 
-        isin = str(
-            row.get("isin") or (identifier if identifier.startswith("IN") else "")
-        ).strip()
+        isin = str(row.get("isin") or (identifier if identifier.startswith("IN") else "")).strip()
         broker_keys: dict[str, str] = {"upstox": key}
         if isin:
             broker_keys["isin"] = isin

@@ -217,13 +217,34 @@ To run quietly without periodic console status lines:
 algodesk run demo_paper --quiet
 ```
 
-#### Ending a session gracefully (Ctrl-C)
-To stop an active paper session at any point, send a single interrupt (`Ctrl-C` / SIGINT):
-1. **Graceful shutdown sequence**: The runner catches `SIGINT` and immediately executes graceful finalization:
-   - Recorder flushes in-memory buffer parts and runs compaction into `day.parquet` first, ensuring no ticks are lost or unpersisted.
-   - Any open orders are cleanly cancelled through the order manager.
-   - Positions are marked using the same latest quotes / synthetic marks as post-session.
-   - Results (`metrics.json`, `trades.csv`, `SUMMARY.md`) and session logs are generated cleanly in `results/<run_id>/`.
+#### Ending a session cleanly (Market close, run.stop_time, or Ctrl-C)
+Paper sessions end themselves automatically at market close or can be stopped on operator demand:
+1. **Market close automatic shutdown**:
+   - The engine queries the exchange calendar registered in `SessionManager` for each universe market.
+   - At tradable close plus `engine.session_end_grace_s` (or at configured `run.stop_time`), each market transitions `RUNNING -> CLOSING`.
+   - Open resting orders for the market are cancelled through the order manager and venue events are drained.
+   - Positions are marked to market from latest quotes.
+   - Market transitions `REPORTING -> STOPPED`. When all markets stop, the runner finalizes results (`metrics.json`, `SUMMARY.md`, `events.jsonl`) with `stop_reason="end of session"` and verdict `PASS`.
+   - Post-close feed silence is normal and does not trigger feed gap alerts.
+2. **Open-hours feed staleness monitoring**:
+   - During active trading hours (`RUNNING`), if no tick arrives for `feed.stale_seconds` (default 30.0s), the runner records a `feed.gap` event and alerts via Telegram.
+3. **Feed authentication rejection (HTTP 401)**:
+   - If the broker WebSocket feed rejects connection with HTTP 401 (e.g. expired daily token), it raises typed `FeedAuthError`.
+   - The runner attempts at most one re-authentication from the stored token.
+   - If re-authentication fails or is rejected, it avoids reconnect loops, halts new order entries, cancels open resting orders, journals `feed.auth_failed`, sets `stop_reason="feed_auth"` in metrics, and exits cleanly with exit code 1:
+     ```
+     Feed authentication failed: server rejected WebSocket connection (HTTP 401)
+     Where: plugins/brokers/upstox/feed.py
+     Fix: run algodesk login upstox
+     ```
+     (Never outputs "INTERNAL ERROR (bug)").
+4. **Graceful operator interrupt (Ctrl-C)**:
+   To stop an active paper session at any point, send a single interrupt (`Ctrl-C` / SIGINT):
+   - The runner catches `SIGINT` and immediately executes graceful finalization:
+     - Recorder flushes in-memory buffer parts and runs compaction into `day.parquet` first, ensuring no ticks are lost or unpersisted.
+     - Any open orders are cleanly cancelled through the order manager.
+     - Positions are marked using the same latest quotes / synthetic marks as post-session.
+     - Results (`metrics.json`, `trades.csv`, `SUMMARY.md`) and session logs are generated cleanly in `results/<run_id>/` with `stop_reason="interrupt"` and verdict `STOPPED`.
 2. **Session observability report**:
    ```bash
    algodesk session report [RUN_ID]
@@ -267,12 +288,13 @@ algodesk replay --session <paper_run_id>
 ```
 This scopes market tick playback strictly to `[first_tick_utc, last_tick_utc]`, restores indicator warm-up from `results/<paper_run_id>/warmup_bars.parquet` (or reconstructs warm-up from the bar store up to the session start), loads the run's recorded configuration (`config.effective.txt`) and parameter snapshot (`registry.snapshot.json`), verifies fee schedule presence, and warns on commit/plugin hash divergence.
 
-**Handling multiple recorded sessions on a single day**:
-If several paper sessions were recorded on date `YYYY-MM-DD`, running:
-```bash
-algodesk replay --dates YYYY-MM-DD
-```
-refuses execution to prevent mixing tick windows or carrying stale indicator/position state across sessions. The CLI lists all matching recorded sessions with their run IDs, tick windows, and trade counts. To replay, pass `--session <paper_run_id>`.
+Replay dispatches all recorded scheduler inputs (`timer.strategy` such as `exit_time`, `portfolio.snapshot`, `bar.timer_close`, `market.closing`, and session stop) at identical monotonic tick sequence numbers (`seq`). This eliminates wall-clock jitter or SimClock shifts, ensuring 100% equivalence in signals, orders, fills, and metrics (`results compare` returns `equal: True`).
+
+**Replay scoping by date (`--dates`)**:
+When replaying by date (`algodesk replay --dates YYYY-MM-DD`):
+- Candidates are strictly scoped to paper trading sessions; replay result folders are ignored.
+- If exactly one recorded session exists for that date, its recorded time window (`first_tick_utc` to `last_tick_utc`) is automatically adopted, avoiding SimClock defaults to 09:15 IST and preventing max drawdown shifts.
+- If multiple recorded sessions exist on date `YYYY-MM-DD`, execution is safely refused to prevent mixing tick windows or carrying stale indicator state across sessions. The CLI lists all matching recorded sessions with their run IDs, tick windows, and trade counts. To replay, specify `--session <paper_run_id>`.
 
 Compare performance metrics and ordered event sequences (signals, risk decisions, orders, fills) between paper and replay runs:
 ```bash

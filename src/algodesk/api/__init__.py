@@ -26,6 +26,7 @@ from algodesk.api.errors import (
     CalendarCoverageError,
     ConfigError,
     DataError,
+    FeedAuthError,
     JournalError,
     ManifestError,
     NotSupported,
@@ -130,6 +131,7 @@ __all__ = [
     # errors
     "AlgoDeskError",
     "AuthError",
+    "FeedAuthError",
     "CalendarCoverageError",
     "ConfigError",
     "DataError",

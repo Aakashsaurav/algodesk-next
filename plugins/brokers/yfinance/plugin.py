@@ -72,9 +72,7 @@ class YFinanceBrokerPlugin(PluginBase, DataSource):
             seg = parts[1].upper()
             if seg != "EQ":
                 raise NotSupported(
-                    what=(
-                        f"Yahoo Finance maps equity only, got segment '{seg}' in '{instrument}'"
-                    ),
+                    what=(f"Yahoo Finance maps equity only, got segment '{seg}' in '{instrument}'"),
                     where="YFinanceBrokerPlugin.map_symbol",
                     fix="Use an exchange broker plugin (e.g. upstox) for derivatives",
                 )

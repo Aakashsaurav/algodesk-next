@@ -6,6 +6,7 @@ allocated_capital = 100000
 [run]
 name = "demo_paper_fast"
 mode = "paper"
+stop_time = "15:35"
 
 [data_source]
 plugin = "upstox"

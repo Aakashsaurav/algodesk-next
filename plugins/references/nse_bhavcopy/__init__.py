@@ -3,4 +3,3 @@
 from .plugin import NSEBhavcopyReferencePlugin
 
 __all__ = ["NSEBhavcopyReferencePlugin"]
-

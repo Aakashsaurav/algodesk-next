@@ -133,4 +133,3 @@ def test_history_wrapper(tmp_path: Path) -> None:
     en = datetime(2024, 10, 28, 23, 59, tzinfo=UTC)
     bars = list(plugin.history(key, st, en))
     assert len(bars) >= 2
-

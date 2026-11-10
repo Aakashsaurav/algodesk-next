@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from datetime import UTC
+
 import pytest
 
 from algodesk.api import (
@@ -13,7 +14,6 @@ from algodesk.api import (
     data_source_problems,
 )
 
-from ..config_schema import ImporterConfig
 from ..plugin import ImporterBrokerPlugin
 
 
@@ -67,8 +67,8 @@ def test_importer_history_call(manifest: PluginManifest) -> None:
         adjustment="raw",
         source="importer",
     )
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    dt = datetime(2026, 11, 5, 0, 0, tzinfo=timezone.utc)
+    dt = datetime(2026, 11, 5, 0, 0, tzinfo=UTC)
     bars = list(plugin.history(key, dt, dt))
     assert bars == []

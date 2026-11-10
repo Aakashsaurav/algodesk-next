@@ -7,7 +7,7 @@ using exchange calendars.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
@@ -62,6 +62,19 @@ class SessionManager:
         """Derive standard uppercase market key e.g. 'NSE:EQ'."""
         parts = parse_id(instrument)
         return f"{parts.exchange}:{parts.segment}".upper()
+
+    def get_calendar(self, exchange: str) -> Calendar | None:
+        """Return registered calendar for exchange or None."""
+        return self._calendars.get(exchange.upper())
+
+    def add_calendar(self, exchange: str, cal: Calendar) -> None:
+        """Register a calendar for an exchange."""
+        self._calendars[exchange.upper()] = cal
+
+    @property
+    def markets(self) -> Sequence[str]:
+        """Return list of markets currently tracked by state."""
+        return list(self._market_states.keys())
 
     def state(self, market: str) -> MarketState:
         """Return current lifecycle state of a market (defaults to STOPPED)."""

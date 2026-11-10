@@ -294,10 +294,15 @@ class Recorder:
             )
             raise RuntimeError(msg)
 
-        # Sort by (exch_ts, recv_ts)
+        # Sort by monotonic seq if available, else (recv_ts, exch_ts)
+        sort_keys = (
+            [("seq", "ascending")]
+            if "seq" in combined.column_names
+            else [("recv_ts", "ascending"), ("exch_ts", "ascending")]
+        )
         sorted_indices = pa.compute.sort_indices(
             combined,
-            sort_keys=[("exch_ts", "ascending"), ("recv_ts", "ascending")],
+            sort_keys=sort_keys,
         )
         sorted_table = combined.take(sorted_indices)
 

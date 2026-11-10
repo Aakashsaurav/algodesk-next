@@ -155,4 +155,3 @@ def bhavcopy_row_to_bar(row: BhavcopyRow, exchange_tz: tzinfo) -> Bar:
         complete=True,
         synthetic=False,
     )
-

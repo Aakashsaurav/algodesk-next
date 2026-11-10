@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from datetime import datetime
-from pathlib import Path
 from typing import Any, cast
 
 from algodesk.api import (
@@ -65,4 +64,3 @@ class ImporterBrokerPlugin(PluginBase, DataSource):
             where="ImporterBrokerPlugin.stream",
             fix="Use live suitable broker plugin (e.g. upstox) for streaming market events",
         )
-
