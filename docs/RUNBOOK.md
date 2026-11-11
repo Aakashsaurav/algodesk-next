@@ -420,11 +420,13 @@ Verify store integrity and compare against recorded ticks or secondary sources:
 algodesk data verify
 
 # Compare rebuilt 1m bars from recorded ticks against broker 1m bars
-algodesk data compare --date 2026-11-04 --source upstox
+algodesk data compare --date 2026-11-09 --symbols RELIANCE,TCS --source yfinance
 
 # Execute live smoke test (owner-run, network)
 algodesk data smoke --symbols RELIANCE,TCS
 ```
+`data compare` reconstructs 1m bars in memory from recorded ticks using `BarBuilder` (aligned to the exchange IST session across UTC partitions), closes active boundary bars deterministically, and fetches vendor source 1m bars through `DataService`. The output table reports bar counts (`BUILT`, `SOURCE`, `MATCHED`), first/last bar timestamps in IST (`BUILT FIRST`, `BUILT LAST`, `SRC FIRST`, `SRC LAST`), one-sided bar counts (`BUILT ONLY`, `SRC ONLY`), and price/volume difference metrics. If either side has no bars, it refuses cleanly with exit code 1 naming which side was empty and why (`no ticks recorded`, `source returned nothing`, or `date beyond the source's retention`), never printing a table of zeros.
+
 `data smoke` verifies that repeated `get` queries execute with zero network calls (100% cache hits) across COMPLETE, CLOSED, or retry-exhausted EMPTY days. In-progress sessions (`CoverageStatus.PARTIAL`) before settlement deadline are excluded from failure checks and listed, and any network calls made on Run 2 are itemized. EMPTY days are final after `data.fetch_retries` until refetched via `algodesk data get ... --refresh`.
 
 ### 5. Safe tick archive management & vendor import

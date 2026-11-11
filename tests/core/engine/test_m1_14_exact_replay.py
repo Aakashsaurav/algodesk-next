@@ -26,11 +26,13 @@ from typer.testing import CliRunner
 
 from algodesk.api import (
     InstrumentId,
+    Level,
     Order,
     OrderSpec,
     OrderState,
     OrderType,
     Product,
+    Quote,
     Side,
     Tick,
     Validity,
@@ -589,3 +591,59 @@ def test_unfilled_order_cancellation_recorded_and_replayed(tmp_project: Path) ->
 
         # Order must be CANCEL_REQUESTED or CANCELLED
         assert order.state in (OrderState.CANCEL_REQUESTED, OrderState.CANCELLED)
+
+
+def test_quote_triggers_recorded_events_and_marks_ledger(tmp_project: Path) -> None:
+    """Recorded events (market.closing, portfolio.snapshot) are triggered on Quote events."""
+    _seed_cache(tmp_project)
+
+    with open_runtime(tmp_project, run="demo_paper_fast") as rt:
+        t0 = datetime(2026, 11, 4, 9, 30, 0, tzinfo=UTC)
+        clock = SimClock(t0)
+
+        runner = SessionRunner(rt, mode="replay", clock=clock, dry_run=False)
+        inst = InstrumentId("NSE:EQ:RELIANCE")
+
+        runner._recorded_events_by_seq = {
+            2: [{"kind": "market.closing", "payload": {"market": "NSE:EQ", "seq": 2}}],
+            3: [{"kind": "portfolio.snapshot", "payload": {"seq": 3}}],
+        }
+        runner._pending_recorded_seqs = [2, 3]
+        runner._recorded_seq_idx = 0
+
+        q1 = Quote(
+            instrument=inst,
+            exch_ts=t0,
+            recv_ts=t0,
+            bids=(Level(price=1050.0, qty=10, orders=1),),
+            asks=(Level(price=1055.0, qty=10, orders=1),),
+            ltp=1050.0,
+            volume=100,
+        )
+        q2 = Quote(
+            instrument=inst,
+            exch_ts=t0 + timedelta(seconds=1),
+            recv_ts=t0 + timedelta(seconds=1),
+            bids=(Level(price=1050.0, qty=10, orders=1),),
+            asks=(Level(price=1055.0, qty=10, orders=1),),
+            ltp=1050.0,
+            volume=200,
+        )
+        q3 = Quote(
+            instrument=inst,
+            exch_ts=t0 + timedelta(seconds=2),
+            recv_ts=t0 + timedelta(seconds=2),
+            bids=(Level(price=1050.0, qty=10, orders=1),),
+            asks=(Level(price=1055.0, qty=10, orders=1),),
+            ltp=1050.0,
+            volume=300,
+        )
+
+        runner._build_event_stream = lambda comp, clk: _StreamFromList([(q1, 1), (q2, 2), (q3, 3)])
+
+        asyncio.run(runner.run())
+
+        assert runner._recorded_seq_idx == 2
+        assert len(runner._equity_curve) >= 1
+        snap = runner._equity_curve[0]
+        assert snap["equity"] == 100000.0

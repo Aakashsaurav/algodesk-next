@@ -162,12 +162,12 @@ class YFinanceBrokerPlugin(PluginBase, DataSource):
         self._check_retention(tf, start)
         is_adjusted = str(key.adjustment).lower() in ("adjusted", "adjustment.adjusted")
 
-        start_str = start.strftime("%Y-%m-%d")
-        end_str = (
-            (end + timedelta(days=1)).strftime("%Y-%m-%d")
-            if tf == "1d"
-            else end.strftime("%Y-%m-%d")
-        )
+        ist = ZoneInfo("Asia/Kolkata")
+        s_ist = start.astimezone(ist) if start.tzinfo else start
+        e_ist = end.astimezone(ist) if end.tzinfo else end
+
+        start_str = s_ist.strftime("%Y-%m-%d")
+        end_str = (e_ist.date() + timedelta(days=1)).strftime("%Y-%m-%d")
 
         def _fetch() -> Any:
             ticker = self._yf.Ticker(sym)

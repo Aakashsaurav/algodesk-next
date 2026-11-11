@@ -442,18 +442,36 @@ def data_compare(
             "BUILT",
             "SOURCE",
             "MATCHED",
+            "BUILT FIRST",
+            "BUILT LAST",
+            "SRC FIRST",
+            "SRC LAST",
+            "BUILT ONLY",
+            "SRC ONLY",
             "MAX CLOSE DIFF",
             "MEDIAN CLOSE DIFF",
             "ABOVE TOL",
             "MAX VOL DIFF",
             "MEDIAN VOL DIFF",
         ]
+
+        def _fmt_time(ts: datetime | None) -> str:
+            if ts is None:
+                return "-"
+            return ts.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%H:%M")
+
         rows = [
             [
                 r.symbol,
                 str(r.built_count),
                 str(r.source_count),
                 str(r.matched_count),
+                _fmt_time(r.built_first_ts),
+                _fmt_time(r.built_last_ts),
+                _fmt_time(r.source_first_ts),
+                _fmt_time(r.source_last_ts),
+                str(r.built_only_count),
+                str(r.source_only_count),
                 f"{r.max_close_diff:.4f}",
                 f"{r.median_close_diff:.4f}",
                 str(r.count_above_tolerance),

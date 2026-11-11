@@ -207,6 +207,8 @@ class SessionRunner:
                             self._recorded_stop_reason = p.get("stop_reason")
                 except Exception as exc:
                     logger.debug("Failed loading recorded events from %s: %s", events_jsonl, exc)
+            self._pending_recorded_seqs: list[int] = sorted(self._recorded_events_by_seq.keys())
+            self._recorded_seq_idx: int = 0
             from algodesk.results.compare import _get_configured_plugins
 
             active_p = _get_configured_plugins(sess_path)
@@ -234,6 +236,8 @@ class SessionRunner:
         else:
             self._timer_closes_by_seq = {}
             self._recorded_events_by_seq = {}
+            self._pending_recorded_seqs = []
+            self._recorded_seq_idx = 0
             self._recorded_stop_seq = None
             self._recorded_stop_reason = None
 
@@ -1356,8 +1360,6 @@ class SessionRunner:
                         format_ist(ev.exch_ts),
                     )
                 c["bar_builder"].on_tick(ev)
-                if self._is_replay:
-                    await self._apply_recorded_events(curr_seq, c, clock, journal)
                 self._tick_stats[str(ev.instrument)] = (
                     self._tick_stats.get(str(ev.instrument), 0) + 1
                 )
@@ -1405,6 +1407,16 @@ class SessionRunner:
             # 5. Check OMS timeouts
             await c["oms"].check_timeouts()
 
+            # 6. Replay recorded events up to curr_seq
+            if self._is_replay and self._pending_recorded_seqs:
+                while (
+                    self._recorded_seq_idx < len(self._pending_recorded_seqs)
+                    and self._pending_recorded_seqs[self._recorded_seq_idx] <= curr_seq
+                ):
+                    due_seq = self._pending_recorded_seqs[self._recorded_seq_idx]
+                    self._recorded_seq_idx += 1
+                    await self._apply_recorded_events(due_seq, c, clock, journal)
+
         if self._is_replay:
             async for ev_item in stream:
                 if self._stop_event.is_set():
@@ -1421,9 +1433,12 @@ class SessionRunner:
                     break
 
             # If stream finished, apply any remaining recorded events
-            remaining_seqs = sorted(self._recorded_events_by_seq.keys())
-            for rem_seq in remaining_seqs:
-                await self._apply_recorded_events(rem_seq, c, clock, journal)
+            while self._pending_recorded_seqs and self._recorded_seq_idx < len(
+                self._pending_recorded_seqs
+            ):
+                due_seq = self._pending_recorded_seqs[self._recorded_seq_idx]
+                self._recorded_seq_idx += 1
+                await self._apply_recorded_events(due_seq, c, clock, journal)
 
             if self._recorded_stop_seq is not None and not self._stop_event.is_set():
                 self.stop(reason=self._recorded_stop_reason or "end of session")

@@ -179,6 +179,14 @@ Short decision records (context, decision, reason) in the order they were taken.
 4. *Scheduler-fired event sequence recording and exact replay*: Every scheduler-fired input (`timer.strategy` such as exit_time, `portfolio.snapshot`, `bar.timer_close`, `market.closing`, and session stop) is journaled with its monotonic tick sequence number `seq` and timestamp. In replay mode, synthetic timers are suppressed and callbacks are dispatched deterministically at the exact recorded tick sequence numbers, ensuring exact parity between paper and replay runs across signals, orders, fills, and metrics.
 5. *Replay session scoping and single-session window adoption*: `replay --dates <date>` filters candidates strictly to paper trading sessions, excluding previous replay folders. When a single paper session exists for that date, its recorded time window is automatically adopted.
 
+**ADR-063 Tick-to-source bar comparison on real recorded data, IST session resolution across UTC partitions, and explicit refusal on empty sides.**
+1. *Structured instrument ID and alias resolution for recorded ticks*: `data compare` resolves requested symbols and aliases (e.g. `RELIANCE` -> `NSE:EQ:RELIANCE`) through the alias mapping and manifest to locate tick partitions stored in `ticks/exchange=.../segment=.../symbol=.../date=.../day.parquet`.
+2. *IST session alignment against UTC partitions*: Trading dates correspond to the exchange timezone (`Asia/Kolkata`). `compare` inspects UTC partitions spanning the session window (including previous UTC day for early IST hours) and filters ticks strictly by exchange date `ev.exch_ts.astimezone(IST).date() == date_val`.
+3. *Deterministic bar reconstruction and boundary timer flushing*: Bars are rebuilt in memory using `BarBuilder(timeframes=("1m",))`. At the end of tick playback, any remaining unclosed active bar is flushed via `close_bar_timer` to guarantee exact match with source bar counts.
+4. *Clear refusal on empty sides*: If either the tick-built or vendor source side has no bars, `compare` refuses with exit code 1 and prints an actionable diagnosis specifying which side was empty and why (`no ticks recorded`, `source returned nothing`, or `date beyond the source's retention` based on source retention windows), never displaying a misleading table of zeros.
+5. *Expanded comparison table*: The comparison table adds `BUILT FIRST`, `BUILT LAST`, `SRC FIRST`, `SRC LAST`, `BUILT ONLY`, and `SRC ONLY` formatted in IST alongside close price differences, volume metrics, and tolerance breaches.
+6. *Intraday source chunk boundary handling*: Intraday history requests format session dates in the exchange timezone (`Asia/Kolkata`) and apply exclusive end date offsets (+1 day) so queries accurately capture intraday sessions without falling back to Sunday or prior-day dates.
+
 
 
 
