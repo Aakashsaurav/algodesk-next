@@ -27,7 +27,7 @@ from algodesk.data.planner import GapPlanner, resolve_base_timeframe
 from algodesk.data.reconciler import CorporateActionsReconciler
 from algodesk.data.resample import resample
 from algodesk.data.staleness import check_and_update_adjusted_staleness
-from algodesk.data.store import BarStore
+from algodesk.data.store import BarStore, validate_source_timeframe
 
 _DEFAULT_EXCH_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -262,6 +262,9 @@ class DataService:
         req_key = self._resolve_series_key(series, source, download)
         src_manifest = self._manifests.get(req_key.source)
         base_tf = resolve_base_timeframe(req_key.timeframe)
+        validate_source_timeframe(
+            req_key.source, base_tf, manifest=src_manifest, where="DataService.get"
+        )
         base_key = SeriesKey(
             instrument=req_key.instrument,
             kind="bars",

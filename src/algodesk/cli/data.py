@@ -64,7 +64,7 @@ from algodesk.data.recorder import MarketRecorder
 from algodesk.data.schema import read_bars_parquet, write_bars_parquet
 from algodesk.data.service import DataService
 from algodesk.data.session_bars import SessionBarStore
-from algodesk.data.store import BarStore, _compute_sha256
+from algodesk.data.store import BarStore, _compute_sha256, get_source_declared_intervals
 from algodesk.data.synth import synth_ticks
 from algodesk.data.validator import BarValidator
 from algodesk.logs.formatting import format_ist
@@ -1187,6 +1187,15 @@ def data_verify(
             datasets = {d.dataset_id: d for d in manifest.list_datasets()}
             now_iso = datetime.now(UTC).isoformat()
             quarantined_bars_count = 0
+            plugins_manifests = (
+                {
+                    info.name: info.manifest
+                    for info in rt.plugins.list()
+                    if info.manifest is not None
+                }
+                if hasattr(rt, "plugins")
+                else {}
+            )
 
             for part in manifest.get_parts():
                 files_checked += 1
@@ -1212,6 +1221,30 @@ def data_verify(
                             )
                             part_violations: list[str] = []
                             offending_indices: set[int] = set()
+
+                            # Check whether (source, timeframe) is declared by source manifest
+                            src_man = plugins_manifests.get(ds.source)
+                            allowed_tfs = get_source_declared_intervals(ds.source, manifest=src_man)
+                            if ds.timeframe not in allowed_tfs:
+                                note = ""
+                                if ds.source == "nse_bhavcopy":
+                                    note = (
+                                        " (Note: nse_bhavcopy manifest lacks explicit 'intervals' "
+                                        "declaration in plugin.toml; daily only)"
+                                    )
+                                allowed_str = (
+                                    ", ".join(f"'{a}'" for a in allowed_tfs)
+                                    if allowed_tfs
+                                    else "none"
+                                )
+                                msg = (
+                                    f"{part.path}: undeclared timeframe '{ds.timeframe}' "
+                                    f"for source '{ds.source}' "
+                                    f"(manifest declares [{allowed_str}]{note})"
+                                )
+                                part_violations.append(msg)
+                                offending_indices.update(range(len(bars)))
+
                             seen_ts: set[datetime] = set()
                             prev_b: Bar | None = None
 
@@ -1292,30 +1325,34 @@ def data_verify(
                                     except ValueError:
                                         pass
                                     manifest.delete_part(part.path)
+                                    if not manifest.get_parts(ds.dataset_id):
+                                        manifest.delete_coverage_days_for_dataset(ds.dataset_id)
+                                        manifest.delete_dataset(ds.dataset_id)
 
-                                offending_days = {b.start_ts.date() for b in offending_bars}
-                                cov_index = CoverageIndex(manifest=manifest)
-                                for o_day in offending_days:
-                                    day_clean_bars = [
-                                        b for b in clean_bars if b.start_ts.date() == o_day
-                                    ]
-                                    st = cov_index.evaluate_day_status(
-                                        ds.dataset_id, o_day, has_bars=bool(day_clean_bars)
-                                    )
-                                    manifest.record_coverage_day(
-                                        CoverageDayRecord(
-                                            ds.dataset_id,
-                                            o_day.isoformat(),
-                                            st,
-                                            len(day_clean_bars),
-                                            len(day_clean_bars),
-                                            part.path if day_clean_bars else "",
-                                            now_iso,
-                                            note="Quarantined offending bars"
-                                            if not day_clean_bars
-                                            else "",
+                                if manifest.get_parts(ds.dataset_id):
+                                    offending_days = {b.start_ts.date() for b in offending_bars}
+                                    cov_index = CoverageIndex(manifest=manifest)
+                                    for o_day in offending_days:
+                                        day_clean_bars = [
+                                            b for b in clean_bars if b.start_ts.date() == o_day
+                                        ]
+                                        st = cov_index.evaluate_day_status(
+                                            ds.dataset_id, o_day, has_bars=bool(day_clean_bars)
                                         )
-                                    )
+                                        manifest.record_coverage_day(
+                                            CoverageDayRecord(
+                                                ds.dataset_id,
+                                                o_day.isoformat(),
+                                                st,
+                                                len(day_clean_bars),
+                                                len(day_clean_bars),
+                                                part.path if day_clean_bars else "",
+                                                now_iso,
+                                                note="Quarantined offending bars"
+                                                if not day_clean_bars
+                                                else "",
+                                            )
+                                        )
                             else:
                                 rule_violations.extend(part_violations)
                         except Exception as exc:
@@ -1494,6 +1531,51 @@ def data_status(
         typer.echo(format_table(headers, [[m, str(v)] for m, v in pairs]))
 
 
+def _format_and_print_gaps_block(
+    src_gaps: list[dict[str, str]],
+    selector: str,
+    start_d: date,
+    end_d: date,
+    cov_index: CoverageIndex,
+) -> None:
+    """Format and print gaps table and closure summary for a single source block."""
+    closure_counts = cov_index.last_closure_counts
+    closed_inf = closure_counts["closed_inferred"]
+    total_days = (end_d - start_d).days + 1
+    inf_msg = f"{closed_inf} day(s) relied on inferred closures."
+    warning_msg = ""
+    if total_days > 0 and (closed_inf / total_days) > 0.05:
+        pct = (closed_inf / total_days) * 100.0
+        warning_msg = (
+            f"Warning: {closed_inf} days ({pct:.1f}%) relied on inferred closures, "
+            f"exceeding 5% threshold."
+        )
+
+    counts_parts = [
+        (
+            f"Closures: {closure_counts['closed_calendar']} closed (calendar), "
+            f"{closure_counts['closed_inferred']} closed (inferred), "
+            f"{closure_counts['special_sessions']} special session(s)."
+        ),
+        inf_msg,
+    ]
+    if warning_msg:
+        counts_parts.append(warning_msg)
+    counts_msg = "\n".join(counts_parts)
+
+    if not src_gaps:
+        typer.echo(f"No gaps found for '{selector}' between {start_d} and {end_d}.")
+        typer.echo(counts_msg)
+    else:
+        headers = ["INSTRUMENT", "DAY (IST)", "STATUS", "REASON"]
+        rows = [
+            [g["instrument"], format_ist(g["day"], date_only=True), g["status"], g["reason"]]
+            for g in src_gaps
+        ]
+        typer.echo(format_table(headers, rows))
+        typer.echo(counts_msg)
+
+
 @data_app.command("gaps")
 @handle_cli_errors
 def data_gaps(
@@ -1545,86 +1627,76 @@ def data_gaps(
         all_gaps: list[dict[str, str]] = []
         datasets_list = manifest.list_datasets(kind="bars")
 
-        for inst in instruments:
-            i_id = InstrumentId(inst)
-            candidates = [
-                d
-                for d in datasets_list
-                if d.instrument == inst
-                and d.timeframe == timeframe
-                and (source is None or d.source == source)
-                and (adj is None or d.adjustment == adj)
-            ]
-            if candidates:
-                candidates.sort(
-                    key=lambda d: (
-                        len(manifest.get_coverage_days(d.dataset_id)),
-                        len(manifest.get_parts(d.dataset_id)),
-                    ),
-                    reverse=True,
-                )
-                selected_ds_id = candidates[0].dataset_id
-            else:
-                sel_src = source or "upstox"
-                sel_adj = adj or "raw"
-                selected_ds_id = dataset_id_for_key(
-                    SeriesKey(i_id, "bars", timeframe, sel_adj, sel_src)
-                )
+        # Determine sources: if --source is passed, check only that source.
+        # Otherwise, check one block per source having coverage (never pick silently).
+        if source is not None:
+            sources_to_check = [source]
+        else:
+            found_sources = sorted(
+                {
+                    d.source
+                    for d in datasets_list
+                    if d.timeframe == timeframe
+                    and d.instrument in instruments
+                    and (adj is None or d.adjustment == adj)
+                    and (
+                        len(manifest.get_coverage_days(d.dataset_id)) > 0
+                        or len(manifest.get_parts(d.dataset_id)) > 0
+                    )
+                }
+            )
+            sources_to_check = found_sources if found_sources else ["upstox"]
 
-            if not json_out:
-                typer.echo(f"Checked series: {selected_ds_id}")
+        for s_idx, cur_source in enumerate(sources_to_check):
+            src_gaps: list[dict[str, str]] = []
+            for inst in instruments:
+                i_id = InstrumentId(inst)
+                candidates = [
+                    d
+                    for d in datasets_list
+                    if d.instrument == inst
+                    and d.timeframe == timeframe
+                    and d.source == cur_source
+                    and (adj is None or d.adjustment == adj)
+                ]
+                if candidates:
+                    candidates.sort(
+                        key=lambda d: (
+                            len(manifest.get_coverage_days(d.dataset_id)),
+                            len(manifest.get_parts(d.dataset_id)),
+                        ),
+                        reverse=True,
+                    )
+                    selected_ds_id = candidates[0].dataset_id
+                else:
+                    sel_adj = adj or "raw"
+                    selected_ds_id = dataset_id_for_key(
+                        SeriesKey(i_id, "bars", timeframe, sel_adj, cur_source)
+                    )
 
-            for g in cov_index.detect_gaps(selected_ds_id, start_d, end_d):
-                all_gaps.append(
-                    {
+                if not json_out:
+                    typer.echo(f"Checked series: {selected_ds_id}")
+
+                for g in cov_index.detect_gaps(selected_ds_id, start_d, end_d):
+                    gap_rec = {
                         "instrument": inst,
                         "series": selected_ds_id,
+                        "source": cur_source,
                         "day": g.day.isoformat(),
                         "status": str(g.status),
                         "reason": g.reason,
                     }
-                )
+                    src_gaps.append(gap_rec)
+                    all_gaps.append(gap_rec)
 
-        closure_counts = cov_index.last_closure_counts
-        closed_inf = closure_counts["closed_inferred"]
-        total_days = (end_d - start_d).days + 1
-        inf_msg = f"{closed_inf} day(s) relied on inferred closures."
-        warning_msg = ""
-        if total_days > 0 and (closed_inf / total_days) > 0.05:
-            pct = (closed_inf / total_days) * 100.0
-            warning_msg = (
-                f"Warning: {closed_inf} days ({pct:.1f}%) relied on inferred closures, "
-                f"exceeding 5% threshold."
-            )
-
-        counts_parts = [
-            (
-                f"Closures: {closure_counts['closed_calendar']} closed (calendar), "
-                f"{closure_counts['closed_inferred']} closed (inferred), "
-                f"{closure_counts['special_sessions']} special session(s)."
-            ),
-            inf_msg,
-        ]
-        if warning_msg:
-            counts_parts.append(warning_msg)
-        counts_msg = "\n".join(counts_parts)
+            if not json_out:
+                _format_and_print_gaps_block(src_gaps, selector, start_d, end_d, cov_index)
+                if s_idx < len(sources_to_check) - 1:
+                    typer.echo("")
 
         if json_out:
             typer.echo(json.dumps(all_gaps, indent=2))
             return
-
-        if not all_gaps:
-            typer.echo(f"No gaps found for '{selector}' between {start_d} and {end_d}.")
-            typer.echo(counts_msg)
-            return
-
-        headers = ["INSTRUMENT", "DAY (IST)", "STATUS", "REASON"]
-        rows = [
-            [g["instrument"], format_ist(g["day"], date_only=True), g["status"], g["reason"]]
-            for g in all_gaps
-        ]
-        typer.echo(format_table(headers, rows))
-        typer.echo(counts_msg)
 
 
 @quarantine_app.command("list")

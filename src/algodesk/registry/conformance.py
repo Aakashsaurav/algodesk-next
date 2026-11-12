@@ -14,9 +14,10 @@ from algodesk.api.kinds import PluginKind
 
 
 def code_hash(plugin_dir: Path | str) -> str:
-    """Compute sha256 over sorted relative paths and bytes of .py files and plugin.toml.
+    """Compute sha256 over sorted relative paths and bytes of plugin files.
 
-    Ignores tests/, __pycache__, and README.
+    Includes code, manifest, and data files (e.g. data/*.toml).
+    Ignores tests/, __pycache__, README files, and hidden dotfiles.
     """
     path = Path(plugin_dir).resolve()
     hasher = hashlib.sha256()
@@ -31,8 +32,9 @@ def code_hash(plugin_dir: Path | str) -> str:
             continue
         if any(part.startswith("README") for part in parts):
             continue
-        if p.name == "plugin.toml" or p.suffix == ".py":
-            files_to_hash.append((rel.as_posix(), p))
+        if any(part.startswith(".") for part in parts):
+            continue
+        files_to_hash.append((rel.as_posix(), p))
 
     files_to_hash.sort(key=lambda item: item[0])
     for rel_posix, file_path in files_to_hash:

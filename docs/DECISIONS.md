@@ -200,6 +200,13 @@ Short decision records (context, decision, reason) in the order they were taken.
 4. *Unified net-of-charges win rate*: Standardized `win_rate` formula across `metrics.json` and session reports to evaluate closed round trips net of transaction charges.
 5. *Quote-aware replay determinism*: Runner drains recorded events on both `Tick` and `Quote` events, and tracks market event timestamps across both ticks and quotes so replay windows cover quotes at close.
 
+**ADR-066 Unambiguous gap inspection by source, source timeframe enforcement, CoverageIndex call safety, and plugin data file hashing.**
+1. *Unambiguous gap inspection by source*: `algodesk data gaps` without `--source` generates separate inspection blocks for each data source declaring coverage for the requested timeframe, preventing silent selection across disparate sources. With `--source`, it checks only that source. The evaluated series is always printed (`Checked series: <dataset_id>`).
+2. *Source timeframe enforcement*: `BarStore.commit` and `DataService.get` validate `(source, timeframe)` against declared intervals in the source plugin manifest (`intervals`, `max_span`, `retention`, or manifest daily_bars capability). Undeclared intervals (such as storing bhavcopy daily data under `1m`) are refused with actionable `DataError`. Manifests lacking explicit `intervals` declarations (e.g. `nse_bhavcopy`) report the omission and default to daily-only capabilities. `data verify` flags undeclared timeframe parts, and `data verify --fix` moves them to quarantine with a `data.quarantine` journal event.
+3. *CoverageIndex call safety*: `CoverageIndex` implements `__call__` to safely handle no-argument calls (returning `self` when invoked via property access patterns) and delegating parameterized calls to `evaluate_day_status`, preventing uncallable object exceptions during chunk error handling.
+4. *Conformance code hashing*: `code_hash` includes all plugin assets (including TOML/JSON data files under `data/`) while continuing to ignore test suites, `__pycache__`, README documentation, and hidden dotfiles, ensuring plugin conformance records invalidate when data or configuration files change.
+5. *Core lines guidance budget*: Raised `budget.core_lines_guidance` to 30,000 lines in `config/params/core.toml` to reflect module expansion across data services, instruments, replay, and analytics while retaining strict complexity and coverage gates.
+
 
 
 

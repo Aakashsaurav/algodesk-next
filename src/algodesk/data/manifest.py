@@ -518,6 +518,26 @@ class DataManifest:
             self._rollback()
             raise
 
+    def delete_dataset(self, dataset_id: str) -> None:
+        """Delete dataset metadata row by dataset_id under transaction."""
+        try:
+            self._begin_immediate()
+            self._conn.execute("DELETE FROM datasets WHERE dataset_id = ?", (dataset_id,))
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
+    def delete_coverage_days_for_dataset(self, dataset_id: str) -> None:
+        """Delete coverage records for a dataset under transaction."""
+        try:
+            self._begin_immediate()
+            self._conn.execute("DELETE FROM coverage_days WHERE dataset_id = ?", (dataset_id,))
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
     def record_coverage_day(self, record: CoverageDayRecord) -> None:
         """Insert or replace single day coverage record."""
         self.record_coverage_days([record])

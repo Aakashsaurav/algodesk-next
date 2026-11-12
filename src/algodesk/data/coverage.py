@@ -43,6 +43,16 @@ class CoverageIndex:
     def last_closure_counts(self) -> dict[str, int]:
         return dict(self._last_closure_counts)
 
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Allow CoverageIndex to be invoked safely as a callable.
+
+        If called with no arguments (e.g. store.coverage_index()), returns self.
+        If called with arguments, delegates to evaluate_day_status(*args, **kwargs).
+        """
+        if not args and not kwargs:
+            return self
+        return self.evaluate_day_status(*args, **kwargs)
+
     def is_empty_final(self, rec: CoverageDayRecord, now_dt: datetime | None = None) -> bool:
         """Check whether an existing EMPTY coverage record is final or stale."""
         return is_empty_record_final(

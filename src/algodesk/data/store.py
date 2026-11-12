@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import hashlib
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from algodesk.api.errors import DataError
+from algodesk.api.manifest import PluginManifest
 from algodesk.api.market import (
     Bar,
     CoverageStatus,
@@ -55,6 +56,67 @@ def _compute_sha256(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def get_source_declared_intervals(
+    source: str,
+    manifest: PluginManifest | None = None,
+) -> tuple[str, ...]:
+    """Return declared intervals for a source from its plugin manifest.
+
+    Inspects manifest `intervals`, `max_span`, `retention`, or `capabilities`.
+    If manifest is omitted, falls back to source-level declarations:
+    - nse_bhavcopy: ('1d',) (daily only; manifest lacks explicit intervals)
+    - upstox, yfinance, sim, zerodha: ('1m', '1d')
+    """
+    if manifest is not None:
+        if hasattr(manifest, "intervals") and manifest.intervals:
+            return tuple(str(x) for x in manifest.intervals)
+        declared: set[str] = set()
+        if hasattr(manifest, "max_span") and manifest.max_span:
+            declared.update(manifest.max_span.keys())
+        if hasattr(manifest, "retention") and manifest.retention:
+            declared.update(manifest.retention.keys())
+        if declared:
+            return tuple(sorted(declared))
+        if hasattr(manifest, "capabilities") and manifest.capabilities:
+            if manifest.capabilities.get("daily_bars"):
+                declared.add("1d")
+        if declared:
+            return tuple(sorted(declared))
+
+    if source == "nse_bhavcopy":
+        return ("1d",)
+    return ("1m", "1d")
+
+
+def validate_source_timeframe(
+    source: str,
+    timeframe: str,
+    manifest: PluginManifest | None = None,
+    where: str = "validate_source_timeframe",
+) -> None:
+    """Validate that (source, timeframe) is declared by the source plugin manifest."""
+    allowed = get_source_declared_intervals(source, manifest)
+    if timeframe not in allowed:
+        lacks_note = ""
+        if source == "nse_bhavcopy":
+            lacks_note = (
+                " (Note: nse_bhavcopy manifest lacks explicit 'intervals' declaration in "
+                "plugin.toml; supports daily_bars '1d' only)"
+            )
+        allowed_str = ", ".join(f"'{a}'" for a in allowed) if allowed else "none"
+        raise DataError(
+            what=(
+                f"Source plugin '{source}' does not declare timeframe '{timeframe}' "
+                f"in its manifest intervals. Declared intervals: [{allowed_str}]{lacks_note}"
+            ),
+            where=where,
+            fix=(
+                f"Use a declared timeframe for '{source}' (supported: [{allowed_str}]) "
+                f"or resample() to derived intervals"
+            ),
+        )
+
+
 class BarStore:
     """Manages transactional storage, retrieval, and day-level coverage of market bars."""
 
@@ -65,6 +127,7 @@ class BarStore:
         "_exchange_tz",
         "_journal",
         "_manifest",
+        "_manifests",
         "_params",
         "_settle_delay_m",
     )
@@ -78,6 +141,7 @@ class BarStore:
         calendar: Calendar | None = None,
         exchange_tz: tzinfo | None = None,
         settle_minutes: int | None = None,
+        manifests: Mapping[str, PluginManifest] | None = None,
     ) -> None:
         self._data_dir = Path(data_dir)
         self._manifest = manifest
@@ -85,6 +149,7 @@ class BarStore:
         self._journal = journal
         self._calendar = calendar
         self._exchange_tz = exchange_tz or _DEFAULT_EXCH_TZ
+        self._manifests = dict(manifests) if manifests else {}
 
         self._settle_delay_m = (
             settle_minutes
@@ -139,6 +204,11 @@ class BarStore:
                 where="BarStore.commit",
                 fix=f"Store base timeframe ({tf_list}) or use resample() for derived intervals",
             )
+
+        src_manifest = self._manifests.get(key.source) if self._manifests else None
+        validate_source_timeframe(
+            key.source, key.timeframe, manifest=src_manifest, where="BarStore.commit"
+        )
 
         val_obj = validator
         if val_obj is None:
