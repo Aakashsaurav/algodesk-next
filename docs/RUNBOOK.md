@@ -402,16 +402,22 @@ algodesk run --prepare
 ```
 Doctor check `data.accumulation_lag` warns if historical datasets are lagging behind completed trading sessions by more than `data.accumulate_lag_warn_days` (default 3 days).
 
-### 3. Historical data accumulation
-Fetch missing completed trading sessions (1m and 1d) for the trading universe:
+### 3. Historical data accumulation & coverage reset
+Fetch missing completed trading sessions (1m and 1d) for the trading universe, and reset any stale EMPTY coverage records:
 ```bash
+# Preview stale EMPTY coverage records (e.g. from premature fetches or old date windows)
+algodesk data coverage reset-empty --source yfinance --timeframe 1m --dry-run
+
+# Reset stale EMPTY records to MISSING in manifest and journal
+algodesk data coverage reset-empty --source yfinance --timeframe 1m
+
 # Preview accumulation plan without network calls
 algodesk data accumulate --group demo5 --source upstox --days 5 --dry-run
 
 # Execute accumulation
 algodesk data accumulate --group demo5 --source upstox --days 5
 ```
-Reports rows added, remaining missing days, and unrecoverable days beyond broker retention windows (e.g. 7 days for yfinance 1m). Records `data.accumulate` to the journal.
+Reports rows added per instrument and timeframe, refetched days, remaining missing days, and unrecoverable days beyond broker retention windows (e.g. 7 days for yfinance 1m). If days are planned to fetch but zero rows are added without error, accumulation fails loudly with actionable guidance. Records `data.accumulate` to the journal.
 
 ### 4. Integrity verification, comparison & live smoke test
 Verify store integrity and compare against recorded ticks or secondary sources:

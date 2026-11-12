@@ -11,7 +11,7 @@ from algodesk.api.manifest import PluginManifest
 from algodesk.api.market import CoverageStatus, SeriesKey
 from algodesk.api.protocols import Calendar
 from algodesk.data.closures import has_all_samples_evidence
-from algodesk.data.coverage import CoverageIndex
+from algodesk.data.coverage import CoverageIndex, is_empty_record_final
 from algodesk.data.layout import dataset_id_for_key
 from algodesk.data.manifest import CoverageDayRecord, DataManifest, MarketClosureRecord
 
@@ -243,8 +243,14 @@ class GapPlanner:
                 elif rec.status == CoverageStatus.UNAVAILABLE:
                     unavailable.append(cur)
                 elif rec.status == CoverageStatus.EMPTY and not refresh:
-                    # EMPTY days are final after data.fetch_retries until --refresh
-                    empty.append(cur)
+                    cal = coverage_index.calendar if coverage_index else calendar
+                    settle_m = coverage_index.settle_minutes if coverage_index else 15
+                    if is_empty_record_final(
+                        rec, calendar=cal, settle_minutes=settle_m, manifest=manifest
+                    ):
+                        empty.append(cur)
+                    else:
+                        missing.append(cur)
                 else:
                     missing.append(cur)
             else:

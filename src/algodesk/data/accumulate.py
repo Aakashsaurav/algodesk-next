@@ -19,7 +19,7 @@ from algodesk.api.market import InstrumentId, SeriesKey
 from algodesk.data.groups import get_group, load_groups
 
 
-@dataclass(frozen=True)
+@dataclass
 class AccumulationPlanItem:
     """Planned accumulation task for a single instrument and timeframe."""
 
@@ -29,6 +29,8 @@ class AccumulationPlanItem:
     stored_sessions: list[date]
     fetchable_sessions: list[date]
     lost_sessions: list[date]
+    rows_added: int = 0
+    refetched_days: int = 0
 
 
 @dataclass
@@ -43,7 +45,9 @@ class AccumulationReport:
     rows_added: int = 0
     days_still_missing: int = 0
     days_lost_beyond_window: int = 0
+    days_refetched: int = 0
     dry_run: bool = False
+    instrument_rows: dict[tuple[str, str], int] = field(default_factory=dict)
 
 
 def resolve_completed_sessions(
@@ -65,7 +69,16 @@ def resolve_completed_sessions(
     sessions: list[date] = []
     cutoff = cur - timedelta(days=120)
     while cur >= cutoff and len(sessions) < count:
-        if calendar is None or calendar.is_trading_day(cur):
+        is_trading = False
+        if calendar is not None:
+            try:
+                is_trading = bool(calendar.is_trading_day(cur))
+            except Exception:
+                is_trading = cur.weekday() < 5
+        else:
+            is_trading = cur.weekday() < 5
+
+        if is_trading:
             sessions.append(cur)
         cur -= timedelta(days=1)
 
@@ -109,6 +122,29 @@ def _load_stored_bars_map(data_dir: Path) -> dict[tuple[str, str], set[date]]:
     return stored
 
 
+def _load_coverage_days_map(data_dir: Path) -> dict[tuple[str, str], set[date]]:
+    """Scan manifest database for coverage records by (instrument, timeframe)."""
+    manifest_db = data_dir / "state" / "data_manifest.db"
+    if not manifest_db.exists() and (data_dir / "manifest.db").exists():
+        manifest_db = data_dir / "manifest.db"
+    if not manifest_db.exists():
+        return {}
+
+    from algodesk.data.manifest import DataManifest
+
+    cov_map: dict[tuple[str, str], set[date]] = {}
+    m = DataManifest(manifest_db)
+    try:
+        datasets = {d.dataset_id: d for d in m.list_datasets(kind="bars")}
+        for ds_id, ds in datasets.items():
+            for r in m.get_coverage_days(ds_id):
+                d_val = date.fromisoformat(r.day)
+                cov_map.setdefault((ds.instrument, ds.timeframe), set()).add(d_val)
+    finally:
+        m.close()
+    return cov_map
+
+
 def _resolve_instruments_for_group(group: str, groups_dir: Path) -> list[str]:
     """Resolve members list for group name or raise ConfigError."""
     instruments = get_group(group, groups_dir)
@@ -132,6 +168,7 @@ def _build_plan_item(
     stored: set[date],
     source: str,
     today: date,
+    prior_cov: set[date] | None = None,
 ) -> AccumulationPlanItem:
     """Build single plan item separating stored, fetchable, and lost sessions."""
     stored_list = [d for d in sessions if d in stored]
@@ -140,6 +177,10 @@ def _build_plan_item(
 
     fetchable = [d for d in missing if d >= cutoff]
     lost = [d for d in missing if d < cutoff]
+
+    cov_set = prior_cov or set()
+    refetched_cnt = len([d for d in fetchable if d in cov_set])
+
     return AccumulationPlanItem(
         instrument=inst,
         timeframe=tf,
@@ -147,6 +188,7 @@ def _build_plan_item(
         stored_sessions=stored_list,
         fetchable_sessions=fetchable,
         lost_sessions=lost,
+        refetched_days=refetched_cnt,
     )
 
 
@@ -181,12 +223,18 @@ def plan_accumulation(
     ist_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
     now_ist = now_dt.astimezone(ist_tz) if now_dt else datetime.now(ist_tz)
     stored_map = _load_stored_bars_map(data_dir)
+    cov_map = _load_coverage_days_map(data_dir)
 
     items: list[AccumulationPlanItem] = []
     for inst in instruments:
         for tf in ("1m", "1d"):
             stored = stored_map.get((inst, tf), set())
-            items.append(_build_plan_item(inst, tf, sessions, stored, source, now_ist.date()))
+            prior_cov = cov_map.get((inst, tf), set())
+            items.append(
+                _build_plan_item(
+                    inst, tf, sessions, stored, source, now_ist.date(), prior_cov=prior_cov
+                )
+            )
 
     return instruments, items
 
@@ -262,6 +310,7 @@ def execute_accumulation(
     )
     if dry_run:
         report.days_still_missing = sum(len(it.fetchable_sessions) for it in plan_items)
+        report.days_refetched = sum(it.refetched_days for it in plan_items)
         return report
 
     if data_service is None:
@@ -271,11 +320,47 @@ def execute_accumulation(
             fix="Pass an active DataService or execute via 'algodesk data accumulate'",
         )
 
-    rows_added, missing_after = _run_fetches(plan_items, source, data_service)
+    rows_added, missing_after = 0, 0
+    total_refetched = 0
+    instrument_rows: dict[tuple[str, str], int] = {}
+    for it in plan_items:
+        added, ok = _fetch_item_bars(it, source, data_service)
+        it.rows_added = added
+        instrument_rows[(it.instrument, it.timeframe)] = added
+        rows_added += added
+        if not ok:
+            missing_after += len(it.fetchable_sessions)
+        else:
+            total_refetched += it.refetched_days
+
+    total_fetchable = sum(len(it.fetchable_sessions) for it in plan_items)
+    if total_fetchable > 0 and rows_added == 0 and missing_after == 0:
+        raise DataError(
+            what=(
+                f"Accumulation planned {total_fetchable} session-timeframe(s) to fetch "
+                f"for group '{group}' from '{source}', but zero rows were added with no error"
+            ),
+            where="data.accumulate",
+            fix=(
+                "Check source coverage, verify date window parameters, "
+                "or run 'algodesk data coverage reset-empty' if stale EMPTY records exist"
+            ),
+        )
+
     report.rows_added = rows_added
     report.days_still_missing = missing_after
+    report.days_refetched = total_refetched
+    report.instrument_rows = instrument_rows
     _log_accumulation_event(
-        runtime, group, source, days, rows_added, missing_after, total_lost, instruments
+        runtime,
+        group,
+        source,
+        days,
+        rows_added,
+        missing_after,
+        total_lost,
+        total_refetched,
+        instruments,
     )
     return report
 
@@ -288,6 +373,7 @@ def _log_accumulation_event(
     rows: int,
     missing: int,
     lost: int,
+    refetched: int,
     instruments: list[str],
 ) -> None:
     """Record durable data.accumulate event in journal if available."""
@@ -301,6 +387,7 @@ def _log_accumulation_event(
                 "rows_added": rows,
                 "days_missing": missing,
                 "days_lost": lost,
+                "days_refetched": refetched,
                 "instruments": instruments,
             },
             durable=True,

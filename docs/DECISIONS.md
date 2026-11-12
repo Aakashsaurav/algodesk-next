@@ -187,6 +187,12 @@ Short decision records (context, decision, reason) in the order they were taken.
 5. *Expanded comparison table*: The comparison table adds `BUILT FIRST`, `BUILT LAST`, `SRC FIRST`, `SRC LAST`, `BUILT ONLY`, and `SRC ONLY` formatted in IST alongside close price differences, volume metrics, and tolerance breaches.
 6. *Intraday source chunk boundary handling*: Intraday history requests format session dates in the exchange timezone (`Asia/Kolkata`) and apply exclusive end date offsets (+1 day) so queries accurately capture intraday sessions without falling back to Sunday or prior-day dates.
 
+**ADR-064 Coverage EMPTY finality rules, stale record reset, loud accumulation verification, and NSE special sessions.**
+1. *CoverageStatus.EMPTY finality rules*: Coverage day record marked `EMPTY` is final only when the fetch was executed after session close plus `data.settle_minutes` margin and the response was a successful empty chunk for that exact IST session window. Any EMPTY record recorded prior to session settlement, records with fetch exceptions/crashes, or intraday yfinance records created with the pre-M2-11 date window bug are treated as non-final, reported as `MISSING` by `CoverageIndex.detect_gaps`, and scheduled for refetch by `GapPlanner`.
+2. *Stale EMPTY coverage reset*: `algodesk data coverage reset-empty [--source S] [--timeframe T] [--dry-run]` re-evaluates all existing EMPTY records in the manifest, resets non-final ones to `MISSING`, commits changes, and records "data.coverage.reset_empty" in the runtime journal.
+3. *Loud accumulation verification and reporting*: `algodesk data accumulate` tracks per-instrument, per-timeframe row counts and counts refetched days. If the accumulation plan contains fetchable days but zero rows are added across all datasets without a source exception, accumulation fails loudly with `DataError` pointing operators to source coverage and reset commands.
+4. *Authoritative NSE calendar special sessions*: Added Saturday 2024-01-20 (Disaster Recovery live switch session with two separate trading windows: primary 09:15-10:00 and DR 11:30-12:30) and Sunday 2026-02-01 (Union Budget presentation live trading session 09:15-15:30) to `plugins/calendars/exchange/data/nse.toml` backed by official NSE Bhavcopy archive presence (bhav_20240120.zip and bhav_20260201.zip). Reconciles market closure disagreements to zero.
+
 
 
 

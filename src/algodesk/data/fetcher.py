@@ -6,7 +6,7 @@ import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from algodesk.api.errors import DataError, RateLimitError
@@ -149,16 +149,45 @@ class Fetcher:
                     for d in missing_chunk_days:
                         c_status = CoverageStatus.EMPTY
                         c_note = "Expected session returned no bars from source"
+                        cal = getattr(cov_idx, "calendar", None) if cov_idx else None
+                        try:
+                            settle_m = int(getattr(cov_idx, "settle_minutes", 0))
+                        except (TypeError, ValueError):
+                            settle_m = 0
                         if cov_idx is not None:
                             try:
                                 eval_st = cov_idx.evaluate_day_status(
                                     ds_id, d, has_bars=False, as_of=now_check
                                 )
-                                if eval_st == CoverageStatus.PARTIAL:
-                                    c_status = CoverageStatus.PARTIAL
-                                    c_note = "Current session in progress / incomplete"
+                                if eval_st in (CoverageStatus.PARTIAL, CoverageStatus.CLOSED):
+                                    c_status = eval_st
+                                    c_note = (
+                                        "Current session in progress / incomplete"
+                                        if eval_st == CoverageStatus.PARTIAL
+                                        else "Session closed"
+                                    )
                             except Exception:
                                 pass
+                        # Ensure EMPTY is never assigned before session close + settle margin
+                        if c_status == CoverageStatus.EMPTY:
+                            sess_end = None
+                            if cal is not None:
+                                try:
+                                    s_list = cal.sessions(d)
+                                    if s_list:
+                                        last_s = s_list[-1]
+                                        if hasattr(last_s, "end") and isinstance(
+                                            last_s.end, datetime
+                                        ):
+                                            sess_end = last_s.end.astimezone(UTC)
+                                except Exception:
+                                    pass
+                            if not isinstance(sess_end, datetime):
+                                sess_end = datetime(d.year, d.month, d.day, 10, 0, tzinfo=UTC)
+                            deadline = sess_end + timedelta(minutes=settle_m)
+                            if now_check < deadline:
+                                c_status = CoverageStatus.PARTIAL
+                                c_note = "Current session in progress / incomplete"
                         cov_empty.append(
                             CoverageDayRecord(
                                 dataset_id=ds_id,

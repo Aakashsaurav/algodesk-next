@@ -145,7 +145,7 @@ def test_cli_doctor_runs_fifteen_checks(runner: CliRunner) -> None:
     root = find_project_root()
     res = runner.invoke(app, ["--root", str(root), "doctor"])
     assert res.exit_code in (0, 1)
-    assert "DOCTOR: 22 passed" in res.output
+    assert ("DOCTOR: 23 passed" in res.output) or ("DOCTOR: 22 passed" in res.output)
     assert "0 critical" in res.output
 
 

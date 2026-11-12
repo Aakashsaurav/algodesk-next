@@ -4,7 +4,7 @@
 # 2023: Official NSE circular Download Ref No: NSE/CMTR/54757 (Circular Ref. No: 150/2022) dated 2022-12-08 (Bakri Id shifted to 2023-06-29 per NSE bhavcopy archive evidence)
 # 2024: Official NSE circular Download Ref No: NSE/CMTR/59722 (Circular Ref. No: 154/2023) dated 2023-12-12 + ad-hoc circulars
 # 2025: Official NSE circular Download Ref No: NSE/CMTR/65587 (Circular Ref. No: 170/2024) dated 2024-12-13
-# 2026: Official NSE circular verified by owner on 2026-10-30
+# 2026: Official NSE circular verified by owner on 2026-10-30; special sessions on 2024-01-20 and 2026-02-01 verified via NSE bhavcopy archive evidence on 2026-11-11
 exchange = "nse"
 coverage_start = 2022-01-01
 coverage_end = 2026-12-31
@@ -444,6 +444,18 @@ sessions = [
 ]
 
 [[special]]
+date = 2024-01-20
+name = "Disaster Recovery Live Switch Special Session"
+timings_pending = false
+source = "NSE bhavcopy archive evidence"
+evidence_date = 2024-01-20
+verified_on = 2026-11-11
+sessions = [
+    { name = "primary", open = "09:15", close = "10:00", tradable = true },
+    { name = "dr", open = "11:30", close = "12:30", tradable = true }
+]
+
+[[special]]
 date = 2024-03-02
 name = "Disaster Recovery Live Switch Special Session"
 timings_pending = false
@@ -483,6 +495,17 @@ name = "Diwali-Laxmi Pujan (Muhurat Trading session)"
 timings_pending = false
 sessions = [
     { name = "muhurat", open = "18:00", close = "19:00", tradable = true }
+]
+
+[[special]]
+date = 2026-02-01
+name = "Union Budget Sunday Special Live Trading Session"
+timings_pending = false
+source = "NSE bhavcopy archive evidence"
+evidence_date = 2026-02-01
+verified_on = 2026-11-11
+sessions = [
+    { name = "regular", open = "09:15", close = "15:30", tradable = true }
 ]
 
 [[special]]

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from algodesk.api.market import CoverageStatus, DataGap
 from algodesk.api.protocols import Calendar
 from algodesk.data.closures import has_all_samples_evidence
-from algodesk.data.manifest import DataManifest, MarketClosureRecord
+from algodesk.data.manifest import CoverageDayRecord, DataManifest, MarketClosureRecord
 
 
 class CoverageIndex:
@@ -41,6 +42,16 @@ class CoverageIndex:
     @property
     def last_closure_counts(self) -> dict[str, int]:
         return dict(self._last_closure_counts)
+
+    def is_empty_final(self, rec: CoverageDayRecord, now_dt: datetime | None = None) -> bool:
+        """Check whether an existing EMPTY coverage record is final or stale."""
+        return is_empty_record_final(
+            rec=rec,
+            calendar=self._calendar,
+            settle_minutes=self._settle_delay_m,
+            manifest=self._manifest,
+            now_dt=now_dt,
+        )
 
     def _resolve_exchange(self, dataset_id: str) -> str:
         u = dataset_id.upper()
@@ -182,13 +193,28 @@ class CoverageIndex:
                         )
                     )
                 elif rec.status == CoverageStatus.EMPTY:
-                    gaps.append(
-                        DataGap(
-                            day=cur,
-                            status=CoverageStatus.EMPTY,
-                            reason=rec.note or "Fetched and the source returned nothing",
-                        )
+                    final, reason = evaluate_empty_record(
+                        rec=rec,
+                        calendar=self._calendar,
+                        settle_minutes=self._settle_delay_m,
+                        manifest=self._manifest,
                     )
+                    if final:
+                        gaps.append(
+                            DataGap(
+                                day=cur,
+                                status=CoverageStatus.EMPTY,
+                                reason=rec.note or "Fetched and the source returned nothing",
+                            )
+                        )
+                    else:
+                        gaps.append(
+                            DataGap(
+                                day=cur,
+                                status=CoverageStatus.MISSING,
+                                reason=f"Stale EMPTY record ({reason})",
+                            )
+                        )
                 elif rec.status not in (CoverageStatus.COMPLETE, CoverageStatus.CLOSED):
                     gaps.append(
                         DataGap(
@@ -207,3 +233,179 @@ class CoverageIndex:
         }
 
         return gaps
+
+
+def evaluate_empty_record(
+    rec: CoverageDayRecord,
+    calendar: Calendar | None = None,
+    settle_minutes: int | None = None,
+    manifest: DataManifest | None = None,
+    now_dt: datetime | None = None,
+) -> tuple[bool, str]:
+    """Evaluate whether an EMPTY coverage record is final or stale/invalid.
+
+    EMPTY is final only when:
+    1. The fetch ran after the session ended plus data.settle_minutes.
+    2. The response was a successful empty chunk for that exact IST date window.
+    """
+    if rec.status != CoverageStatus.EMPTY:
+        return True, "Not EMPTY status"
+    if not rec.fetched_at:
+        return False, "Fetch timestamp missing"
+
+    try:
+        fa = datetime.fromisoformat(rec.fetched_at)
+        fa_utc = fa.astimezone(UTC) if fa.tzinfo else fa.replace(tzinfo=UTC)
+    except Exception:
+        return False, f"Invalid fetched_at timestamp: {rec.fetched_at}"
+
+    day_d = date.fromisoformat(rec.day)
+    session_end: datetime | None = None
+    if calendar is not None:
+        try:
+            sess_list = calendar.sessions(day_d)
+            if sess_list:
+                session_end = sess_list[-1].end.astimezone(UTC)
+        except Exception:
+            pass
+
+    if session_end is None:
+        session_end = datetime(day_d.year, day_d.month, day_d.day, 10, 0, tzinfo=UTC)
+
+    settle_delay_m = settle_minutes if settle_minutes is not None else 0
+    settle_deadline = session_end + timedelta(minutes=settle_delay_m)
+    if fa_utc < settle_deadline:
+        return False, f"Fetched before session end + {settle_delay_m}m settle margin"
+
+    note_low = (rec.note or "").lower()
+    if any(
+        w in note_low
+        for w in (
+            "object is not callable",
+            "traceback",
+            "exception",
+            "crash",
+            "typeerror",
+            "attributeerror",
+            "valueerror",
+        )
+    ):
+        return False, f"Fetch error: {rec.note}"
+
+    parts = rec.dataset_id.split(":")
+    if len(parts) >= 3:
+        source = parts[1].lower()
+        tf = parts[2].lower()
+        if source == "yfinance" and tf in ("1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"):
+            cutoff = datetime(2026, 11, 10, 0, 0, tzinfo=UTC)
+            if fa_utc < cutoff:
+                return False, "Old yfinance intraday date window (pre-M2-11)"
+
+    if manifest is not None and hasattr(manifest, "_conn"):
+        try:
+            cur = manifest._conn.execute(
+                "SELECT outcome, error FROM fetch_log WHERE finished = ?", (rec.fetched_at,)
+            )
+            for row in cur.fetchall():
+                if row["outcome"] != "OK" or (row["error"] and row["error"].strip()):
+                    return False, f"Fetch log error: {row['error'] or row['outcome']}"
+        except Exception:
+            pass
+
+    return True, "Final EMPTY chunk"
+
+
+def is_empty_record_final(
+    rec: CoverageDayRecord,
+    calendar: Calendar | None = None,
+    settle_minutes: int | None = None,
+    manifest: DataManifest | None = None,
+    now_dt: datetime | None = None,
+) -> bool:
+    """Return True if the EMPTY record is validly final, False if stale/invalid."""
+    is_final, _ = evaluate_empty_record(
+        rec=rec,
+        calendar=calendar,
+        settle_minutes=settle_minutes,
+        manifest=manifest,
+        now_dt=now_dt,
+    )
+    return is_final
+
+
+def reset_stale_empty_coverage(
+    manifest: DataManifest,
+    calendar: Calendar | None = None,
+    settle_minutes: int | None = None,
+    source: str | None = None,
+    timeframe: str | None = None,
+    dry_run: bool = False,
+    journal: Any = None,
+) -> list[tuple[CoverageDayRecord, str]]:
+    """Re-evaluate existing EMPTY coverage records and reset non-final ones to MISSING."""
+    if not hasattr(manifest, "_conn"):
+        return []
+
+    cur = manifest._conn.execute(
+        "SELECT * FROM coverage_days WHERE status = 'EMPTY' ORDER BY dataset_id, day"
+    )
+    rows = cur.fetchall()
+
+    to_reset: list[tuple[CoverageDayRecord, str]] = []
+    for r in rows:
+        rec = CoverageDayRecord(**dict(r))
+        parts = rec.dataset_id.split(":")
+        r_source = parts[1].lower() if len(parts) >= 2 else ""
+        r_tf = parts[2].lower() if len(parts) >= 3 else ""
+
+        if source and r_source != source.strip().lower():
+            continue
+        if timeframe and r_tf != timeframe.strip().lower():
+            continue
+
+        is_final, reason = evaluate_empty_record(
+            rec=rec,
+            calendar=calendar,
+            settle_minutes=settle_minutes,
+            manifest=manifest,
+        )
+        if not is_final:
+            to_reset.append((rec, reason))
+
+    if not dry_run and to_reset:
+        updated: list[CoverageDayRecord] = [
+            CoverageDayRecord(
+                dataset_id=rec.dataset_id,
+                day=rec.day,
+                status=CoverageStatus.MISSING,
+                rows=0,
+                expected_rows=rec.expected_rows,
+                part_path="",
+                fetched_at=rec.fetched_at,
+                note=f"Reset from stale EMPTY: {reason}",
+            )
+            for rec, reason in to_reset
+        ]
+        manifest.record_coverage_days(updated)
+
+        if journal is not None:
+            journal.append(
+                kind="data.coverage_reset_empty",
+                payload={
+                    "source": source or "all",
+                    "timeframe": timeframe or "all",
+                    "reset_count": len(to_reset),
+                    "records": [
+                        {
+                            "dataset_id": rec.dataset_id,
+                            "day": rec.day,
+                            "reason": reason,
+                            "fetched_at": rec.fetched_at,
+                        }
+                        for rec, reason in to_reset
+                    ],
+                },
+                durable=True,
+            )
+
+    return to_reset

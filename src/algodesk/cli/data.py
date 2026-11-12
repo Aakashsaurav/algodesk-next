@@ -93,6 +93,7 @@ groups_app = typer.Typer(help="Inspect and list configured instrument groups.")
 quarantine_app = typer.Typer(help="Inspect, release, and purge quarantined market data.")
 session_bars_app = typer.Typer(help="Manage ephemeral live session bars.")
 override_app = typer.Typer(help="Manage corporate actions operator overrides.")
+coverage_app = typer.Typer(help="Inspect and manage dataset coverage records.")
 
 data_app.add_typer(actions_app, name="actions")
 actions_app.add_typer(override_app, name="override")
@@ -100,6 +101,7 @@ data_app.add_typer(data_trash_app, name="trash")
 data_app.add_typer(quarantine_app, name="quarantine")
 data_app.add_typer(session_bars_app, name="session-bars")
 data_app.add_typer(closures_app, name="closures")
+data_app.add_typer(coverage_app, name="coverage")
 
 
 def _get_manifest(rt: Runtime) -> DataManifest:
@@ -364,12 +366,26 @@ def data_accumulate(
     from algodesk.data.accumulate import execute_accumulation
 
     with _open_rt(ctx, ensure=False) as rt:
+        cal: Any = None
+        try:
+            sec_prov = _resolve_secrets_provider(rt)
+            p_ctx = build_context(Mode.RESEARCH, run_id="data_accumulate", secrets=sec_prov)
+            cal = rt.plugins.create(
+                PluginKind.CALENDAR,
+                "exchange",
+                config={"exchange": "nse"},
+                ctx=p_ctx,
+            )
+        except Exception:
+            pass
+
         report = execute_accumulation(
             group=group,
             source=source,
             days=days,
             runtime=rt,
             data_service=_build_data_service(rt, source) if not dry_run else None,
+            calendar=cal,
             dry_run=dry_run,
         )
 
@@ -394,12 +410,106 @@ def data_accumulate(
             )
             return
 
+        typer.echo(f"Accumulation complete for group '{group}' ({source}):")
+        headers = ["INSTRUMENT", "TF", "TARGET", "FETCHED", "REFETCHED", "ROWS ADDED", "STATUS"]
+        rows = [
+            [
+                it.instrument,
+                it.timeframe,
+                str(len(it.target_sessions)),
+                str(len(it.fetchable_sessions)),
+                str(it.refetched_days),
+                str(it.rows_added),
+                "OK" if it.rows_added > 0 or not it.fetchable_sessions else "EMPTY",
+            ]
+            for it in report.plan_items
+        ]
+        typer.echo(format_table(headers, rows))
         typer.echo(
-            f"Accumulation complete for group '{group}' ({source}):\n"
+            f"\nSummary:\n"
             f"  - Rows added: {report.rows_added}\n"
+            f"  - Days refetched: {report.days_refetched}\n"
             f"  - Days still missing: {report.days_still_missing}\n"
             f"  - Days lost beyond source window: {report.days_lost_beyond_window}"
         )
+
+
+@coverage_app.command("reset-empty")
+@handle_cli_errors
+def coverage_reset_empty(
+    ctx: typer.Context,
+    source: str | None = typer.Option(
+        None, "--source", "-s", help="Filter by data source (e.g. yfinance, upstox)"
+    ),
+    timeframe: str | None = typer.Option(
+        None, "--timeframe", "-t", help="Filter by timeframe (e.g. 1m, 1d)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Simulate re-evaluation without modifying coverage records"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
+) -> None:
+    """Re-evaluate existing EMPTY coverage records and reset non-final ones to MISSING."""
+    from algodesk.data.coverage import reset_stale_empty_coverage
+
+    with _open_rt(ctx, ensure=False) as rt:
+        manifest = _get_manifest(rt)
+        cal: Any = None
+        try:
+            sec_prov = _resolve_secrets_provider(rt)
+            p_ctx = build_context(Mode.RESEARCH, run_id="reset_empty", secrets=sec_prov)
+            cal = rt.plugins.create(
+                PluginKind.CALENDAR,
+                "exchange",
+                config={"exchange": "nse"},
+                ctx=p_ctx,
+            )
+        except Exception:
+            pass
+
+        settle_delay = 0
+        if rt.params:
+            try:
+                settle_delay = int(rt.params.get("data.settle_minutes"))
+            except Exception:
+                pass
+
+        reset_records = reset_stale_empty_coverage(
+            manifest=manifest,
+            calendar=cal,
+            settle_minutes=settle_delay,
+            source=source,
+            timeframe=timeframe,
+            dry_run=dry_run,
+            journal=getattr(rt, "journal", None),
+        )
+
+        if json_out:
+            out = [
+                {
+                    "dataset_id": rec.dataset_id,
+                    "day": rec.day,
+                    "fetched_at": rec.fetched_at,
+                    "reason": reason,
+                }
+                for rec, reason in reset_records
+            ]
+            typer.echo(json.dumps(out, indent=2))
+            return
+
+        if not reset_records:
+            typer.echo("No stale EMPTY coverage records found.")
+            return
+
+        headers = ["DATASET", "DAY", "FETCHED AT", "REASON"]
+        rows = [
+            [rec.dataset_id, rec.day, rec.fetched_at or "none", reason]
+            for rec, reason in reset_records
+        ]
+        typer.echo(format_table(headers, rows))
+
+        mode_str = "identified for reset (dry run)" if dry_run else "reset to MISSING"
+        typer.echo(f"\nTotal: {len(reset_records)} stale EMPTY record(s) {mode_str}.")
 
 
 @data_app.command("compare")
