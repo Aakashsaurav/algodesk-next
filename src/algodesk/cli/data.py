@@ -351,6 +351,54 @@ def data_list(
         typer.echo(format_table(headers, [_coverage_row(r) for r in rows]))
 
 
+def _print_accumulation_dry_run(report: Any, group: str, source: str, days: int) -> None:
+    """Format and display accumulation dry-run plan."""
+    typer.echo(f"Accumulation Plan: group={group}, source={source}, target_sessions={days}")
+    headers = ["INSTRUMENT", "TF", "TARGET", "STORED", "FETCHABLE", "LOST"]
+    rows = [
+        [
+            it.instrument,
+            it.timeframe,
+            str(len(it.target_sessions)),
+            str(len(it.stored_sessions)),
+            str(len(it.fetchable_sessions)),
+            str(len(it.lost_sessions)),
+        ]
+        for it in report.plan_items
+    ]
+    typer.echo(format_table(headers, rows))
+    typer.echo(
+        f"\nSummary: {report.days_still_missing} session-timeframe(s) to fetch, "
+        f"{report.days_lost_beyond_window} session(s) lost beyond retention window."
+    )
+
+
+def _print_accumulation_result(report: Any, group: str, source: str) -> None:
+    """Format and display accumulation execution outcome."""
+    typer.echo(f"Accumulation complete for group '{group}' ({source}):")
+    headers = ["INSTRUMENT", "TF", "TARGET", "FETCHED", "REFETCHED", "ROWS ADDED", "STATUS"]
+    rows = [
+        [
+            it.instrument,
+            it.timeframe,
+            str(len(it.target_sessions)),
+            str(len(it.fetchable_sessions)),
+            str(it.refetched_days),
+            str(it.rows_added),
+            "OK" if it.rows_added > 0 or not it.fetchable_sessions else "EMPTY",
+        ]
+        for it in report.plan_items
+    ]
+    typer.echo(format_table(headers, rows))
+    typer.echo(
+        f"\nSummary:\n"
+        f"  - Rows added: {report.rows_added}\n"
+        f"  - Days refetched: {report.days_refetched}\n"
+        f"  - Days still missing: {report.days_still_missing}\n"
+        f"  - Days lost beyond source window: {report.days_lost_beyond_window}"
+    )
+
+
 @data_app.command("accumulate")
 @handle_cli_errors
 def data_accumulate(
@@ -389,49 +437,18 @@ def data_accumulate(
             dry_run=dry_run,
         )
 
-        if dry_run:
-            typer.echo(f"Accumulation Plan: group={group}, source={source}, target_sessions={days}")
-            headers = ["INSTRUMENT", "TF", "TARGET", "STORED", "FETCHABLE", "LOST"]
-            rows = [
-                [
-                    it.instrument,
-                    it.timeframe,
-                    str(len(it.target_sessions)),
-                    str(len(it.stored_sessions)),
-                    str(len(it.fetchable_sessions)),
-                    str(len(it.lost_sessions)),
-                ]
-                for it in report.plan_items
-            ]
-            typer.echo(format_table(headers, rows))
-            typer.echo(
-                f"\nSummary: {report.days_still_missing} session-timeframe(s) to fetch, "
-                f"{report.days_lost_beyond_window} session(s) lost beyond retention window."
-            )
+        total_fetchable = sum(len(it.fetchable_sessions) for it in report.plan_items)
+        total_lost = sum(len(it.lost_sessions) for it in report.plan_items)
+
+        if total_fetchable == 0 and total_lost == 0:
+            typer.echo("Up to date: no missing completed sessions")
             return
 
-        typer.echo(f"Accumulation complete for group '{group}' ({source}):")
-        headers = ["INSTRUMENT", "TF", "TARGET", "FETCHED", "REFETCHED", "ROWS ADDED", "STATUS"]
-        rows = [
-            [
-                it.instrument,
-                it.timeframe,
-                str(len(it.target_sessions)),
-                str(len(it.fetchable_sessions)),
-                str(it.refetched_days),
-                str(it.rows_added),
-                "OK" if it.rows_added > 0 or not it.fetchable_sessions else "EMPTY",
-            ]
-            for it in report.plan_items
-        ]
-        typer.echo(format_table(headers, rows))
-        typer.echo(
-            f"\nSummary:\n"
-            f"  - Rows added: {report.rows_added}\n"
-            f"  - Days refetched: {report.days_refetched}\n"
-            f"  - Days still missing: {report.days_still_missing}\n"
-            f"  - Days lost beyond source window: {report.days_lost_beyond_window}"
-        )
+        if dry_run:
+            _print_accumulation_dry_run(report, group, source, days)
+            return
+
+        _print_accumulation_result(report, group, source)
 
 
 @coverage_app.command("reset-empty")
@@ -512,6 +529,64 @@ def coverage_reset_empty(
         typer.echo(f"\nTotal: {len(reset_records)} stale EMPTY record(s) {mode_str}.")
 
 
+def _format_and_print_compare_table(rep: Any, date_val: str, source: str) -> None:
+    """Format and display tick-vs-source bar comparison table with notes."""
+    any_vol_excluded = any(r.first_bar_vol_excluded for r in rep.results)
+    vol_col = "MAX VOL DIFF*" if any_vol_excluded else "MAX VOL DIFF"
+    headers = [
+        "SYMBOL",
+        "BUILT",
+        "SOURCE",
+        "MATCHED",
+        "BUILT FIRST",
+        "BUILT LAST",
+        "SRC FIRST",
+        "SRC LAST",
+        "BUILT ONLY",
+        "SRC ONLY",
+        "MAX CLOSE DIFF",
+        "MEDIAN CLOSE DIFF",
+        "ABOVE TOL",
+        vol_col,
+        "MEDIAN VOL DIFF",
+    ]
+
+    def _fmt_time(ts: datetime | None) -> str:
+        if ts is None:
+            return "-"
+        return ts.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%H:%M")
+
+    rows = [
+        [
+            r.symbol,
+            str(r.built_count),
+            str(r.source_count),
+            str(r.matched_count),
+            _fmt_time(r.built_first_ts),
+            _fmt_time(r.built_last_ts),
+            _fmt_time(r.source_first_ts),
+            _fmt_time(r.source_last_ts),
+            str(r.built_only_count),
+            str(r.source_only_count),
+            f"{r.max_close_diff:.4f}",
+            f"{r.median_close_diff:.4f}",
+            str(r.count_above_tolerance),
+            str(r.max_volume_diff),
+            f"{r.median_volume_diff:.2f}",
+        ]
+        for r in rep.results
+    ]
+    typer.echo(f"Comparison on {date_val} vs source '{source}' (tolerance: {rep.tolerance_pct}%):")
+    typer.echo(format_table(headers, rows))
+    if any_vol_excluded:
+        typer.echo(
+            "* Note: Volume of first bar built from mid-session start is excluded "
+            "from volume difference (carries cumulative day volume)."
+        )
+    for line in getattr(rep, "explanation_lines", []):
+        typer.echo(line)
+
+
 @data_app.command("compare")
 @handle_cli_errors
 def data_compare(
@@ -547,53 +622,7 @@ def data_compare(
             data_service=_build_data_service(rt, source),
             builder_factory=_make_builder,
         )
-        headers = [
-            "SYMBOL",
-            "BUILT",
-            "SOURCE",
-            "MATCHED",
-            "BUILT FIRST",
-            "BUILT LAST",
-            "SRC FIRST",
-            "SRC LAST",
-            "BUILT ONLY",
-            "SRC ONLY",
-            "MAX CLOSE DIFF",
-            "MEDIAN CLOSE DIFF",
-            "ABOVE TOL",
-            "MAX VOL DIFF",
-            "MEDIAN VOL DIFF",
-        ]
-
-        def _fmt_time(ts: datetime | None) -> str:
-            if ts is None:
-                return "-"
-            return ts.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%H:%M")
-
-        rows = [
-            [
-                r.symbol,
-                str(r.built_count),
-                str(r.source_count),
-                str(r.matched_count),
-                _fmt_time(r.built_first_ts),
-                _fmt_time(r.built_last_ts),
-                _fmt_time(r.source_first_ts),
-                _fmt_time(r.source_last_ts),
-                str(r.built_only_count),
-                str(r.source_only_count),
-                f"{r.max_close_diff:.4f}",
-                f"{r.median_close_diff:.4f}",
-                str(r.count_above_tolerance),
-                str(r.max_volume_diff),
-                f"{r.median_volume_diff:.2f}",
-            ]
-            for r in rep.results
-        ]
-        typer.echo(
-            f"Comparison on {date_val} vs source '{source}' (tolerance: {rep.tolerance_pct}%):"
-        )
-        typer.echo(format_table(headers, rows))
+        _format_and_print_compare_table(rep, date_val, source)
 
 
 @data_app.command("import")

@@ -43,6 +43,8 @@ class SymbolCompareResult:
     source_last_ts: datetime | None = None
     built_only_count: int = 0
     source_only_count: int = 0
+    first_bar_vol_excluded: bool = False
+    src_missing_explanation: str | None = None
 
 
 @dataclass
@@ -53,6 +55,7 @@ class CompareReport:
     source: str
     tolerance_pct: float
     results: list[SymbolCompareResult] = field(default_factory=list)
+    explanation_lines: list[str] = field(default_factory=list)
 
 
 def _get_data_dir(runtime: Any) -> Path:
@@ -201,6 +204,7 @@ def _compare_bar_series(
     source_bars: Sequence[Bar],
     tolerance_pct: float,
     symbol: str,
+    mid_session_start: bool | None = None,
 ) -> SymbolCompareResult:
     """Compute difference metrics between matched tick-built and source bars."""
     src_by_ts = {b.start_ts: b for b in source_bars}
@@ -209,8 +213,15 @@ def _compare_bar_series(
     vol_diffs: list[int] = []
     above_tol = 0
 
+    is_mid = mid_session_start
+    if is_mid is None:
+        is_mid = bool(
+            source_bars and built_bars and built_bars[0].start_ts > source_bars[0].start_ts
+        )
+
+    vol_excluded = False
     matched = 0
-    for b in built_bars:
+    for i, b in enumerate(built_bars):
         if s_bar := src_by_ts.get(b.start_ts):
             matched += 1
             c_diff = abs(b.close - s_bar.close)
@@ -218,7 +229,10 @@ def _compare_bar_series(
             pct = (c_diff / s_bar.close * 100) if s_bar.close > 0 else 0.0
             if pct > tolerance_pct:
                 above_tol += 1
-            vol_diffs.append(abs(b.volume - s_bar.volume))
+            if is_mid and i == 0:
+                vol_excluded = True
+            else:
+                vol_diffs.append(abs(b.volume - s_bar.volume))
 
     max_c = max(close_diffs) if close_diffs else 0.0
     med_c = statistics.median(close_diffs) if close_diffs else 0.0
@@ -231,6 +245,13 @@ def _compare_bar_series(
     source_last = source_bars[-1].start_ts if source_bars else None
     built_only = len(set(built_by_ts) - set(src_by_ts))
     source_only = len(set(src_by_ts) - set(built_by_ts))
+
+    src_missing_msg = None
+    if built_only > 0:
+        src_missing_msg = (
+            f"SRC MISSING: {symbol} has {built_only} built bar(s) unmatched because "
+            f"vendor source has no bars at those timestamps"
+        )
 
     return SymbolCompareResult(
         symbol=symbol,
@@ -248,6 +269,8 @@ def _compare_bar_series(
         source_last_ts=source_last,
         built_only_count=built_only,
         source_only_count=source_only,
+        first_bar_vol_excluded=vol_excluded,
+        src_missing_explanation=src_missing_msg,
     )
 
 
@@ -454,5 +477,9 @@ def compare_ticks_with_source(
             where="data.compare",
             fix="Ensure ticks are recorded for the date and source retains 1m data for this date",
         )
+
+    for r in report.results:
+        if r.src_missing_explanation and r.src_missing_explanation not in report.explanation_lines:
+            report.explanation_lines.append(r.src_missing_explanation)
 
     return report

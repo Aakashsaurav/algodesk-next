@@ -207,6 +207,13 @@ Short decision records (context, decision, reason) in the order they were taken.
 4. *Conformance code hashing*: `code_hash` includes all plugin assets (including TOML/JSON data files under `data/`) while continuing to ignore test suites, `__pycache__`, README documentation, and hidden dotfiles, ensuring plugin conformance records invalidate when data or configuration files change.
 5. *Core lines guidance budget*: Raised `budget.core_lines_guidance` to 30,000 lines in `config/params/core.toml` to reflect module expansion across data services, instruments, replay, and analytics while retaining strict complexity and coverage gates.
 
+**ADR-067 Shared GapPlanner accumulation, up-to-date cache exit, source-missing bar explanations, and mid-session volume exclusion.**
+1. *Shared GapPlanner accumulation*: `algodesk data accumulate` uses the exact same `GapPlanner.plan` call as `DataService.get` and `CoverageIndex`, inspecting manifest `coverage_days` records rather than raw partition header timestamps (`first_ts`). Only days that are missing or non-final are scheduled to fetch. Sessions beyond source retention windows are classified as lost, never planned.
+2. *Up-to-date cache exit*: When all requested completed sessions are already stored and complete in the cache (and none lost), `data accumulate` prints "Up to date: no missing completed sessions" and exits 0 without error. When missing days are beyond retention, they are listed as lost in the plan table and accumulation exits 0 without error.
+3. *Verified loud accumulation failure*: Loud `DataError` failure triggers only when chunks were actually fetched (`total_fetchable > 0`), the source answered without network/plugin error, and zero rows were added for days that are not recorded as final EMPTY.
+4. *Source-missing bar explanation in data compare*: When tick-built bars exist for minutes where the vendor source has no bars (`built_only_count > 0`), `data compare` identifies that vendor history dropped those minutes (e.g. 15:20-15:28 IST) and outputs a "SRC MISSING" explanation line, confirming tick reconstruction determinism.
+5. *Mid-session volume difference exclusion*: Broker tick streams provide cumulative day volume. When tick recording starts mid-session, the first built bar receives cumulative day volume since session open, whereas vendor source 1m bars report only incremental 1-minute volume. `data compare` detects mid-session starts (`built_first > source_first`), excludes the first bar's volume difference from `max_volume_diff` and `median_volume_diff`, marks the column `MAX VOL DIFF*`, and prints an explicit footnote.
+
 
 
 
