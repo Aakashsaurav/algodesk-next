@@ -71,6 +71,7 @@ def _print_metrics_details(metrics: dict[str, Any]) -> None:
     cov_pct = float(metrics.get("session_coverage_pct", 0.0))
     win_rate = float(metrics.get("win_rate", 0.0))
     gross_win_rate = float(metrics.get("gross_win_rate", win_rate))
+    closed_rt = int(metrics.get("closed_round_trips", 0))
     feed_delay = float(metrics.get("feed_delay_p95", metrics.get("feed_delay_p95_ms", 0.0)))
     plat_lat = float(
         metrics.get(
@@ -95,6 +96,7 @@ def _print_metrics_details(metrics: dict[str, Any]) -> None:
 
     typer.echo(f"Session Coverage:     {cov_pct:.1f}%")
     typer.echo(f"Win Rate:             {win_rate:.1f}% (Gross: {gross_win_rate:.1f}%)")
+    typer.echo(f"Closed Round Trips:   {closed_rt}")
     typer.echo(f"Feed Gaps:            {int(metrics.get('feed_gaps', 0))}")
     typer.echo(f"Signals:              {int(metrics.get('signals', 0))}")
     typer.echo(f"Orders:               {int(metrics.get('orders', 0))}")
@@ -160,6 +162,38 @@ def session_report_cmd(
         typer.echo(f"Session Report: {target_dir.name}")
         typer.echo("=" * 60)
         typer.echo(f"Verdict:              {verdict}")
+        open_pos = metrics.get("open_positions", [])
+        if not open_pos and (target_dir / "trades.csv").is_file():
+            try:
+                import csv
+
+                with open(target_dir / "trades.csv", newline="", encoding="utf-8") as tf:
+                    t_rows = list(csv.DictReader(tf))
+                net_pos: dict[str, int] = {}
+                for tr in t_rows:
+                    i_key = tr.get("instrument", "")
+                    if not i_key:
+                        continue
+                    q = int(tr.get("qty", 0))
+                    s = str(tr.get("side", "")).upper()
+                    net_pos[i_key] = net_pos.get(i_key, 0) + (q if s == "BUY" else -q)
+                open_pos = [
+                    {"instrument": k, "product": "MIS", "qty": v}
+                    for k, v in net_pos.items()
+                    if v != 0
+                ]
+            except Exception:
+                pass
+
+        verdict_note = None
+        for line in session_text.splitlines():
+            if line.startswith("Verdict Note:"):
+                verdict_note = line.replace("Verdict Note:", "").strip()
+        if not verdict_note and open_pos:
+            verdict_note = f"Unresolved open positions at stop ({len(open_pos)})"
+        if verdict_note:
+            typer.echo(f"Verdict Note:         {verdict_note}")
+
         stop_reason = metrics.get("stop_reason")
         if not stop_reason:
             for line in session_text.splitlines():
@@ -191,8 +225,8 @@ def session_report_cmd(
         ticks_per_inst = metrics.get("ticks_per_instrument", {})
         if ticks_per_inst:
             typer.echo("\nTicks per Instrument:")
-            t_rows = [[k, str(v)] for k, v in ticks_per_inst.items()]
-            typer.echo(format_table(["INSTRUMENT", "TICKS"], t_rows))
+            tick_rows = [[k, str(v)] for k, v in ticks_per_inst.items()]
+            typer.echo(format_table(["INSTRUMENT", "TICKS"], tick_rows))
         else:
             typer.echo("Ticks per Instrument: None")
 
@@ -203,3 +237,12 @@ def session_report_cmd(
             typer.echo(format_table(["TIMEFRAME", "BARS"], b_rows))
         else:
             typer.echo("Bars per Timeframe:   None")
+
+        if open_pos:
+            typer.echo("\nOpen at stop:")
+            pos_table = [
+                [p["instrument"], str(p.get("product", "MIS")), str(p["qty"])] for p in open_pos
+            ]
+            typer.echo(format_table(["INSTRUMENT", "PRODUCT", "QTY"], pos_table))
+        else:
+            typer.echo("\nOpen at stop:         None")

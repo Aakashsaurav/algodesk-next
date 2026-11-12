@@ -217,6 +217,22 @@ To run quietly without periodic console status lines:
 algodesk run demo_paper --quiet
 ```
 
+#### Session day operations checklist
+On live paper session days:
+1. **Start before 09:10 IST**:
+   Ensure the laptop is plugged into AC power. Launch the session with `caffeinate` to prevent macOS system sleep:
+   ```bash
+   caffeinate -i uv run algodesk run demo_paper_fast
+   ```
+2. **Do not Ctrl-C**:
+   Allow the session to run autonomously until scheduled session stop (approx 15:35 IST). Scheduled shutdown ensures all recorded market events, quotes, and scheduler events align deterministically for exact replay.
+3. **Open-at-stop check**:
+   After the session concludes, inspect the session report:
+   ```bash
+   uv run algodesk session report <run_id>
+   ```
+   Check the "Open at stop" section. Any unresolved position is explicitly itemized with symbol, quantity, and product. No automatic orders are added at stop; verify that intraday positions squared off as expected before market close.
+
 #### Ending a session cleanly (Market close, run.stop_time, or Ctrl-C)
 Paper sessions end themselves automatically at market close or can be stopped on operator demand:
 1. **Market close automatic shutdown**:

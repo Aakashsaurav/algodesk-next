@@ -24,6 +24,7 @@ from ..plugin import BuiltinRiskRulesPlugin
 from ..rules import (
     CashAvailableRule,
     DailyLossLimitRule,
+    DuplicateEntryGuardRule,
     MaxDailyTradesRule,
     MaxGrossExposureRule,
     MaxOpenPositionsRule,
@@ -57,17 +58,22 @@ class DummyView:
         self.daily_pnl = daily_pnl
         self.orders_last_minute = orders_last_minute
         self.daily_trades_count = daily_trades_count
-        self.params = params or {
-            "risk.conservative.margin_buffer_pct": 25.0,
-            "risk.conservative.max_order_value_pct": 25.0,
-            "risk.conservative.max_position_pct": 20.0,
-            "risk.conservative.max_open_positions": 5,
-            "risk.conservative.max_gross_exposure_pct": 100.0,
-            "risk.conservative.price_deviation_pct": 2.0,
-            "risk.conservative.max_orders_per_minute": 20,
-            "risk.conservative.max_daily_trades": 20,
-            "risk.conservative.daily_loss_limit_pct": 1.5,
-        }
+        self.params = (
+            params
+            if params is not None
+            else {
+                "risk.conservative.margin_buffer_pct": 25.0,
+                "risk.conservative.max_order_value_pct": 25.0,
+                "risk.conservative.max_position_pct": 20.0,
+                "risk.conservative.max_open_positions": 5,
+                "risk.conservative.max_gross_exposure_pct": 100.0,
+                "risk.conservative.price_deviation_pct": 2.0,
+                "risk.conservative.max_orders_per_minute": 20,
+                "risk.conservative.max_daily_trades": 20,
+                "risk.conservative.daily_loss_limit_pct": 1.5,
+                "risk.conservative.prevent_duplicate_entry": True,
+            }
+        )
         self._ltp = ltp
 
     def quote_for(self, instrument: Any) -> Quote:
@@ -256,3 +262,51 @@ def test_builtin_risk_rules_plugin_conformance_and_composite() -> None:
     dec = plugin.check(make_intent(qty=5), view)
     assert dec.allow is True
     assert len(dec.values) > 5
+
+
+def test_duplicate_entry_guard_rule_missing_param_fails_closed() -> None:
+    rule = DuplicateEntryGuardRule()
+    # No prevent_duplicate_entry in params
+    view = DummyView(params={})
+    dec = rule.check(make_intent(), view)
+    assert dec.allow is False
+    assert "Missing prevent_duplicate_entry parameter" in dec.reason
+
+
+def test_duplicate_entry_guard_blocks_when_position_open() -> None:
+    rule = DuplicateEntryGuardRule()
+    inst = InstrumentId("NSE:EQ:INFY")
+    pos = Position(instrument=inst, product=Product.CNC, qty=5, avg_price=Decimal("100.0"))
+    view = DummyView(positions={"NSE:EQ:INFY": pos})
+
+    # BUY intent when already long 5 -> blocked
+    dec = rule.check(make_intent(qty=1, side=Side.BUY), view)
+    assert dec.allow is False
+    assert "Position already open" in dec.reason
+
+    # SELL intent (reducing/closing) -> allowed
+    dec_sell = rule.check(make_intent(qty=5, side=Side.SELL), view)
+    assert dec_sell.allow is True
+
+
+def test_duplicate_entry_guard_blocks_when_order_pending() -> None:
+    from algodesk.api import Order, OrderState
+
+    rule = DuplicateEntryGuardRule()
+    inst = InstrumentId("NSE:EQ:INFY")
+    spec = OrderSpec(
+        instrument=inst, side=Side.BUY, qty=1, type=OrderType.MARKET, tag="strat_entry"
+    )
+    open_ord = Order(
+        client_ref="ref-1",
+        spec=spec,
+        state=OrderState.ACKNOWLEDGED,
+        created_ts=datetime(2026, 10, 27, 9, 30, tzinfo=UTC),
+    )
+    view = DummyView()
+    view.open_orders = (open_ord,)  # type: ignore[attr-defined]
+
+    # Another BUY intent for same instrument and strategy -> blocked
+    dec = rule.check(make_intent(qty=1, side=Side.BUY), view)
+    assert dec.allow is False
+    assert "Entry order already pending" in dec.reason

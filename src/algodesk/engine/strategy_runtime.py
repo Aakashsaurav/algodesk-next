@@ -32,7 +32,7 @@ class StrategyRuntime:
         registry: Any | None = None,
         order_manager: Any | None = None,
         risk_engine: Any | None = None,
-        risk_view_builder: Callable[[], Any] | None = None,
+        risk_view_builder: Callable[..., Any] | None = None,
         journal: JournalWriter | Any | None = None,
         clock: Clock | Any | None = None,
         bus: Any | None = None,
@@ -219,7 +219,10 @@ class StrategyRuntime:
             # 2. Risk evaluation
             decision = None
             if self._risk_engine is not None and self._risk_view_builder is not None:
-                view = self._risk_view_builder()
+                try:
+                    view = self._risk_view_builder(strategy=name)
+                except TypeError:
+                    view = self._risk_view_builder()
                 decision = self._risk_engine.evaluate(intent, view)
 
             if decision is not None and not decision.allow:

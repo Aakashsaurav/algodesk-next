@@ -10,6 +10,7 @@ from algodesk.api import Intent, PluginBase, PluginManifest, RiskDecision
 from .rules import (
     CashAvailableRule,
     DailyLossLimitRule,
+    DuplicateEntryGuardRule,
     MaxDailyTradesRule,
     MaxGrossExposureRule,
     MaxOpenPositionsRule,
@@ -40,6 +41,7 @@ class BuiltinRiskRulesPlugin(PluginBase):
             MaxOrdersPerMinuteRule(),
             MaxDailyTradesRule(),
             DailyLossLimitRule(),
+            DuplicateEntryGuardRule(),
         ]
 
     def check(self, intent: Intent, view: Any) -> RiskDecision:
@@ -75,6 +77,7 @@ __all__ = [
     "BuiltinRiskRulesPlugin",
     "CashAvailableRule",
     "DailyLossLimitRule",
+    "DuplicateEntryGuardRule",
     "MaxDailyTradesRule",
     "MaxGrossExposureRule",
     "MaxOpenPositionsRule",

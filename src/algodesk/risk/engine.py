@@ -19,6 +19,7 @@ ENTRY_ONLY_RULES = {
     "daily_loss",
     "max_open_positions",
     "entry_window",
+    "duplicate_entry_guard",
 }
 
 

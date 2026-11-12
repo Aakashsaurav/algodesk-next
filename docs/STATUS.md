@@ -20,6 +20,7 @@ Milestones M0, M1, and M2 are complete. AlgoDesk Next provides a pluggable tradi
 - Two live paper sessions with replay and results compare.
 - Fee vectors verified by hand.
 - Measured numbers: tick-to-intent p95, memory, recorder rows/bytes, journal growth.
+- M1-15: Duplicate-entry prevention guard (`prevent_duplicate_entry`), square-off exit time entry restriction, unresolved open-at-stop reporting, unified net-of-charges win rate definition, and Quote-aware exact replay equivalence.
 
 ## M2 acceptance checklist
 

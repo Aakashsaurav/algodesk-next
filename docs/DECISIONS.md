@@ -193,6 +193,14 @@ Short decision records (context, decision, reason) in the order they were taken.
 3. *Loud accumulation verification and reporting*: `algodesk data accumulate` tracks per-instrument, per-timeframe row counts and counts refetched days. If the accumulation plan contains fetchable days but zero rows are added across all datasets without a source exception, accumulation fails loudly with `DataError` pointing operators to source coverage and reset commands.
 4. *Authoritative NSE calendar special sessions*: Added Saturday 2024-01-20 (Disaster Recovery live switch session with two separate trading windows: primary 09:15-10:00 and DR 11:30-12:30) and Sunday 2026-02-01 (Union Budget presentation live trading session 09:15-15:30) to `plugins/calendars/exchange/data/nse.toml` backed by official NSE Bhavcopy archive presence (bhav_20240120.zip and bhav_20260201.zip). Reconciles market closure disagreements to zero.
 
+**ADR-065 Duplicate-entry guard, square-off entry prohibition, open-at-stop reporting, and Quote-aware exact replay.**
+1. *Duplicate-entry guard*: Added `DuplicateEntryGuardRule` to conservative risk rules (`risk.conservative.prevent_duplicate_entry = true`). Evaluates on new entry intents, rejecting fail-closed if the strategy has an active order pending in OMS or an open position in that instrument.
+2. *Square-off entry prohibition*: `sma_cross` disallows new entry intents at or after configured `exit_time` (IST), preventing unwanted positions right before close.
+3. *Open positions reporting*: Session stop captures open ledger positions into `metrics.json` (`open_positions`), `SUMMARY.md`, and `session report`, logging a warning with no automatic squaring-off orders injected.
+4. *Unified net-of-charges win rate*: Standardized `win_rate` formula across `metrics.json` and session reports to evaluate closed round trips net of transaction charges.
+5. *Quote-aware replay determinism*: Runner drains recorded events on both `Tick` and `Quote` events, and tracks market event timestamps across both ticks and quotes so replay windows cover quotes at close.
+
+
 
 
 

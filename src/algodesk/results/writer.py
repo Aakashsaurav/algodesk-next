@@ -87,15 +87,25 @@ class ResultsWriter:
         verdict = summary_info.get("verdict", "PASS")
         fail_reason = summary_info.get("fail_reason")
         fail_clause = f"Reason: {fail_reason}. " if fail_reason else ""
+        closed_rt = int(metrics.get("closed_round_trips", 0))
+        open_positions = metrics.get("open_positions", [])
+
+        open_clause = ""
+        open_note = ""
+        if open_positions:
+            pos_summary = ", ".join(f"{p['instrument']} (qty={p['qty']})" for p in open_positions)
+            open_note = f"Unresolved open positions at stop: {pos_summary}. "
+            open_clause = f"Open at stop: {pos_summary}. "
 
         content = (
             f"# Run Summary: {self.run_id}\n\n"
             "## Summary\n"
             f"AlgoDesk Next {mode} session '{run_name}' executed on {date_str} IST. {start_clause}"
             f"Net P&L: ₹{net_pnl:.2f} (Gross: ₹{gross_pnl:.2f}, Charges: ₹{charges:.2f}) "
-            f"across {trade_count} trades with {win_rate:.1f}% win rate and max DD of "
-            f"{max_dd:.2f}%. Verdict: {verdict}. {fail_clause}"
-            "Note: Simulated paper fills assume zero impact.\n"
+            f"across {closed_rt} closed round trips ({trade_count} trades) with "
+            f"{win_rate:.1f}% win rate and max DD of "
+            f"{max_dd:.2f}%. Verdict: {verdict}. {fail_clause}{open_clause}"
+            f"Note: {open_note}Simulated paper fills assume zero impact.\n"
         )
         self._write_text_file("SUMMARY.md", content)
 
@@ -107,6 +117,9 @@ class ResultsWriter:
             "charges": 0.0,
             "trades": 0,
             "win_rate": 0.0,
+            "gross_win_rate": 0.0,
+            "closed_round_trips": 0,
+            "open_positions": [],
             "max_drawdown": 0.0,
             "exposure_time": 0.0,
             # pyrefly: ignore[implicit-any-empty-container]

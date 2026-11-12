@@ -167,3 +167,13 @@ scope = "profile"
 tighten = "down"
 description = "Maximum duration in seconds a multi-leg order group may stay unhedged"
 owner = "core"
+
+[[param]]
+name = "risk.conservative.prevent_duplicate_entry"
+type = "bool"
+default = true
+scope = "profile"
+tighten = "up"
+description = "Reject new entry intents when an entry order is pending or position exists for instrument and strategy"
+owner = "core"
+

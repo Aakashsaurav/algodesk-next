@@ -30,6 +30,7 @@ class RiskViewContext:
     daily_trades_count: int = 0
     profile: str = "conservative"
     allocated_capital: Decimal = Decimal("100000.00")
+    strategy: str = ""
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     def quote_for(self, instrument: InstrumentId | str) -> Quote | None:

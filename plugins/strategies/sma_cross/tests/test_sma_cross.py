@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -49,7 +49,7 @@ def test_sma_cross_signals_and_timers() -> None:
 
     # Mock context
     clock = MagicMock()
-    now_dt = datetime(2026, 10, 26, 10, 0, tzinfo=UTC)
+    now_dt = datetime(2026, 10, 26, 9, 30, tzinfo=UTC)  # 15:00 IST
     clock.now.return_value = now_dt
 
     indicator_vals: dict[tuple[str, int], float] = {
@@ -153,3 +153,74 @@ def test_sma_cross_signals_and_timers() -> None:
     timer_intents = strat.on_timer(ctx, "exit_time")
     assert len(timer_intents) == 1
     assert timer_intents[0].spec.side == Side.SELL
+
+
+def test_sma_cross_no_new_entry_at_or_after_exit_time() -> None:
+    """Strategy must emit no new entry intents at or after exit_time."""
+    manifest = _make_manifest()
+    strat = SMACrossStrategy(
+        manifest=manifest,
+        config={
+            "instruments": ["NSE:EQ:INFY"],
+            "fast": 3,
+            "slow": 8,
+            "qty": 1,
+            "exit_time": "15:15",
+            "product": "MIS",
+        },
+    )
+    inst = InstrumentId("NSE:EQ:INFY")
+
+    clock = MagicMock()
+    # 09:45 UTC is 15:15 IST (at exit_time)
+    t_exit = datetime(2026, 11, 11, 9, 45, tzinfo=UTC)
+    clock.now.return_value = t_exit
+
+    ctx = StrategyContext(
+        clock=clock,
+        instruments={inst: MagicMock()},
+        indicator=lambda name, instrument, tf, **kw: 105.0 if kw.get("period") == 3 else 100.0,
+        position=lambda i: None,
+    )
+    strat.on_start(ctx)
+
+    # Initialize previous values with fast <= slow
+    strat._prev_fast[inst] = 99.0
+    strat._prev_slow[inst] = 101.0
+
+    b_at_exit = Bar(
+        instrument=inst,
+        timeframe="1m",
+        start_ts=t_exit - timedelta(minutes=1),
+        end_ts=t_exit,
+        open=100.0,
+        high=106.0,
+        low=100.0,
+        close=105.0,
+        volume=1000,
+        complete=True,
+        synthetic=False,
+    )
+
+    # Cross occurs at 15:15 IST -> blocked
+    intents = strat.on_bar(ctx, b_at_exit)
+    assert len(intents) == 0
+
+    # Cross occurs after exit_time (15:20 IST) -> blocked
+    t_after = datetime(2026, 11, 11, 9, 50, tzinfo=UTC)
+    clock.now.return_value = t_after
+    b_after = Bar(
+        instrument=inst,
+        timeframe="1m",
+        start_ts=t_after - timedelta(minutes=1),
+        end_ts=t_after,
+        open=100.0,
+        high=106.0,
+        low=100.0,
+        close=105.0,
+        volume=1000,
+        complete=True,
+        synthetic=False,
+    )
+    intents_after = strat.on_bar(ctx, b_after)
+    assert len(intents_after) == 0

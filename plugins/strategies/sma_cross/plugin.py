@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import time as dt_time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from algodesk.api import (
     CheckResult,
@@ -134,6 +136,20 @@ class SMACrossStrategy(PluginBase):
 
         # 3. Entry check: Fast crosses above slow (long-only, no current position)
         if prev_fast <= prev_slow and fast_val > slow_val and current_qty == 0:
+            if self._cfg.exit_time:
+                try:
+                    eh, em = map(int, self._cfg.exit_time.split(":"))
+                    ist_zone = ZoneInfo("Asia/Kolkata")
+                    bar_dt = bar.end_ts
+                    if ctx.clock is not None:
+                        now_c = ctx.clock.now()
+                        if now_c is not None:
+                            bar_dt = now_c
+                    ist_dt = bar_dt.astimezone(ist_zone)
+                    if ist_dt.time() >= dt_time(hour=eh, minute=em):
+                        return ()
+                except Exception:
+                    pass
             self._entry_prices[bar.instrument] = bar.close
             return (
                 self._make_order_intent(

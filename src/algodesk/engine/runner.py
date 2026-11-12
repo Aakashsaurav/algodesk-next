@@ -916,10 +916,19 @@ class SessionRunner:
         ind_mgr = IndicatorManager(indicator_plugin=ind_plugin, journal=journal)
         buf = BarBuffer()
 
-        def _risk_view_builder() -> RiskViewContext:
+        def _risk_view_builder(strategy: str = "") -> RiskViewContext:
             assert self.run_config is not None
+            active_states = (
+                OrderState.CREATED,
+                OrderState.SUBMITTED,
+                OrderState.ACKNOWLEDGED,
+                OrderState.PARTIALLY_FILLED,
+                OrderState.CANCEL_REQUESTED,
+                OrderState.UNKNOWN,
+                OrderState.RECONCILING,
+            )
             open_ords = [
-                o for o in oms.orders.values() if o.state in ("pending", "submitted", "open")
+                o for o in oms.orders.values() if getattr(o, "state", None) in active_states
             ]
             current_positions = {f"{k[0]}:{k[1].value}": pos for k, pos in ledger.positions.items()}
             return RiskViewContext(
@@ -932,6 +941,7 @@ class SessionRunner:
                 clock=clock,
                 instruments=instruments,
                 allocated_capital=Decimal(str(self.run_config.allocated_capital)),
+                strategy=strategy,
             )
 
         strat_rt = StrategyRuntime(
@@ -1331,6 +1341,15 @@ class SessionRunner:
 
             # 2. Market event handling
             if isinstance(ev, Quote):
+                if self._first_tick_ts is None:
+                    self._first_tick_ts = ev.exch_ts
+                self._last_tick_ts = ev.exch_ts
+                if self._first_tick_recv_ts is None:
+                    self._first_tick_recv_ts = ev.recv_ts
+                self._last_tick_recv_ts = ev.recv_ts
+                self._latest_tick_ts[ev.instrument] = ev.exch_ts
+                self._latest_tick_mono[ev.instrument] = time.monotonic()
+                self._latest_tick_recv_time[ev.instrument] = clock.now()
                 c["venue"].on_quote(ev)
                 self._latest_quotes[ev.instrument] = ev
                 if getattr(ev, "exch_ts", None) and getattr(ev, "recv_ts", None):
@@ -2119,9 +2138,34 @@ class SessionRunner:
 
         # 2. Cancel open orders
         if oms is not None:
+            active_cancel_states = (
+                OrderState.CREATED,
+                OrderState.SUBMITTED,
+                OrderState.ACKNOWLEDGED,
+                OrderState.PARTIALLY_FILLED,
+                OrderState.UNKNOWN,
+                OrderState.RECONCILING,
+            )
             for ref, ord_obj in list(oms.orders.items()):
-                if hasattr(ord_obj, "state") and ord_obj.state in ("pending", "submitted", "open"):
+                if hasattr(ord_obj, "state") and ord_obj.state in active_cancel_states:
                     asyncio.create_task(oms.cancel(ref))
+
+        # Capture open positions at stop (no automatic orders added)
+        open_positions: list[dict[str, Any]] = []
+        if ledger is not None:
+            for pos in ledger.positions.values():
+                if pos.qty != 0:
+                    prod_val = (
+                        pos.product.value if hasattr(pos.product, "value") else str(pos.product)
+                    )
+                    open_positions.append(
+                        {
+                            "instrument": str(pos.instrument),
+                            "product": prod_val,
+                            "qty": pos.qty,
+                            "avg_price": float(pos.avg_price),
+                        }
+                    )
 
         # 3. Final marks and equity point
         if ledger is not None:
@@ -2411,6 +2455,10 @@ class SessionRunner:
             "win_rate": round(win_rate, 2),
             "gross_win_rate": round(gross_win_rate, 2),
             "closed_round_trips": rt_metrics["round_trips"],
+            "winning_round_trips": rt_metrics["winning_round_trips"],
+            "gross_winning_round_trips": rt_metrics["gross_winning_round_trips"],
+            "open_positions": open_positions,
+            "has_open_positions": len(open_positions) > 0,
             "max_drawdown": max_dd,
             "exposure_time": 0.0,
             "rejects_by_rule": self._rejects_by_rule,
@@ -2519,6 +2567,11 @@ class SessionRunner:
         )
         if is_partial:
             session_md_text += "Run Type: partial (started after session open)\n"
+        if open_positions:
+            pos_summary = ", ".join(f"{p['instrument']}:{p['qty']}" for p in open_positions)
+            session_md_text += f"Open at stop: {pos_summary}\n"
+            n_open = len(open_positions)
+            session_md_text += f"Verdict Note: Unresolved open positions at stop ({n_open})\n"
         if fail_reason_str:
             session_md_text += f"\nError: {fail_reason_str}\n"
 

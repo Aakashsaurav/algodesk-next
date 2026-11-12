@@ -8,7 +8,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from algodesk.api import Intent, OrderType, PlaceOrder, RiskDecision, Side
+from algodesk.api import Intent, OrderState, OrderType, PlaceOrder, RiskDecision, Side
 
 
 def _get_float_param(view: Any, name: str) -> float | None:
@@ -34,6 +34,28 @@ def _get_int_param(view: Any, name: str) -> int | None:
             pval = params.get(param_key)
             if pval is not None:
                 return int(getattr(pval, "value", pval))
+        except Exception:
+            return None
+    return None
+
+
+def _get_bool_param(view: Any, name: str) -> bool | None:
+    profile = getattr(view, "profile", "conservative")
+    param_key = f"risk.{profile}.{name}"
+    params = getattr(view, "params", None)
+    if params is not None and hasattr(params, "get"):
+        try:
+            pval = params.get(param_key)
+            if pval is None and profile != "conservative":
+                pval = params.get(f"risk.conservative.{name}")
+            if pval is not None:
+                val = getattr(pval, "value", pval)
+                if isinstance(val, bool):
+                    return val
+                if isinstance(val, str):
+                    return val.lower() in ("true", "1", "yes")
+                if isinstance(val, (int, float)):
+                    return bool(val)
         except Exception:
             return None
     return None
@@ -461,4 +483,101 @@ class DailyLossLimitRule:
 
         return RiskDecision(
             allow=True, rule=self.name, reason="Daily loss within limit", values=vals
+        )
+
+
+def _clean_strat(s: str) -> str:
+    if not s:
+        return ""
+    for suffix in ("_entry", "_exit", "_timer_exit", "_stop_loss"):
+        if s.endswith(suffix):
+            return s[: -len(suffix)]
+    return s.split("_")[0]
+
+
+class DuplicateEntryGuardRule:
+    """Blocks duplicate entry intents for the same instrument and strategy."""
+
+    name = "duplicate_entry_guard"
+
+    def check(self, intent: Intent, view: Any) -> RiskDecision:
+        if not isinstance(intent, PlaceOrder):
+            return RiskDecision(allow=True, rule=self.name, reason="Not a placement", values={})
+
+        prevent = _get_bool_param(view, "prevent_duplicate_entry")
+        if prevent is None:
+            prevent = _get_bool_param(view, "duplicate_entry_guard")
+        if prevent is None:
+            return RiskDecision(
+                allow=False,
+                rule=self.name,
+                reason="Missing prevent_duplicate_entry parameter",
+                values={"param": "risk.<profile>.prevent_duplicate_entry"},
+            )
+        if not prevent:
+            return RiskDecision(
+                allow=True, rule=self.name, reason="Duplicate guard disabled", values={}
+            )
+
+        spec = intent.spec
+        inst_str = str(spec.instrument)
+        side = spec.side
+
+        # 1. Existing position check
+        positions = getattr(view, "positions", {})
+        pos_list = list(positions.values()) if hasattr(positions, "values") else list(positions)
+        for p in pos_list:
+            if str(getattr(p, "instrument", "")) == inst_str and getattr(p, "qty", 0) != 0:
+                if (p.qty > 0 and side == Side.SELL) or (p.qty < 0 and side == Side.BUY):
+                    return RiskDecision(
+                        allow=True,
+                        rule=self.name,
+                        reason="Reducing intent",
+                        values={"instrument": inst_str},
+                    )
+                return RiskDecision(
+                    allow=False,
+                    rule=self.name,
+                    reason=f"Position already open ({p.qty}) for {inst_str}",
+                    values={"instrument": inst_str, "position_qty": p.qty},
+                )
+
+        # 2. Pending entry order check
+        strat = getattr(view, "strategy", "") or _clean_strat(spec.tag)
+        active_states = (
+            OrderState.CREATED,
+            OrderState.SUBMITTED,
+            OrderState.ACKNOWLEDGED,
+            OrderState.PARTIALLY_FILLED,
+            OrderState.CANCEL_REQUESTED,
+            OrderState.UNKNOWN,
+            OrderState.RECONCILING,
+        )
+        for o in getattr(view, "open_orders", ()):
+            o_spec = getattr(o, "spec", None)
+            if (
+                o_spec
+                and str(o_spec.instrument) == inst_str
+                and getattr(o, "state", None) in active_states
+            ):
+                if o_spec.side == side:
+                    o_strat = getattr(o, "strategy", "") or _clean_strat(o_spec.tag)
+                    strat_match = (
+                        not strat
+                        or not o_strat
+                        or strat == o_strat
+                        or strat in o_strat
+                        or o_strat in strat
+                    )
+                    if strat_match:
+                        ref = getattr(o, "client_ref", "unknown")
+                        return RiskDecision(
+                            allow=False,
+                            rule=self.name,
+                            reason=f"Entry order already pending ({ref}) for {inst_str}",
+                            values={"instrument": inst_str, "pending_client_ref": ref},
+                        )
+
+        return RiskDecision(
+            allow=True, rule=self.name, reason="No duplicate entry", values={"instrument": inst_str}
         )
