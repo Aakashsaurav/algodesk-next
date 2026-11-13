@@ -63,6 +63,7 @@ class IndicatorSpec:
     params_schema: Mapping[str, Any] = field(default_factory=dict)
     outputs: tuple[str, ...] = ("value",)
     warmup: int = 0
+    timeframes: tuple[str, ...] | None = None
 
 
 @runtime_checkable
@@ -205,11 +206,13 @@ class Indicator(Protocol):
 
     spec: IndicatorSpec
 
-    def compute(self, values: Sequence[float]) -> Sequence[float | None]: ...
+    def compute(
+        self, values: Sequence[Any] | Mapping[str, Sequence[Any]]
+    ) -> Sequence[float | None] | Mapping[str, Sequence[float | None]]: ...
 
     def new_state(self) -> object: ...
 
-    def update(self, state: object, value: float) -> float | None: ...
+    def update(self, state: object, value: Any) -> float | Mapping[str, float | None] | None: ...
 
 
 @runtime_checkable

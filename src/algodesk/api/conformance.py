@@ -6,8 +6,11 @@ No test runner or pytest imports. Returns a list of problem strings.
 from __future__ import annotations
 
 import inspect
+import math
+import tomllib
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from algodesk.api.errors import CalendarCoverageError, ConfigError
@@ -55,67 +58,240 @@ def venue_problems(obj: Any) -> list[str]:
     return problems
 
 
-def indicator_problems(obj: Any, golden: Mapping[str, Any] | None = None) -> list[str]:
-    """Verify Indicator protocol conformance and batch/incremental equality."""
+def _is_none_or_nan(val: Any) -> bool:
+    if val is None:
+        return True
+    if isinstance(val, float) and math.isnan(val):
+        return True
+    if isinstance(val, str) and val.lower() in ("none", "null", "nan"):
+        return True
+    return False
+
+
+def _check_series_equality(
+    computed: Sequence[float | None],
+    reference: Sequence[float | None],
+    name: str,
+    kind: str,
+) -> list[str]:
     problems: list[str] = []
-    if not hasattr(obj, "spec"):
-        problems.append("Indicator must define a 'spec' attribute of type IndicatorSpec")
+    if len(computed) != len(reference):
+        return [
+            f"Output '{name}': {kind} length {len(computed)} differs from expected {len(reference)}"
+        ]
+    for idx, (c_val, r_val) in enumerate(zip(computed, reference, strict=True)):
+        c_none = _is_none_or_nan(c_val)
+        r_none = _is_none_or_nan(r_val)
+        if c_none != r_none:
+            problems.append(f"Output '{name}' mismatch at index {idx}: comp={c_val}, ref={r_val}")
+            break
+        if not c_none and not r_none:
+            if abs(float(c_val) - float(r_val)) > 1e-4:  # type: ignore[arg-type]
+                problems.append(f"Numerical difference at index {idx}: comp={c_val} != ref={r_val}")
+                break
+    return problems
 
-    problems.extend(_check_methods(obj, ["compute", "new_state", "update"], "Indicator"))
-    if problems:
-        return problems
 
-    test_values: Sequence[float] = [10.0, 11.5, 12.0, 11.0, 13.0, 14.5, 13.5, 15.0]
-    expected: Sequence[float | None] | None = None
-    if golden is not None:
-        if "inputs" in golden:
-            test_values = golden["inputs"]
-        elif "values" in golden:
-            test_values = golden["values"]
-        if "expected" in golden:
-            expected = golden["expected"]
+def _check_indicator_batch_incremental(
+    batch: Sequence[float | None] | Mapping[str, Sequence[float | None]],
+    inc: list[Any],
+) -> list[str]:
+    problems: list[str] = []
+    if isinstance(batch, Mapping):
+        for out_name, b_series in batch.items():
+            i_series = [r.get(out_name) if isinstance(r, Mapping) else r for r in inc]
+            problems.extend(_check_series_equality(b_series, i_series, out_name, "batch vs inc"))
+    else:
+        problems.extend(_check_series_equality(batch, inc, "output", "batch vs inc"))
+    return problems
+
+
+def _check_indicator_expected(
+    batch: Sequence[float | None] | Mapping[str, Sequence[float | None]],
+    expected: Any,
+) -> list[str]:
+    if expected is None:
+        return []
+    problems: list[str] = []
+    if isinstance(expected, Mapping):
+        for out_name, exp_series in expected.items():
+            b_series = (
+                batch[out_name] if isinstance(batch, Mapping) and out_name in batch else batch
+            )
+            problems.extend(_check_series_equality(b_series, exp_series, out_name, "expected"))  # type: ignore[arg-type]
+    elif isinstance(batch, Mapping):
+        first_key = next(iter(batch.keys()))
+        problems.extend(_check_series_equality(batch[first_key], expected, first_key, "expected"))
+    else:
+        problems.extend(_check_series_equality(batch, expected, "output", "expected"))
+    return problems
+
+
+def _check_indicator_warmup_and_lookahead(
+    ind: Any,
+    inputs: Any,
+    rows: list[Any],
+    batch: Sequence[float | None] | Mapping[str, Sequence[float | None]],
+) -> list[str]:
+    problems: list[str] = []
+    warmup = int(getattr(getattr(ind, "spec", None), "warmup", 0) or 0)
+    if isinstance(batch, Mapping):
+        min_len = min((len(s) for s in batch.values()), default=0)
+        for idx in range(min(warmup, min_len)):
+            if all(not _is_none_or_nan(b_series[idx]) for b_series in batch.values()):
+                problems.append(
+                    f"All outputs at warmup index {idx} are non-None, expected warmup {warmup}"
+                )
+                break
+    else:
+        for idx in range(min(warmup, len(batch))):
+            if not _is_none_or_nan(batch[idx]):
+                problems.append(f"Output at warmup index {idx} is {batch[idx]}, expected None")
+                break
+
+    if len(rows) > warmup + 1:
+        prefix_len = max(warmup + 1, len(rows) - 2)
+        sub_inputs = (
+            {k: inputs[k][:prefix_len] for k in inputs}
+            if isinstance(inputs, Mapping)
+            else inputs[:prefix_len]
+        )
+        try:
+            sub_batch = ind.compute(sub_inputs)
+            if isinstance(sub_batch, Mapping):
+                for k, sub_s in sub_batch.items():
+                    orig_s = batch[k][:prefix_len]  # type: ignore[index]
+                    problems.extend(
+                        _check_series_equality(sub_s, orig_s, k, "look-ahead prefix vs full")
+                    )
+            else:
+                orig_s = batch[:prefix_len]  # type: ignore[index]
+                problems.extend(
+                    _check_series_equality(sub_batch, orig_s, "output", "look-ahead prefix vs full")
+                )
+        except Exception as exc:
+            problems.append(f"Look-ahead check raised an exception: {exc}")
+    return problems
+
+
+def _verify_indicator_vector(
+    ind: Any,
+    inputs: Any,
+    expected: Any | None,
+) -> list[str]:
+    try:
+        batch = ind.compute(inputs)
+    except Exception as exc:
+        return [f"Indicator.compute() raised an exception: {exc}"]
+
+    if isinstance(inputs, Mapping):
+        keys = list(inputs.keys())
+        n_rows = len(inputs[keys[0]]) if keys else 0
+        rows = [{k: inputs[k][i] for k in keys} for i in range(n_rows)]
+    else:
+        rows = list(inputs)
 
     try:
-        batch = obj.compute(test_values)
-        st = obj.new_state()
-        inc = [obj.update(st, v) for v in test_values]
-
-        if len(batch) != len(inc):
-            problems.append(
-                f"Batch and incremental output lengths differ: {len(batch)} vs {len(inc)}"
-            )
-        else:
-            for idx, (b_val, i_val) in enumerate(zip(batch, inc, strict=True)):
-                if (b_val is None) != (i_val is None):
-                    problems.append(
-                        f"Mismatch at index {idx}: batch={b_val} but incremental={i_val}"
-                    )
-                    break
-                if b_val is not None and i_val is not None:
-                    if abs(b_val - i_val) > 1e-4:
-                        problems.append(
-                            f"Numerical difference at index {idx}: batch={b_val} != inc={i_val}"
-                        )
-                        break
-
-        if expected is not None:
-            if len(batch) != len(expected):
-                problems.append(
-                    f"Computed output length {len(batch)} differs from expected {len(expected)}"
-                )
-            else:
-                for idx, (b_val, exp_val) in enumerate(zip(batch, expected, strict=True)):
-                    if (b_val is None) != (exp_val is None):
-                        msg = f"Expected mismatch at index {idx}: b={b_val}, exp={exp_val}"
-                        problems.append(msg)
-                        break
-                    if b_val is not None and exp_val is not None:
-                        if abs(b_val - exp_val) > 1e-4:
-                            msg = f"Output at index {idx} ({b_val}) != expected ({exp_val})"
-                            problems.append(msg)
-                            break
+        st = ind.new_state()
+        inc = [ind.update(st, r) for r in rows]
     except Exception as exc:
-        problems.append(f"Indicator calculation raised an unexpected exception: {exc}")
+        return [f"Indicator.update() raised an exception: {exc}"]
+
+    problems = _check_indicator_batch_incremental(batch, inc)
+    if expected is not None:
+        problems.extend(_check_indicator_expected(batch, expected))
+    problems.extend(_check_indicator_warmup_and_lookahead(ind, inputs, rows, batch))
+    return problems
+
+
+def _load_golden_vectors(
+    obj: Any, golden: Mapping[str, Any] | None
+) -> tuple[list[dict[str, Any]], str | None]:
+    no_vec_err = (
+        "golden.toml has no vectors: specify at least one golden vector "
+        "with inputs and expected outputs in golden.toml"
+    )
+    if golden is not None:
+        if not golden:
+            return [], no_vec_err
+        if "vectors" in golden:
+            v_val = golden["vectors"]
+            v_list = list(v_val.values()) if isinstance(v_val, Mapping) else list(v_val)
+            return v_list, None
+        if "inputs" in golden or "values" in golden:
+            return [dict(golden)], None
+        return [], no_vec_err
+
+    p_dir = getattr(obj, "directory", None) or getattr(
+        getattr(obj, "manifest", None), "directory", None
+    )
+    if p_dir is None:
+        try:
+            p_dir = Path(inspect.getfile(obj.__class__)).parent
+        except Exception:
+            p_dir = None
+
+    if p_dir is not None:
+        g_file = Path(p_dir) / "golden.toml"
+        if g_file.exists():
+            text = g_file.read_text(encoding="utf-8")
+            if not text.strip():
+                return [], no_vec_err
+            try:
+                parsed = tomllib.loads(text)
+            except Exception as exc:
+                return [], f"Failed to parse golden.toml: {exc}"
+            if "vectors" in parsed:
+                v_val = parsed["vectors"]
+                v_list = list(v_val.values()) if isinstance(v_val, Mapping) else list(v_val)
+                if not v_list:
+                    return [], no_vec_err
+                return v_list, None
+            if "inputs" in parsed or "values" in parsed:
+                return [parsed], None
+            return [], no_vec_err
+        if (
+            hasattr(obj, "manifest")
+            and str(getattr(obj.manifest, "kind", "")).lower() == "indicator"
+        ):
+            return [], f"golden.toml not found in {p_dir}: specify at least one golden vector"
+
+    return [{"inputs": [10.0, 11.5, 12.0, 11.0, 13.0, 14.5, 13.5, 15.0]}], None
+
+
+def indicator_problems(obj: Any, golden: Mapping[str, Any] | None = None) -> list[str]:
+    """Verify Indicator conformance: golden vectors, batch/incremental, warmup, lookahead."""
+    problems: list[str] = []
+    if not hasattr(obj, "spec") and not hasattr(obj, "get_indicator"):
+        problems.append("Indicator must define a 'spec' attribute of type IndicatorSpec")
+        return problems
+    if hasattr(obj, "spec"):
+        problems.extend(_check_methods(obj, ["compute", "new_state", "update"], "Indicator"))
+        if problems:
+            return problems
+
+    vectors, err = _load_golden_vectors(obj, golden)
+    if err is not None:
+        return [err]
+
+    for vec in vectors:
+        if isinstance(vec, Mapping) and "indicator" in vec and hasattr(obj, "get_indicator"):
+            try:
+                ind = obj.get_indicator(vec["indicator"], **vec.get("params", {}))
+            except Exception as exc:
+                problems.append(f"Failed to create indicator '{vec['indicator']}': {exc}")
+                continue
+        elif hasattr(obj, "get_indicator"):
+            ind_name = getattr(getattr(obj, "spec", None), "name", "sma")
+            ind = obj.get_indicator(ind_name, **vec.get("params", {}))
+        else:
+            ind = obj
+
+        inputs = vec.get("inputs", vec.get("values"))
+        expected = vec.get("expected")
+        if inputs is None:
+            continue
+        problems.extend(_verify_indicator_vector(ind, inputs, expected))
 
     return problems
 

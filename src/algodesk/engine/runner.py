@@ -277,6 +277,7 @@ class SessionRunner:
         self._stop_event = asyncio.Event()
         self._stop_reason: str | None = None
         self._interrupted = False
+        self._user_interrupted = False
         self._killswitch_tripped = False
         self._feed_halted = False
         self._run_error: str | None = None
@@ -337,10 +338,15 @@ class SessionRunner:
 
     def stop(self, reason: str = "interrupt") -> None:
         """Signal the session runner to stop event streaming and cleanly shut down."""
-        self._stop_reason = reason
         if reason == "interrupt":
-            self._interrupted = True
-        elif reason == "kill switch":
+            if not self._is_replay or self._user_interrupted:
+                self._stop_reason = reason
+                self._interrupted = True
+            else:
+                self._stop_reason = "end of session"
+        else:
+            self._stop_reason = reason
+        if reason == "kill switch":
             self._killswitch_tripped = True
             self._killswitch_events += 1
         elif reason == "error":
@@ -418,6 +424,7 @@ class SessionRunner:
 
         def _handle_sig() -> None:
             logger.info("Interrupt signal received; stopping session.")
+            self._user_interrupted = True
             self.stop(reason="interrupt")
 
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -1116,6 +1123,7 @@ class SessionRunner:
                 bus=bus,
                 scheduler=scheduler,
                 source="live",
+                session_id=self.run_id,
             )
         except Exception as exc:
             logger.warning("Could not initialize Recorder: %s", exc)
@@ -1282,7 +1290,7 @@ class SessionRunner:
                         },
                     )
             elif kind == "run.end":
-                self.stop(reason=p.get("stop_reason", "end of session"))
+                self.stop(reason="end of session")
 
     async def _execute_session(
         self,
@@ -1477,7 +1485,7 @@ class SessionRunner:
                     self._recorded_stop_seq is not None
                     and self._tick_seq >= self._recorded_stop_seq
                 ):
-                    self.stop(reason=self._recorded_stop_reason or "end of session")
+                    self.stop(reason="end of session")
                     break
 
             # If stream finished, apply any remaining recorded events
@@ -1488,8 +1496,12 @@ class SessionRunner:
                 self._recorded_seq_idx += 1
                 await self._apply_recorded_events(due_seq, c, clock, journal)
 
-            if self._recorded_stop_seq is not None and not self._stop_event.is_set():
-                self.stop(reason=self._recorded_stop_reason or "end of session")
+            if not self._stop_event.is_set():
+                if self._recorded_stop_seq is not None and self._tick_seq < self._recorded_stop_seq:
+                    t_str = format_ist(self._last_tick_ts) if self._last_tick_ts else "N/A"
+                    self.stop(reason=f"replay data ended ({t_str})")
+                else:
+                    self.stop(reason="end of session")
         else:
             to_val = (
                 self.runtime.params.get("engine.feed_poll_timeout_ms")
@@ -2083,7 +2095,13 @@ class SessionRunner:
 
             w_start = self.tick_window[0] if self.tick_window is not None else None
             w_end = self.tick_window[1] if self.tick_window is not None else None
-            feed = ReplayFeed(files=files, clock=clock, window_start=w_start, window_end=w_end)
+            feed = ReplayFeed(
+                files=files,
+                clock=clock,
+                window_start=w_start,
+                window_end=w_end,
+                session_id=self.replay_session,
+            )
 
             class _ReplayStreamWrapper:
                 def __init__(self, feed: ReplayFeed) -> None:
@@ -2414,14 +2432,19 @@ class SessionRunner:
         elif self._feed_halted:
             stop_reason = "feed halt"
             is_fail = True
-        elif self._interrupted:
+        elif self._interrupted and (not self._is_replay or self._user_interrupted):
             stop_reason = "interrupt"
+            is_fail = False
+        elif self._stop_reason and "replay data ended" in self._stop_reason:
+            stop_reason = self._stop_reason
             is_fail = False
         else:
             stop_reason = "end of session"
             is_fail = False
 
-        if self._interrupted:
+        if (self._interrupted and (not self._is_replay or self._user_interrupted)) or (
+            self._stop_reason and "replay data ended" in self._stop_reason
+        ):
             verdict_base = "STOPPED"
         elif is_fail:
             verdict_base = "FAIL"

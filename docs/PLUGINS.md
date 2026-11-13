@@ -34,7 +34,7 @@ Plugins implement domain protocols defined in `algodesk.api.protocols` (re-expor
 | `brokers/upstox` | `broker` | `auth`, `instruments`, `history`, `stream` | Official Upstox v2/v3 thin client for OAuth/analytics auth, daily instrument master, history, and Protobuf feed. |
 | `calendars/exchange` | `calendar` | `holidays`, `sessions`, `special_sessions` | Exchange trading calendar providing market session timing, holiday schedules, and special session handling for NSE, BSE, and MCX. |
 | `fees/zerodha_nse` | `fees` | `equity_delivery`, `equity_intraday`, `futures` | Verified dated fee and tax schedule for Zerodha trading on NSE across delivery, intraday, and equity futures. |
-| `indicators/builtin` | `indicator` | `sma`, `ema`, `rsi` | Built-in mathematical indicators (SMA, EMA, RSI - Wilder) supporting batch calculation and streaming updates. |
+| `indicators/builtin` | `indicator` | `sma`, `ema`, `rsi`, `atr`, `vwap`, `bollinger`, `macd`, `rolling_hl`, `volume_avg`, `roc` | Built-in mathematical indicators supporting batch calculation and streaming updates with golden vectors. |
 | `risk_rules/builtin` | `risk_rule` | `pre_trade`, `limits`, `capital_checks` | Pre-trade risk rule plugin evaluating 9 safety controls (cash, exposure, orders/min, daily loss) from registry. |
 | `venues/sim` | `venue` | `market_orders`, `limit_orders`, `depth_matching`, `failure_injection` | Simulated execution venue with latency, seeded jitter, depth walking, trade-through limit fills, and failure drills. |
 | `strategies/sma_cross` | `strategy` | `signals`, `lifecycle`, `intraday_exit` | Demo dual moving-average crossover strategy exercising bar processing, warmup, signals, and exit timers. |

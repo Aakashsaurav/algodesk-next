@@ -1,0 +1,56 @@
+# Golden vectors for builtin indicators conformance verification
+
+[[vectors]]
+indicator = "sma"
+params = { n = 3 }
+inputs = [10.0, 20.0, 30.0, 40.0, 50.0]
+expected = [nan, nan, 20.0, 30.0, 40.0]
+
+[[vectors]]
+indicator = "ema"
+params = { n = 3 }
+inputs = [10.0, 20.0, 30.0, 40.0, 50.0]
+expected = [nan, nan, 20.0, 30.0, 40.0]
+
+[[vectors]]
+indicator = "rsi"
+params = { n = 3 }
+inputs = [10.0, 12.0, 11.0, 13.0, 15.0]
+expected = [nan, nan, nan, 80.0, 87.5]
+
+[[vectors]]
+indicator = "atr"
+params = { n = 3 }
+inputs = { high = [12.0, 14.0, 13.0, 15.0, 16.0], low = [10.0, 11.0, 10.0, 12.0, 13.0], close = [11.0, 13.0, 12.0, 14.0, 15.0] }
+expected = [nan, nan, 2.666667, 2.777778, 2.851852]
+
+[[vectors]]
+indicator = "bollinger"
+params = { n = 3, k = 2.0 }
+inputs = [10.0, 20.0, 30.0, 40.0, 50.0]
+expected = { middle = [nan, nan, 20.0, 30.0, 40.0], upper = [nan, nan, 36.329932, 46.329932, 56.329932], lower = [nan, nan, 3.670068, 13.670068, 23.670068] }
+
+[[vectors]]
+indicator = "macd"
+params = { fast = 2, slow = 4, signal = 2 }
+inputs = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0]
+expected = { macd = [nan, nan, nan, 1.0, 1.0, 1.0, 1.0, 1.0], signal = [nan, nan, nan, nan, 1.0, 1.0, 1.0, 1.0], histogram = [nan, nan, nan, nan, 0.0, 0.0, 0.0, 0.0] }
+
+[[vectors]]
+indicator = "rolling_hl"
+params = { n = 3 }
+inputs = { high = [12.0, 15.0, 14.0, 16.0, 13.0], low = [10.0, 11.0, 9.0, 12.0, 11.0] }
+expected = { high = [nan, nan, 15.0, 16.0, 16.0], low = [nan, nan, 9.0, 9.0, 9.0] }
+
+[[vectors]]
+indicator = "volume_avg"
+params = { n = 3 }
+inputs = [100.0, 200.0, 300.0, 400.0, 500.0]
+expected = [nan, nan, 200.0, 300.0, 400.0]
+
+[[vectors]]
+indicator = "roc"
+params = { n = 2 }
+inputs = [100.0, 105.0, 110.0, 115.5]
+expected = [nan, nan, 0.10, 0.10]
+

@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from algodesk.api.errors import DataError
 from algodesk.api.market import Bar, InstrumentId, MarketEvent, Quote, Tick
 from algodesk.data.schema import row_to_bar, row_to_market_event
 
@@ -130,10 +131,13 @@ class _StreamReader:
     __slots__ = (
         "_batch_iter",
         "_current_batch",
+        "_has_session_id_col",
         "_idx",
         "_instrument",
         "_last_seq",
         "_path",
+        "_seen_seqs",
+        "_session_id",
         "_window_end",
         "_window_start",
     )
@@ -144,13 +148,17 @@ class _StreamReader:
         batch_size: int = 1000,
         window_start: datetime | None = None,
         window_end: datetime | None = None,
+        session_id: str | None = None,
     ) -> None:
         self._path = path
         self._instrument = _derive_instrument_from_file_path(path)
         self._window_start = window_start
         self._window_end = window_end
+        self._session_id = session_id
         self._last_seq: int | None = None
+        self._seen_seqs: set[int] = set()
         parquet_file = pq.ParquetFile(path)
+        self._has_session_id_col = "session_id" in parquet_file.schema_arrow.names
         self._batch_iter = parquet_file.iter_batches(batch_size=batch_size)
         self._current_batch: list[dict[str, Any]] = []
         self._idx = 0
@@ -178,15 +186,34 @@ class _StreamReader:
                 return None
             row = self._current_batch[self._idx]
             self._idx += 1
-            raw_seq = row.get("seq")
-            self._last_seq = int(raw_seq) if raw_seq is not None else None
+            if self._session_id is not None and self._has_session_id_col:
+                row_sess = row.get("session_id")
+                if row_sess is not None and row_sess != self._session_id:
+                    continue
             ev = row_to_market_event(self._instrument, row)
             if ev is None:
                 continue
-            if self._window_start is not None and ev.recv_ts < self._window_start:
-                continue
-            if self._window_end is not None and ev.recv_ts > self._window_end:
-                return None
+            if not self._has_session_id_col or self._session_id is None:
+                if self._window_start is not None and ev.recv_ts < self._window_start:
+                    continue
+                if self._window_end is not None and ev.recv_ts > self._window_end:
+                    continue
+            raw_seq = row.get("seq")
+            self._last_seq = int(raw_seq) if raw_seq is not None else None
+            if self._last_seq is not None:
+                if self._last_seq in self._seen_seqs:
+                    raise DataError(
+                        what=(
+                            f"Ambiguous replay stream: colliding seq {self._last_seq} "
+                            f"in {self._path.name}"
+                        ),
+                        where="_StreamReader.next_event",
+                        fix=(
+                            "Specify --session or provide a window isolating a single "
+                            "recorded session"
+                        ),
+                    )
+                self._seen_seqs.add(self._last_seq)
             return ev
 
 
@@ -198,6 +225,7 @@ class ReplayFeed:
         "_clock",
         "_current_seq",
         "_files",
+        "_session_id",
         "_window_end",
         "_window_start",
     )
@@ -209,12 +237,14 @@ class ReplayFeed:
         batch_size: int = 1000,
         window_start: datetime | None = None,
         window_end: datetime | None = None,
+        session_id: str | None = None,
     ) -> None:
         self._files = [Path(f) for f in files if Path(f).exists()]
         self._clock = clock
         self._batch_size = batch_size
         self._window_start = window_start
         self._window_end = window_end
+        self._session_id = session_id
         self._current_seq: int | None = None
 
     @property
@@ -225,6 +255,7 @@ class ReplayFeed:
     def iter_with_seq(self) -> Iterator[tuple[MarketEvent, int | None]]:
         heap: list[_ReplayItem] = []
         streams: list[_StreamReader] = []
+        seen_global_seqs: set[int] = set()
         seq = 0
 
         for idx, f in enumerate(self._files):
@@ -233,6 +264,7 @@ class ReplayFeed:
                 batch_size=self._batch_size,
                 window_start=self._window_start,
                 window_end=self._window_end,
+                session_id=self._session_id,
             )
             streams.append(reader)
             ev = reader.next_event()
@@ -262,6 +294,17 @@ class ReplayFeed:
 
         while heap:
             item = heapq.heappop(heap)
+            if item.seq is not None:
+                if item.seq in seen_global_seqs:
+                    raise DataError(
+                        what=f"Ambiguous replay stream: colliding seq {item.seq} across files",
+                        where="ReplayFeed.iter_with_seq",
+                        fix=(
+                            "Specify --session or provide a window isolating a single "
+                            "recorded session"
+                        ),
+                    )
+                seen_global_seqs.add(item.seq)
             self._current_seq = item.seq
             if self._clock is not None and hasattr(self._clock, "set_time"):
                 if self._clock.now() < item.event.recv_ts:

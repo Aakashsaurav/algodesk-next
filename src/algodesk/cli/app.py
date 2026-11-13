@@ -73,6 +73,14 @@ app.add_typer(results_app, name="results")
 app.add_typer(session_app, name="session")
 app.add_typer(telegram_app, name="telegram")
 app.add_typer(spike_app, name="spike")
+app.add_typer(
+    __import__("algodesk.cli.indicators", fromlist=["indicators_app"]).indicators_app,
+    name="indicators",
+)
+app.add_typer(
+    __import__("algodesk.cli.indicators", fromlist=["indicators_app"]).indicators_app,
+    name="indicators",
+)
 
 # Register top-level commands
 app.command("doctor")(doctor_cmd)

@@ -59,6 +59,7 @@ class Recorder:
         "_on_system_event",
         "_part_seq",
         "_scheduler",
+        "_session_id",
         "_source",
         "_total_bytes",
         "_total_rows",
@@ -75,6 +76,7 @@ class Recorder:
         min_free_disk_gb: int | None = None,
         source: str = "live",
         on_system_event: Callable[[Any], None] | None = None,
+        session_id: str | None = None,
     ) -> None:
 
         self._data_dir = Path(data_dir)
@@ -86,6 +88,7 @@ class Recorder:
         self._min_free_disk_gb = min_free_disk_gb if min_free_disk_gb is not None else 5
         self._source = source
         self._on_system_event = on_system_event
+        self._session_id = session_id
 
         self._buffers: dict[InstrumentId, list[tuple[Tick | Quote, int | None]]] = {}
         self._part_seq: dict[tuple[InstrumentId, str], int] = {}
@@ -220,6 +223,10 @@ class Recorder:
             table = table.append_column(
                 "seq", pa.array([s if s is not None else 0 for s in seqs], type=pa.int64())
             )
+        if self._session_id is not None:
+            table = table.append_column(
+                "session_id", pa.array([self._session_id] * len(events), type=pa.string())
+            )
         pq.write_table(table, file_path, compression="zstd")
 
         size_bytes = file_path.stat().st_size
@@ -286,7 +293,7 @@ class Recorder:
             total_rows += len(t)
             tables.append(t)
 
-        combined = pa.concat_tables(tables)
+        combined = pa.concat_tables(tables, promote_options="default")
         if len(combined) != total_rows:
             msg = (
                 f"Compaction row count mismatch in {date_dir}: "
@@ -294,12 +301,13 @@ class Recorder:
             )
             raise RuntimeError(msg)
 
-        # Sort by monotonic seq if available, else (recv_ts, exch_ts)
-        sort_keys = (
-            [("seq", "ascending")]
-            if "seq" in combined.column_names
-            else [("recv_ts", "ascending"), ("exch_ts", "ascending")]
-        )
+        # Sort by (session_id, seq) if both available, else seq, else (recv_ts, exch_ts)
+        if "session_id" in combined.column_names and "seq" in combined.column_names:
+            sort_keys = [("session_id", "ascending"), ("seq", "ascending")]
+        elif "seq" in combined.column_names:
+            sort_keys = [("seq", "ascending")]
+        else:
+            sort_keys = [("recv_ts", "ascending"), ("exch_ts", "ascending")]
         sorted_indices = pa.compute.sort_indices(
             combined,
             sort_keys=sort_keys,

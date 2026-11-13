@@ -16,17 +16,19 @@ from algodesk.data.manifest import CoverageDayRecord, DataManifest, MarketClosur
 class CoverageIndex:
     """Evaluates trading day completeness, settlement margins, and data gaps."""
 
-    __slots__ = ("_calendar", "_manifest", "_settle_delay_m", "_last_closure_counts")
+    __slots__ = ("_calendar", "_manifest", "_settle_delay_m", "_last_closure_counts", "_params")
 
     def __init__(
         self,
         manifest: DataManifest,
         calendar: Calendar | None = None,
         settle_minutes: int | None = None,
+        params: Any = None,
     ) -> None:
         self._manifest = manifest
         self._calendar = calendar
         self._settle_delay_m = settle_minutes if settle_minutes is not None else 0
+        self._params = params
         self._last_closure_counts: dict[str, int] = {
             "closed_calendar": 0,
             "closed_inferred": 0,
@@ -40,6 +42,10 @@ class CoverageIndex:
     @property
     def settle_minutes(self) -> int:
         return self._settle_delay_m
+
+    @property
+    def params(self) -> Any:
+        return self._params
 
     @property
     def last_closure_counts(self) -> dict[str, int]:
@@ -63,6 +69,7 @@ class CoverageIndex:
             settle_minutes=self._settle_delay_m,
             manifest=self._manifest,
             now_dt=now_dt,
+            params=self._params,
         )
 
     def _resolve_exchange(self, dataset_id: str) -> str:
@@ -210,6 +217,7 @@ class CoverageIndex:
                         calendar=self._calendar,
                         settle_minutes=self._settle_delay_m,
                         manifest=self._manifest,
+                        params=self._params,
                     )
                     if final:
                         gaps.append(
@@ -227,11 +235,23 @@ class CoverageIndex:
                                 reason=f"Stale EMPTY record ({reason})",
                             )
                         )
-                elif rec.status not in (CoverageStatus.COMPLETE, CoverageStatus.CLOSED):
+                elif rec.status == "PENDING":
                     gaps.append(
                         DataGap(
                             day=cur,
-                            status=CoverageStatus(rec.status),
+                            status=CoverageStatus.MISSING,
+                            reason=rec.note or "Pending next-day history retry",
+                        )
+                    )
+                elif rec.status not in (CoverageStatus.COMPLETE, CoverageStatus.CLOSED):
+                    try:
+                        gap_st = CoverageStatus(rec.status)
+                    except ValueError:
+                        gap_st = CoverageStatus.MISSING
+                    gaps.append(
+                        DataGap(
+                            day=cur,
+                            status=gap_st,
                             reason=rec.note or f"Day status is {rec.status}",
                         )
                     )
@@ -253,13 +273,17 @@ def evaluate_empty_record(
     settle_minutes: int | None = None,
     manifest: DataManifest | None = None,
     now_dt: datetime | None = None,
+    params: Any = None,
 ) -> tuple[bool, str]:
     """Evaluate whether an EMPTY coverage record is final or stale/invalid.
 
     EMPTY is final only when:
     1. The fetch ran after the session ended plus data.settle_minutes.
     2. The response was a successful empty chunk for that exact IST date window.
+    3. The source actually serves same-day history (or fetch was on a later date).
     """
+    if rec.status == "PENDING":
+        return False, "Pending next-day history retry"
     if rec.status != CoverageStatus.EMPTY:
         return True, "Not EMPTY status"
     if not rec.fetched_at:
@@ -270,6 +294,25 @@ def evaluate_empty_record(
         fa_utc = fa.astimezone(UTC) if fa.tzinfo else fa.replace(tzinfo=UTC)
     except Exception:
         return False, f"Invalid fetched_at timestamp: {rec.fetched_at}"
+
+    # Check same-day history policy for the source
+    parts = rec.dataset_id.split(":")
+    source = parts[1].lower() if len(parts) >= 2 else ""
+    same_day_served = True
+    if params is not None:
+        try:
+            val = params.get(f"source.{source}.same_day_history")
+            if val is not None:
+                if isinstance(val, bool):
+                    same_day_served = val
+                elif isinstance(val, str):
+                    same_day_served = val.strip().lower() in ("true", "1", "yes")
+                else:
+                    same_day_served = bool(val)
+        except Exception:
+            same_day_served = source != "upstox"
+    elif source == "upstox":
+        same_day_served = False
 
     day_d = date.fromisoformat(rec.day)
     session_end: datetime | None = None
@@ -289,6 +332,14 @@ def evaluate_empty_record(
     if fa_utc < settle_deadline:
         return False, f"Fetched before session end + {settle_delay_m}m settle margin"
 
+    tf = parts[2].lower() if len(parts) >= 3 else ""
+    if not same_day_served and tf not in ("1d", "daily"):
+        from zoneinfo import ZoneInfo
+
+        fa_ist = fa_utc.astimezone(ZoneInfo("Asia/Kolkata"))
+        if day_d == fa_ist.date():
+            return False, f"Same-day history not served by source {source}"
+
     note_low = (rec.note or "").lower()
     if any(
         w in note_low
@@ -304,9 +355,7 @@ def evaluate_empty_record(
     ):
         return False, f"Fetch error: {rec.note}"
 
-    parts = rec.dataset_id.split(":")
     if len(parts) >= 3:
-        source = parts[1].lower()
         tf = parts[2].lower()
         if source == "yfinance" and tf in ("1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"):
             cutoff = datetime(2026, 11, 10, 0, 0, tzinfo=UTC)
@@ -333,6 +382,7 @@ def is_empty_record_final(
     settle_minutes: int | None = None,
     manifest: DataManifest | None = None,
     now_dt: datetime | None = None,
+    params: Any = None,
 ) -> bool:
     """Return True if the EMPTY record is validly final, False if stale/invalid."""
     is_final, _ = evaluate_empty_record(
@@ -341,6 +391,7 @@ def is_empty_record_final(
         settle_minutes=settle_minutes,
         manifest=manifest,
         now_dt=now_dt,
+        params=params,
     )
     return is_final
 
@@ -353,13 +404,14 @@ def reset_stale_empty_coverage(
     timeframe: str | None = None,
     dry_run: bool = False,
     journal: Any = None,
+    params: Any = None,
 ) -> list[tuple[CoverageDayRecord, str]]:
     """Re-evaluate existing EMPTY coverage records and reset non-final ones to MISSING."""
     if not hasattr(manifest, "_conn"):
         return []
 
     cur = manifest._conn.execute(
-        "SELECT * FROM coverage_days WHERE status = 'EMPTY' ORDER BY dataset_id, day"
+        "SELECT * FROM coverage_days WHERE status IN ('EMPTY', 'PENDING') ORDER BY dataset_id, day"
     )
     rows = cur.fetchall()
 
@@ -380,6 +432,7 @@ def reset_stale_empty_coverage(
             calendar=calendar,
             settle_minutes=settle_minutes,
             manifest=manifest,
+            params=params,
         )
         if not is_final:
             to_reset.append((rec, reason))
@@ -535,6 +588,24 @@ def repair_coverage(
             old_st = old_rec.status if old_rec else "MISSING"
             old_rows = old_rec.rows if old_rec else 0
             old_path = old_rec.part_path if old_rec else ""
+
+            if str(old_st) == CoverageStatus.CLOSED or str(old_st) == "CLOSED":
+                is_special = False
+                if calendar is not None and hasattr(calendar, "is_special"):
+                    try:
+                        is_special = bool(calendar.is_special(d_date))
+                    except Exception:
+                        is_special = False
+                has_disagreement = False
+                if hasattr(manifest, "get_market_closure"):
+                    exch = (
+                        ds.dataset_id.split(":")[3] if len(ds.dataset_id.split(":")) > 3 else "NSE"
+                    )
+                    cl = manifest.get_market_closure(exch, d_str)
+                    if cl is not None and cl.kind == "inferred":
+                        has_disagreement = True
+                if not is_special and not has_disagreement:
+                    continue
 
             if old_st != CoverageStatus.COMPLETE or old_rows != count:
                 rep_item = CoverageRepairItem(

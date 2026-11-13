@@ -439,11 +439,21 @@ def data_accumulate(
             refresh=refresh,
         )
 
+        waiting_items = getattr(report, "waiting_items", []) or [
+            it for it in report.plan_items if getattr(it, "waiting_sessions", None)
+        ]
+        if waiting_items:
+            for it in waiting_items:
+                typer.echo(
+                    f"{it.instrument} ({it.timeframe}): waiting: same-day history not served"
+                )
+
         total_fetchable = sum(len(it.fetchable_sessions) for it in report.plan_items)
         total_lost = sum(len(it.lost_sessions) for it in report.plan_items)
 
         if total_fetchable == 0 and total_lost == 0:
-            typer.echo("Up to date: no missing completed sessions")
+            if not waiting_items:
+                typer.echo("Up to date: no missing completed sessions")
             return
 
         if dry_run:
@@ -501,6 +511,7 @@ def coverage_reset_empty(
             timeframe=timeframe,
             dry_run=dry_run,
             journal=getattr(rt, "journal", None),
+            params=rt.params,
         )
 
         if json_out:
@@ -1726,7 +1737,7 @@ def data_gaps(
         except Exception:
             pass
 
-        cov_index = CoverageIndex(manifest=manifest, calendar=cal)
+        cov_index = CoverageIndex(manifest=manifest, calendar=cal, params=rt.params)
         all_gaps: list[dict[str, str]] = []
         datasets_list = manifest.list_datasets(kind="bars")
 

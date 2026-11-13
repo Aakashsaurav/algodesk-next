@@ -248,10 +248,21 @@ class GapPlanner:
                 elif rec.status == CoverageStatus.EMPTY and not refresh:
                     cal = coverage_index.calendar if coverage_index else calendar
                     settle_m = coverage_index.settle_minutes if coverage_index else 15
+                    cov_params = getattr(coverage_index, "params", None)
                     if is_empty_record_final(
-                        rec, calendar=cal, settle_minutes=settle_m, manifest=manifest
+                        rec,
+                        calendar=cal,
+                        settle_minutes=settle_m,
+                        manifest=manifest,
+                        params=cov_params,
                     ):
                         empty.append(cur)
+                    else:
+                        missing.append(cur)
+                elif rec.status == "PENDING":
+                    if cur >= as_of_date and not refresh:
+                        # Same-day fetch pending next IST date
+                        pass
                     else:
                         missing.append(cur)
                 else:

@@ -116,7 +116,7 @@ def test_accumulation_plan_skips_complete_sessions(tmp_project: Any) -> None:
         )
 
     cal = FakeCalendar()
-    now_dt = datetime(2026, 11, 4, 16, 0, tzinfo=_IST).astimezone(UTC)
+    now_dt = datetime(2026, 11, 5, 10, 0, tzinfo=_IST).astimezone(UTC)
     insts, items = plan_accumulation(
         group="demo5",
         source="upstox",
@@ -349,7 +349,7 @@ def test_accumulation_execute_valid_final_empty_no_error(
             rows=0,
             expected_rows=0,
             part_path="",
-            fetched_at="2026-11-04T12:00:00Z",  # 17:30 IST, settled
+            fetched_at="2026-11-05T05:00:00Z",  # next IST date, final EMPTY
             note="Expected session returned no bars from source",
         )
     )

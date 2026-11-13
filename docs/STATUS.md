@@ -17,7 +17,7 @@ Milestones M0, M1, and M2 are complete. AlgoDesk Next provides a pluggable tradi
 
 ## M1 acceptance checklist
 
-- Two live paper sessions with replay and results compare.
+- M1 accepted on sessions 054937 (`demo_paper_fast_paper_20261112_054937_6841fa`) and 081900 (`demo_paper_fast_paper_20261112_081900_3b424a`): both recorded paper sessions on a multi-session day replay `equal: True` to paper results with bit-identical signals, orders, fills, and metrics; replay tolerances proven safe against unintended differences.
 - Fee vectors verified by hand.
 - Measured numbers: tick-to-intent p95, memory, recorder rows/bytes, journal growth.
 - M1-15: Duplicate-entry prevention guard (`prevent_duplicate_entry`), square-off exit time entry restriction, unresolved open-at-stop reporting, unified net-of-charges win rate definition, and Quote-aware exact replay equivalence.

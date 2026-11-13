@@ -36,6 +36,7 @@ class AccumulationPlanItem:
     lost_sessions: list[date]
     rows_added: int = 0
     refetched_days: int = 0
+    waiting_sessions: list[date] = field(default_factory=list)
 
 
 @dataclass
@@ -53,6 +54,24 @@ class AccumulationReport:
     days_refetched: int = 0
     dry_run: bool = False
     instrument_rows: dict[tuple[str, str], int] = field(default_factory=dict)
+    waiting_items: list[AccumulationPlanItem] = field(default_factory=list)
+
+
+def _check_same_day_history(source: str, params: Any = None) -> bool:
+    if params is not None:
+        try:
+            val = params.get(f"source.{source}.same_day_history")
+            if val is not None:
+                if isinstance(val, bool):
+                    return val
+                if isinstance(val, str):
+                    return val.strip().lower() in ("true", "1", "yes")
+                return bool(val)
+        except Exception:
+            pass
+    if source.lower() == "upstox":
+        return False
+    return True
 
 
 def resolve_completed_sessions(
@@ -60,16 +79,30 @@ def resolve_completed_sessions(
     end_date: date | None = None,
     count: int = 7,
     now_dt: datetime | None = None,
+    source: str | None = None,
+    params: Any = None,
+    same_day_history: bool | None = None,
 ) -> list[date]:
     """Find the latest complete trading sessions."""
     ist_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
     now_ist = now_dt.astimezone(ist_tz) if now_dt else datetime.now(ist_tz)
     today = now_ist.date()
 
+    if same_day_history is None and source is not None:
+        same_day_history = _check_same_day_history(source, params)
+    if same_day_history is None:
+        same_day_history = True
+
     if end_date is None:
-        cur = today - timedelta(days=1) if now_ist.time() < time(15, 30) else today
+        if not same_day_history:
+            # Treats a session as completed only from the next IST date
+            cur = today - timedelta(days=1)
+        else:
+            cur = today - timedelta(days=1) if now_ist.time() < time(15, 30) else today
     else:
         cur = end_date
+        if not same_day_history and cur >= today:
+            cur = today - timedelta(days=1)
 
     sessions: list[date] = []
     cutoff = cur - timedelta(days=120)
@@ -247,7 +280,15 @@ def plan_accumulation(
     """Build accumulation plan for group instruments across 1m and 1d using GapPlanner."""
     root, data_dir = _resolve_paths(runtime)
     instruments = _resolve_instruments_for_group(group, root / "config" / "groups")
-    sessions = resolve_completed_sessions(calendar, count=days, now_dt=now_dt)
+    same_day = _check_same_day_history(source, getattr(runtime, "params", None))
+    sessions = resolve_completed_sessions(
+        calendar,
+        count=days,
+        now_dt=now_dt,
+        source=source,
+        params=getattr(runtime, "params", None),
+        same_day_history=same_day,
+    )
     if not sessions:
         raise DataError(
             what=f"No completed trading sessions found in last {days} days",
@@ -256,6 +297,20 @@ def plan_accumulation(
         )
 
     ist_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+    now_ist = now_dt.astimezone(ist_tz) if now_dt else datetime.now(ist_tz)
+    today = now_ist.date()
+
+    is_today_trading = False
+    if calendar is not None:
+        try:
+            is_today_trading = bool(calendar.is_trading_day(today))
+        except Exception:
+            is_today_trading = today.weekday() < 5
+    else:
+        is_today_trading = today.weekday() < 5
+
+    today_waiting = (not same_day) and is_today_trading and (now_ist.time() >= time(15, 30))
+
     now_utc = now_dt.astimezone(UTC) if now_dt else datetime.now(UTC)
     start_dt = datetime.combine(min(sessions), time(0, 0), tzinfo=ist_tz).astimezone(UTC)
     end_dt = datetime.combine(max(sessions), time(23, 59, 59), tzinfo=ist_tz).astimezone(UTC)
@@ -266,22 +321,23 @@ def plan_accumulation(
     try:
         for inst in instruments:
             for tf in ("1m", "1d"):
-                items.append(
-                    _plan_item_for_series(
-                        inst,
-                        tf,
-                        source,
-                        sessions,
-                        start_dt,
-                        end_dt,
-                        manifest,
-                        calendar,
-                        src_manifest,
-                        now_utc,
-                        ist_tz,
-                        refresh=refresh,
-                    )
+                it = _plan_item_for_series(
+                    inst,
+                    tf,
+                    source,
+                    sessions,
+                    start_dt,
+                    end_dt,
+                    manifest,
+                    calendar,
+                    src_manifest,
+                    now_utc,
+                    ist_tz,
+                    refresh=refresh,
                 )
+                if today_waiting:
+                    it.waiting_sessions = [today]
+                items.append(it)
     finally:
         if opened and manifest is not None:
             manifest.close()
@@ -407,6 +463,7 @@ def execute_accumulation(
         refresh=refresh,
     )
     total_lost = sum(len(it.lost_sessions) for it in plan_items)
+    waiting_items = [it for it in plan_items if getattr(it, "waiting_sessions", None)]
     report = AccumulationReport(
         group=group,
         source=source,
@@ -415,6 +472,7 @@ def execute_accumulation(
         plan_items=plan_items,
         days_lost_beyond_window=total_lost,
         dry_run=dry_run,
+        waiting_items=waiting_items,
     )
     total_fetchable = sum(len(it.fetchable_sessions) for it in plan_items)
     if dry_run or total_fetchable == 0:

@@ -296,7 +296,7 @@ def test_refetch_complete_days_only_with_refresh(tmp_project: Any) -> None:
                 )
             )
 
-    now_dt = datetime(2026, 11, 4, 16, 0, tzinfo=_IST).astimezone(UTC)
+    now_dt = datetime(2026, 11, 5, 10, 0, tzinfo=_IST).astimezone(UTC)
 
     # 1. Without refresh: days are stored, 0 fetchable
     _, items_no_ref = plan_accumulation(

@@ -31,6 +31,7 @@ ALLOWED_NON_PARAM_NAMES = {
     "platform.toml": "Platform core configuration filename",
     "plugin.py": "Plugin module implementation filename",
     "plugin.toml": "Plugin manifest configuration filename",
+    "golden.toml": "Indicator golden vectors configuration filename",
     "uv.lock": "Dependency lockfile filename",
     "zerodha_nse.toml": "Example fee schedule filename",
     "data_manifest.db": "Data manifest database filename",

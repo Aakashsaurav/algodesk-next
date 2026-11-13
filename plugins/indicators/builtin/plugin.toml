@@ -1,17 +1,29 @@
 name = "builtin"
 kind = "indicator"
-version = "0.1.0"
+version = "0.2.0"
 api_version = 1
 entry = "plugin:BuiltinIndicatorsPlugin"
+config_schema = "config_schema:BuiltinIndicatorsConfig"
 modes_allowed = ["research", "backtest", "paper", "live"]
 order_capable = false
-verified_on = "2026-10-21"
-sources = ["J. Welles Wilder Jr., New Concepts in Technical Trading Systems (1978)"]
+verified_on = "2026-11-13"
+sources = [
+    "J. Welles Wilder Jr., New Concepts in Technical Trading Systems (1978)",
+    "John Bollinger, Bollinger on Bollinger Bands (2001)",
+    "Gerald Appel, Technical Analysis: Power Tools for Active Investors (2005)",
+]
 
 [capabilities]
 sma = true
 ema = true
 rsi = true
+atr = true
+vwap = true
+bollinger = true
+macd = true
+rolling_hl = true
+volume_avg = true
+roc = true
 
 [requires]
 packages = ["pydantic", "pytest", "hypothesis"]

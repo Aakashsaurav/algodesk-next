@@ -89,6 +89,22 @@ class Fetcher:
         tz = getattr(self._store, "exchange_tz", None)
         return tz if isinstance(tz, tzinfo) else UTC
 
+    def _is_same_day_history_served(self, source_name: str) -> bool:
+        if self._params is not None:
+            try:
+                val = self._params.get(f"source.{source_name}.same_day_history")
+                if val is not None:
+                    if isinstance(val, bool):
+                        return val
+                    if isinstance(val, str):
+                        return val.strip().lower() in ("true", "1", "yes")
+                    return bool(val)
+            except Exception:
+                pass
+        if source_name == "upstox":
+            return False
+        return True
+
     def _resolve_source(self, name: str) -> DataSource:
         if name not in self._sources:
             raise DataError(
@@ -184,47 +200,57 @@ class Fetcher:
                         if has_complete or has_cov_rows or has_stored_bars:
                             continue
 
-                        c_status = CoverageStatus.EMPTY
-                        c_note = "Expected session returned no bars from source"
-                        cal = getattr(cov_idx, "calendar", None) if cov_idx else None
-                        try:
-                            settle_m = int(getattr(cov_idx, "settle_minutes", 0))
-                        except (TypeError, ValueError):
-                            settle_m = 0
-                        if cov_idx is not None:
+                        same_day_served = self._is_same_day_history_served(source_name)
+                        from zoneinfo import ZoneInfo
+
+                        ist_tz = ZoneInfo("Asia/Kolkata")
+                        fetch_ist_date = now_check.astimezone(ist_tz).date()
+
+                        if not same_day_served and d >= fetch_ist_date:
+                            c_status = "PENDING"
+                            c_note = "Same-day history not served by source; pending next-day retry"
+                        else:
+                            c_status = CoverageStatus.EMPTY
+                            c_note = "Expected session returned no bars from source"
+                            cal = getattr(cov_idx, "calendar", None) if cov_idx else None
                             try:
-                                eval_st = cov_idx.evaluate_day_status(
-                                    ds_id, d, has_bars=False, as_of=now_check
-                                )
-                                if eval_st in (CoverageStatus.PARTIAL, CoverageStatus.CLOSED):
-                                    c_status = eval_st
-                                    c_note = (
-                                        "Current session in progress / incomplete"
-                                        if eval_st == CoverageStatus.PARTIAL
-                                        else "Session closed"
-                                    )
-                            except Exception:
-                                pass
-                        # Ensure EMPTY is never assigned before session close + settle margin
-                        if c_status == CoverageStatus.EMPTY:
-                            sess_end = None
-                            if cal is not None:
+                                settle_m = int(getattr(cov_idx, "settle_minutes", 0))
+                            except (TypeError, ValueError):
+                                settle_m = 0
+                            if cov_idx is not None:
                                 try:
-                                    s_list = cal.sessions(d)
-                                    if s_list:
-                                        last_s = s_list[-1]
-                                        if hasattr(last_s, "end") and isinstance(
-                                            last_s.end, datetime
-                                        ):
-                                            sess_end = last_s.end.astimezone(UTC)
+                                    eval_st = cov_idx.evaluate_day_status(
+                                        ds_id, d, has_bars=False, as_of=now_check
+                                    )
+                                    if eval_st in (CoverageStatus.PARTIAL, CoverageStatus.CLOSED):
+                                        c_status = eval_st
+                                        c_note = (
+                                            "Current session in progress / incomplete"
+                                            if eval_st == CoverageStatus.PARTIAL
+                                            else "Session closed"
+                                        )
                                 except Exception:
                                     pass
-                            if not isinstance(sess_end, datetime):
-                                sess_end = datetime(d.year, d.month, d.day, 10, 0, tzinfo=UTC)
-                            deadline = sess_end + timedelta(minutes=settle_m)
-                            if now_check < deadline:
-                                c_status = CoverageStatus.PARTIAL
-                                c_note = "Current session in progress / incomplete"
+                            # Ensure EMPTY is never assigned before session close + settle margin
+                            if c_status == CoverageStatus.EMPTY:
+                                sess_end = None
+                                if cal is not None:
+                                    try:
+                                        s_list = cal.sessions(d)
+                                        if s_list:
+                                            last_s = s_list[-1]
+                                            if hasattr(last_s, "end") and isinstance(
+                                                last_s.end, datetime
+                                            ):
+                                                sess_end = last_s.end.astimezone(UTC)
+                                    except Exception:
+                                        pass
+                                if not isinstance(sess_end, datetime):
+                                    sess_end = datetime(d.year, d.month, d.day, 10, 0, tzinfo=UTC)
+                                deadline = sess_end + timedelta(minutes=settle_m)
+                                if now_check < deadline:
+                                    c_status = CoverageStatus.PARTIAL
+                                    c_note = "Current session in progress / incomplete"
                         cov_empty.append(
                             CoverageDayRecord(
                                 dataset_id=ds_id,
@@ -250,6 +276,12 @@ class Fetcher:
                         error="",
                     )
 
+                    res_status = "OK"
+                    if not bars and cov_empty:
+                        res_status = (
+                            "PENDING" if any(c.status == "PENDING" for c in cov_empty) else "EMPTY"
+                        )
+
                     if self._journal is not None:
                         self._journal.append(
                             kind="data.fetch",
@@ -257,12 +289,12 @@ class Fetcher:
                                 "chunk": chunk.chunk_id,
                                 "source": source_name,
                                 "rows": len(bars),
-                                "status": "OK",
+                                "status": res_status,
                                 "parts": [p.path for p in parts],
                             },
                         )
 
-                return FetchResult(chunk=chunk, status="OK", rows=len(bars))
+                return FetchResult(chunk=chunk, status=res_status, rows=len(bars))
 
             except Exception as exc:
                 last_error = str(exc)
@@ -393,22 +425,39 @@ class Fetcher:
                     # Never overwrite stored bars or COMPLETE status on failure
                     continue
 
+                status_to_write: CoverageStatus = CoverageStatus.EMPTY
+                note_to_write = f"Fetch failed after {self._attempts} retries: {last_error}"
+                if not self._is_same_day_history_served(source_name):
+                    try:
+                        from zoneinfo import ZoneInfo
+
+                        ist_tz = ZoneInfo("Asia/Kolkata")
+                        now_ist = datetime.now(ist_tz).date()
+                        if d >= now_ist:
+                            status_to_write = CoverageStatus.PENDING
+                            note_to_write = (
+                                "Same-day history not served by source; pending next-day retry"
+                            )
+                    except Exception:
+                        pass
+
                 cov_updates.append(
                     CoverageDayRecord(
                         dataset_id=ds_id,
                         day=d_str,
-                        status=CoverageStatus.EMPTY,
+                        status=status_to_write,
                         rows=0,
                         expected_rows=0,
                         part_path="",
                         fetched_at=finished_iso,
-                        note=f"Fetch failed after {self._attempts} retries: {last_error}",
+                        note=note_to_write,
                     )
                 )
 
             if cov_updates:
                 manifest.record_coverage_days(cov_updates)
 
+            final_status = "PENDING" if any(u.status == "PENDING" for u in cov_updates) else "EMPTY"
             if self._journal is not None:
                 self._journal.append(
                     kind="data.fetch",
@@ -416,12 +465,12 @@ class Fetcher:
                         "chunk": chunk.chunk_id,
                         "source": source_name,
                         "rows": 0,
-                        "status": "EMPTY",
+                        "status": final_status,
                         "error": last_error,
                     },
                 )
 
-        return FetchResult(chunk=chunk, status="EMPTY", rows=0, error=last_error)
+        return FetchResult(chunk=chunk, status=final_status, rows=0, error=last_error)
 
     def fetch(self, plan: FetchPlan) -> list[FetchResult]:
         """Execute parallel fetching for all chunks in plan."""

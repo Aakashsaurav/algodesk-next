@@ -314,6 +314,15 @@ This scopes market tick playback strictly to `[first_tick_utc, last_tick_utc]`, 
 
 Replay dispatches all recorded scheduler inputs (`timer.strategy` such as `exit_time`, `portfolio.snapshot`, `bar.timer_close`, `market.closing`, and session stop) at identical monotonic tick sequence numbers (`seq`). This eliminates wall-clock jitter or SimClock shifts, ensuring 100% equivalence in signals, orders, fills, and metrics (`results compare` returns `equal: True`).
 
+**Replaying one of several sessions on a multi-session day**:
+When multiple paper trading sessions are recorded on the same calendar date (e.g. morning and afternoon sessions):
+- Each session records its own tick sequence numbers starting from 1.
+- Tick recorders store a `session_id` column in partitioned Parquet files, preserved during partition compaction.
+- For legacy recordings without a `session_id` column, replay feed isolates ticks using the target session's recorded receive window `[first_tick_recv_utc, last_tick_recv_utc]`, seamlessly continuing past interleaved ticks from other sessions without premature termination.
+- If sequence collisions make the playback window ambiguous, replay safely halts with an actionable `DataError`.
+- Always replay a specific session on multi-session dates via `algodesk replay --session <paper_run_id> --run <run_name>`.
+- Replay never reports `stop_reason="interrupt"` unless an operator actually sends an interrupt signal (`SIGINT`/`SIGTERM`) during the replay run; completing playback of an interrupted paper session records `stop_reason="end of session"`. If feed data ends early before reaching the recorded stop sequence, replay records `stop_reason="replay data ended (<last_tick_time>)"` and verdict `STOPPED`.
+
 **Replay scoping by date (`--dates`)**:
 When replaying by date (`algodesk replay --dates YYYY-MM-DD`):
 - Candidates are strictly scoped to paper trading sessions; replay result folders are ignored.
@@ -433,10 +442,10 @@ Doctor check `data.accumulation_lag` warns if historical datasets are lagging be
 Fetch missing completed trading sessions (1m and 1d) for the trading universe, and reset any stale EMPTY coverage records:
 ```bash
 # Preview stale EMPTY coverage records (e.g. from premature fetches or old date windows)
-algodesk data coverage reset-empty --source yfinance --timeframe 1m --dry-run
+algodesk data coverage reset-empty --source upstox --timeframe 1m --dry-run
 
-# Reset stale EMPTY records to MISSING in manifest and journal
-algodesk data coverage reset-empty --source yfinance --timeframe 1m
+# Reset stale EMPTY records to MISSING in manifest and journal (resets premature same-day EMPTY fetches)
+algodesk data coverage reset-empty --source upstox --timeframe 1m
 
 # Re-derive coverage_days from stored parquet bars (repairs any EMPTY/PARTIAL regressions)
 algodesk data coverage repair --source upstox --timeframe 1m --dry-run
@@ -448,7 +457,7 @@ algodesk data accumulate --group demo5 --source upstox --days 5 --dry-run
 # Execute accumulation (refetch COMPLETE days only when --refresh is specified)
 algodesk data accumulate --group demo5 --source upstox --days 5
 ```
-Reports rows added per instrument and timeframe, refetched days, remaining missing days, and unrecoverable days beyond broker retention windows (e.g. 7 days for yfinance 1m). Uses the shared GapPlanner to evaluate real coverage gaps: when the cache is up to date, it prints "Up to date: no missing completed sessions" and exits 0; days beyond source retention are listed as lost and never planned. Loud failure triggers only when chunks were actually fetched without error and zero rows were added for days that are not final EMPTY. Refetches that return zero rows or fail (HTTP 401, 403, 429, timeout) never overwrite a day that has stored bars or COMPLETE status; auth errors raise a typed error naming `run algodesk login <source>` and are never stored as EMPTY. Records `data.accumulate` to the journal.
+Reports rows added per instrument and timeframe, refetched days, remaining missing days, and unrecoverable days beyond broker retention windows (e.g. 7 days for yfinance 1m). Uses the shared GapPlanner to evaluate real coverage gaps: when the cache is up to date, it prints "Up to date: no missing completed sessions" and exits 0; days beyond source retention are listed as lost and never planned. For sources configured with `source.<name>.same_day_history = false` (such as Upstox), same-day history is not served by the vendor's historical endpoint during or immediately after the session on the same IST date; fetches on that date record non-final `PENDING` status (reported as `MISSING` by `gaps`), and `data accumulate` marks same-day sessions as waiting ("waiting: same-day history not served") and defers fetching until the next IST date. Premature `EMPTY` records from same-day fetches can be cleared with `data coverage reset-empty`. Furthermore, `data coverage repair` reconstructs coverage from stored parquet files while guarding `CLOSED` days—a `CLOSED` day is never turned into `COMPLETE` unless declared as an exchange special session (e.g. Muhurat trading) or flagged with an inferred-closure disagreement. Loud failure triggers only when chunks were actually fetched without error and zero rows were added for days that are not final EMPTY. Refetches that return zero rows or fail (HTTP 401, 403, 429, timeout) never overwrite a day that has stored bars or COMPLETE status; auth errors raise a typed error naming `run algodesk login <source>` and are never stored as EMPTY. Records `data.accumulate` to the journal.
 
 ### 4. Integrity verification, comparison & live smoke test
 Verify store integrity and compare against recorded ticks or secondary sources:

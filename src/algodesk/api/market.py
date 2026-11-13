@@ -229,6 +229,7 @@ class CoverageStatus(StrEnum):
     MISSING = "MISSING"
     QUARANTINED = "QUARANTINED"
     UNAVAILABLE = "UNAVAILABLE"
+    PENDING = "PENDING"
 
 
 @dataclass(frozen=True, slots=True)

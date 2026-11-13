@@ -29,9 +29,41 @@ class _IndicatorEntry:
     state: object
     warmup_needed: int
     current_value: float | None = None
+    current_values: dict[str, float | None] = field(default_factory=dict)
     bars_fed: int = 0
     is_warmed: bool = False
     values_history: list[float] = field(default_factory=list)
+
+
+def _feed_bar_to_entry(entry: _IndicatorEntry, bar: Bar) -> None:
+    inputs = entry.indicator.spec.inputs if hasattr(entry.indicator, "spec") else ("close",)
+    if len(inputs) == 1:
+        f = inputs[0]
+        if f == "close":
+            val_in: Any = bar.close
+        elif f == "volume":
+            val_in = float(bar.volume)
+        else:
+            val_in = float(getattr(bar, f, bar.close))
+    else:
+        val_in = bar
+
+    res = entry.indicator.update(entry.state, val_in)
+    spec_outputs = entry.indicator.spec.outputs if hasattr(entry.indicator, "spec") else ("value",)
+    first_output = spec_outputs[0] if spec_outputs else "value"
+
+    if isinstance(res, Mapping):
+        entry.current_values = {str(k): v for k, v in res.items()}
+        entry.current_value = entry.current_values.get(first_output)
+    else:
+        entry.current_value = res
+        entry.current_values = {first_output: res}
+
+    entry.bars_fed += 1
+    if entry.current_value is not None:
+        entry.values_history.append(entry.current_value)
+    if entry.bars_fed >= entry.warmup_needed and entry.current_value is not None:
+        entry.is_warmed = True
 
 
 class IndicatorManager:
@@ -70,7 +102,9 @@ class IndicatorManager:
         timeframe: str,
         **params: Any,
     ) -> Indicator:
-        key = self._make_key(name, instrument, timeframe, params)
+        clean_params = dict(params)
+        clean_params.pop("output", None)
+        key = self._make_key(name, instrument, timeframe, clean_params)
         if key in self._indicators:
             return self._indicators[key].indicator
 
@@ -78,23 +112,40 @@ class IndicatorManager:
             raise ValueError("IndicatorManager has no indicator plugin configured")
 
         if hasattr(self._plugin, "get_indicator"):
-            ind = cast(Indicator, self._plugin.get_indicator(name, **params))
+            ind = cast(Indicator, self._plugin.get_indicator(name, **clean_params))
         else:
             ind = cast(Indicator, self._plugin)
 
-        warmup = getattr(getattr(ind, "spec", None), "warmup", 0)
-        period = int(params.get("period", 14 if warmup == 0 else warmup + 1))
+        spec = getattr(ind, "spec", None)
+        if spec is not None and getattr(spec, "timeframes", None):
+            tf_low = timeframe.lower()
+            if "intraday" in spec.timeframes:
+                tf_s = parse_timeframe_seconds(timeframe)
+                if tf_s >= 86400 or tf_low.endswith("d") or tf_low.endswith("w"):
+                    raise ValueError(
+                        f"Indicator '{name}' only supports intraday timeframes, got '{timeframe}'"
+                    )
+            elif timeframe not in spec.timeframes:
+                raise ValueError(
+                    f"Indicator '{name}' only supports timeframes {spec.timeframes}, "
+                    f"got '{timeframe}'"
+                )
+
+        warmup = getattr(spec, "warmup", 0) if spec else 0
+        default_p = 14 if warmup == 0 else warmup + 1
+        period = int(clean_params.get("n", clean_params.get("period", default_p)))
         warmup_needed = max(warmup + 1, period)
 
         entry = _IndicatorEntry(
             name=name.lower(),
             instrument=InstrumentId(str(instrument)),
             timeframe=timeframe,
-            params=dict(params),
+            params=clean_params,
             indicator=ind,
             state=ind.new_state(),
             warmup_needed=warmup_needed,
             current_value=None,
+            current_values={},
             bars_fed=0,
             is_warmed=False,
         )
@@ -177,11 +228,7 @@ class IndicatorManager:
             if b not in self._warmed_bars:
                 self._warmed_bars.append(b)
             for e in entries:
-                val = e.indicator.update(e.state, b.close)
-                e.current_value = val
-                e.bars_fed += 1
-                if val is not None:
-                    e.values_history.append(val)
+                _feed_bar_to_entry(e, b)
 
         for e in entries:
             if e.bars_fed >= e.warmup_needed and e.current_value is not None:
@@ -215,11 +262,7 @@ class IndicatorManager:
             grp = series_groups.get((b.instrument, b.timeframe))
             if grp:
                 for e in grp:
-                    val = e.indicator.update(e.state, b.close)
-                    e.current_value = val
-                    e.bars_fed += 1
-                    if val is not None:
-                        e.values_history.append(val)
+                    _feed_bar_to_entry(e, b)
 
         for entry in self._indicators.values():
             entry.is_warmed = (
@@ -233,27 +276,24 @@ class IndicatorManager:
 
         for entry in self._indicators.values():
             if entry.instrument == bar.instrument and entry.timeframe == bar.timeframe:
-                val = entry.indicator.update(entry.state, bar.close)
-                entry.current_value = val
-                entry.bars_fed += 1
-                if val is not None:
-                    entry.values_history.append(val)
-                if entry.bars_fed >= entry.warmup_needed:
-                    entry.is_warmed = True
+                _feed_bar_to_entry(entry, bar)
 
     def get(
         self,
         name: str,
         instrument: InstrumentId | str,
         timeframe: str,
+        output: str | None = None,
         **params: Any,
     ) -> float | None:
         """Get the current indicator value. Returns None if not yet warmed up or ready."""
-        key = self._make_key(name, instrument, timeframe, params)
+        clean_params = dict(params)
+        out = output or clean_params.pop("output", None)
+        key = self._make_key(name, instrument, timeframe, clean_params)
         entry = self._indicators.get(key)
         if entry is None:
             try:
-                self.register(name, instrument, timeframe, **params)
+                self.register(name, instrument, timeframe, **clean_params)
                 entry = self._indicators.get(key)
             except Exception:
                 return None
@@ -261,7 +301,11 @@ class IndicatorManager:
         if entry is None or not entry.is_warmed:
             return None
 
-        return entry.current_value
+        spec_outputs = (
+            entry.indicator.spec.outputs if hasattr(entry.indicator, "spec") else ("value",)
+        )
+        target = out or (spec_outputs[0] if spec_outputs else "value")
+        return entry.current_values.get(target)
 
     def is_ready(
         self,
@@ -271,6 +315,8 @@ class IndicatorManager:
         **params: Any,
     ) -> bool:
         """Check whether the indicator has completed warm-up."""
-        key = self._make_key(name, instrument, timeframe, params)
+        clean_params = dict(params)
+        clean_params.pop("output", None)
+        key = self._make_key(name, instrument, timeframe, clean_params)
         entry = self._indicators.get(key)
         return entry.is_warmed if entry is not None else False

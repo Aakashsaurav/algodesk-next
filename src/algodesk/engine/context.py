@@ -78,8 +78,11 @@ def build_strategy_context(
         name: str,
         instrument: InstrumentId | str,
         timeframe: str,
+        output: str | None = None,
         **kw: Any,
     ) -> float | None:
+        if output is not None:
+            return indicator_manager.get(name, instrument, timeframe, output=output, **kw)
         return indicator_manager.get(name, instrument, timeframe, **kw)
 
     def _get_position(instrument: InstrumentId | str) -> Position | None:

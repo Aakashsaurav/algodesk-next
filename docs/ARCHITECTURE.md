@@ -125,7 +125,7 @@ AlgoDesk Next enforces strict session observability across file logging, write-a
 
 ## 13. Not built yet
 
-- **M3 Indicators and screens**: Full built-in set, custom-indicator scaffold, TOML and Python screens, saved screen runs.
+- **M3 Indicators and screens**: Built-in 10 indicators, multi-input/multi-output contracts, scaffold with golden.toml conformance, list/show/compute commands. Remaining: TOML and Python screens, saved screen runs.
 - **M4 Backtester and reports**: Backtest mode (bar and tick level), models, portfolio mode, results store, compare.
 - **M5 Risk and control**: Risk profiles in the parameter registry, monitors, health guards, Telegram commands, outage policies.
 - **M6 Zerodha plugin and shadow**: Zerodha venue (disabled by default), all order types, reconciliation, fee schedules, shadow mode.

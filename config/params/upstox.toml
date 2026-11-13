@@ -118,6 +118,15 @@ description = "HTTP request timeout in seconds for Upstox REST calls"
 owner = "upstox"
 
 [[param]]
+name = "source.upstox.same_day_history"
+type = "bool"
+default = false
+scope = "global"
+tighten = "none"
+description = "Whether Upstox serves intraday historical bars on the day of the session itself"
+owner = "upstox"
+
+[[param]]
 name = "source.upstox.history.requests_per_second"
 type = "float"
 default = 40.0

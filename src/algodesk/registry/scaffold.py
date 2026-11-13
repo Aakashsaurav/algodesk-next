@@ -77,6 +77,7 @@ def _write_scaffold_files(target_dir: Path, k: str, name: str, class_name: str) 
         )
         extra_imports = "from algodesk.api.errors import ConfigError\n"
     elif k == "indicator":
+        (target_dir / "golden.toml").write_text("", encoding="utf-8")
         stubs = (
             f"    spec = IndicatorSpec(name='{name}')\n\n"
             "    def compute(self, values: Any) -> Any:\n        return list(values)\n\n"
