@@ -198,7 +198,7 @@ class SessionRunner:
                             and seq is not None
                         ):
                             self._recorded_events_by_seq.setdefault(int(seq), []).append(
-                                {"kind": k, "payload": p}
+                                {"kind": k, "payload": p, "ts_utc": e.get("ts_utc")}
                             )
                         if k == "run.end":
                             self._recorded_stop_seq = (
@@ -287,6 +287,7 @@ class SessionRunner:
         self._feed_gaps = 0
         self._killswitch_events = 0
         self._rejects_by_rule: dict[str, int] = {}
+        self._pending_bar_tasks: list[asyncio.Task[Any]] = []
         self._equity_curve: list[dict[str, Any]] = []
         self._latest_quotes: dict[InstrumentId, Quote] = {}
 
@@ -954,6 +955,7 @@ class SessionRunner:
             bus=bus,
             notifier=notify,
             on_intent=self._on_strategy_intent,
+            on_reject=self._on_signal_rejected,
         )
 
         inst_map: Mapping[InstrumentId | str, Instrument] = {k: v for k, v in instruments.items()}
@@ -1063,7 +1065,8 @@ class SessionRunner:
             self._last_bar_close_mono[bar.instrument] = now_mono
             self._last_bar_trigger_mono[bar.instrument] = now_mono
             self._last_bar_end_ts[bar.instrument] = getattr(bar, "end_ts", self.clock.now())
-            asyncio.create_task(_on_bar_closed(bar))
+            task = asyncio.create_task(_on_bar_closed(bar))
+            self._pending_bar_tasks.append(task)
 
         tfs = [s.params.get("timeframe", "5m") for s in self.run_config.strategies]
         return BarBuilder(
@@ -1074,6 +1077,16 @@ class SessionRunner:
             on_bar_closed=_on_bar_sync,
             on_timer_bar_closed=_on_timer_close,
         )
+
+    def _on_signal_rejected(
+        self, intent: Any, decision: Any | None, component: str = "risk"
+    ) -> None:
+        if decision is not None and not getattr(decision, "allow", True):
+            rules = [r.strip() for r in str(getattr(decision, "rule", "")).split(",") if r.strip()]
+            for r in rules:
+                self._rejects_by_rule[r] = self._rejects_by_rule.get(r, 0) + 1
+        elif component:
+            self._rejects_by_rule[component] = self._rejects_by_rule.get(component, 0) + 1
 
     def _on_strategy_intent(self, inst: Any, now_dt: datetime) -> None:
         self._signals_count += 1
@@ -1165,6 +1178,13 @@ class SessionRunner:
 
         return res
 
+    async def _drain_pending_bar_tasks(self, c: dict[str, Any]) -> None:
+        while self._pending_bar_tasks:
+            tasks = list(self._pending_bar_tasks)
+            self._pending_bar_tasks.clear()
+            await asyncio.gather(*tasks)
+        await self._drain_venue_events(c)
+
     async def _apply_recorded_events(
         self,
         seq: int,
@@ -1178,11 +1198,20 @@ class SessionRunner:
         for ev in events:
             kind = ev["kind"]
             p = ev["payload"]
+            ts_str = ev.get("ts_utc")
+            if ts_str and hasattr(clock, "set_time"):
+                try:
+                    ev_dt = datetime.fromisoformat(ts_str)
+                    if clock.now() < ev_dt:
+                        clock.set_time(ev_dt)
+                except Exception:
+                    pass
             if kind == "bar.timer_close":
                 inst_id = p["instrument"]
                 tf = p["timeframe"]
                 end_ts = datetime.fromisoformat(p["end_ts"])
                 c["bar_builder"].close_bar_timer(inst_id, tf, end_ts)
+                await self._drain_pending_bar_tasks(c)
             elif kind == "timer.strategy":
                 name = p.get("name", "exit_time")
                 journal.append(
@@ -1403,7 +1432,7 @@ class SessionRunner:
                         ltp=ev.ltp,
                         volume=ev.volume,
                     )
-                await asyncio.sleep(0)
+                await self._drain_pending_bar_tasks(c)
             elif isinstance(ev, FeedStatus):
                 notify.notify_feed_status(ev)
                 if ev.state == "connected":
@@ -2445,6 +2474,9 @@ class SessionRunner:
             if is_fail and self._run_error
             else ("Feed halted / risk breach" if is_fail else None)
         )
+        if c.get("risk_engine") is not None and hasattr(c["risk_engine"], "rejects_by_rule"):
+            for r, count in c["risk_engine"].rejects_by_rule.items():
+                self._rejects_by_rule[r] = max(self._rejects_by_rule.get(r, 0), count)
         metrics = {
             "date": date_str,
             "mode": mode_str,

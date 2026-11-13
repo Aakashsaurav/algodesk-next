@@ -17,7 +17,7 @@ ignore_values = [0, 1, -1, 0.0, 1.0, -1.0]
 allowed_framework_roots = ["algodesk.api"]
 
 [exclusions]
-directories = [".agents", "_workbench", "__pycache__", "proto"]
+directories = [".agents", "_workbench", "__pycache__", "proto", "graphify-out"]
 
 [direct_clock]
 banned_symbols = ["datetime.now", "datetime.utcnow", "time.time"]

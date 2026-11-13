@@ -62,6 +62,7 @@ class RiskEngine:
         self.rules = list(rules)
         self.journal = journal
         self.observe = observe
+        self.rejects_by_rule: dict[str, int] = {}
 
     def add_rule(self, rule: RiskRule) -> None:
         """Register an active risk rule."""
@@ -242,6 +243,9 @@ class RiskEngine:
 
     def _journal_decision(self, intent_id: str, decision: RiskDecision) -> None:
         """Record risk.decision in journal."""
+        if not decision.allow:
+            for r in [x.strip() for x in str(decision.rule).split(",") if x.strip()]:
+                self.rejects_by_rule[r] = self.rejects_by_rule.get(r, 0) + 1
         if self.journal is not None and hasattr(self.journal, "append"):
             self.journal.append(
                 "risk.decision",

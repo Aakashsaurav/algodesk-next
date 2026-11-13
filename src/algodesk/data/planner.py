@@ -237,7 +237,10 @@ class GapPlanner:
             rec = existing_cov.get(day_str)
             if rec is not None:
                 if rec.status == CoverageStatus.COMPLETE:
-                    complete.append(cur)
+                    if refresh:
+                        missing.append(cur)
+                    else:
+                        complete.append(cur)
                 elif rec.status == CoverageStatus.CLOSED:
                     closed.append(cur)
                 elif rec.status == CoverageStatus.UNAVAILABLE:

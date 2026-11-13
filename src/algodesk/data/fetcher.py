@@ -6,10 +6,10 @@ import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
 
-from algodesk.api.errors import DataError, RateLimitError
+from algodesk.api.errors import AuthError, DataError, RateLimitError
 from algodesk.api.market import CoverageStatus, SeriesKey
 from algodesk.api.protocols import DataSource
 from algodesk.api.services import JournalWriter, ParamReader
@@ -85,6 +85,10 @@ class Fetcher:
         )
         self._attempts = max(0, retries if retries is not None else _p_int("data.fetch_retries", 1))
 
+    def _store_tz(self) -> tzinfo:
+        tz = getattr(self._store, "exchange_tz", None)
+        return tz if isinstance(tz, tzinfo) else UTC
+
     def _resolve_source(self, name: str) -> DataSource:
         if name not in self._sources:
             raise DataError(
@@ -145,8 +149,41 @@ class Fetcher:
                         else None
                     )
                     now_check = datetime.now(UTC)
+                    existing_cov = {
+                        r.day: r
+                        for r in manifest.get_coverage_days(
+                            ds_id,
+                            start_day=chunk.start_day.isoformat(),
+                            end_day=chunk.end_day.isoformat(),
+                        )
+                    }
                     cov_empty = []
                     for d in missing_chunk_days:
+                        d_str = d.isoformat()
+                        old_rec = existing_cov.get(d_str)
+                        has_complete = (
+                            old_rec is not None and old_rec.status == CoverageStatus.COMPLETE
+                        )
+                        has_cov_rows = old_rec is not None and old_rec.rows > 0
+                        has_stored_bars = False
+                        if not has_complete and not has_cov_rows:
+                            d_start = datetime.combine(
+                                d, time(0, 0), tzinfo=self._store_tz()
+                            ).astimezone(UTC)
+                            d_end = datetime.combine(
+                                d, time(23, 59, 59), tzinfo=self._store_tz()
+                            ).astimezone(UTC)
+                            try:
+                                has_stored_bars = (
+                                    len(self._store.read(base_key, d_start, d_end).bars) > 0
+                                )
+                            except Exception:
+                                has_stored_bars = False
+
+                        # Zero-row refetch never changes a day with stored bars or COMPLETE status
+                        if has_complete or has_cov_rows or has_stored_bars:
+                            continue
+
                         c_status = CoverageStatus.EMPTY
                         c_note = "Expected session returned no bars from source"
                         cal = getattr(cov_idx, "calendar", None) if cov_idx else None
@@ -265,6 +302,43 @@ class Fetcher:
                         error=last_error,
                     )
 
+                is_auth_error = (
+                    isinstance(exc, AuthError)
+                    or "401" in last_error
+                    or "403" in last_error
+                    or "algodesk login" in last_error.lower()
+                    or "authentication" in last_error.lower()
+                    or "authorization" in last_error.lower()
+                )
+                if is_auth_error:
+                    finished_iso = datetime.now(UTC).isoformat()
+                    with self._lock:
+                        manifest.record_fetch_log(
+                            chunk=chunk.chunk_id,
+                            source=source_name,
+                            started=started_iso,
+                            finished=finished_iso,
+                            rows=0,
+                            outcome="AUTH_ERROR",
+                            error=last_error,
+                        )
+                        if self._journal is not None:
+                            self._journal.append(
+                                kind="data.fetch",
+                                payload={
+                                    "chunk": chunk.chunk_id,
+                                    "source": source_name,
+                                    "rows": 0,
+                                    "status": "AUTH_ERROR",
+                                    "error": last_error,
+                                },
+                            )
+                    raise AuthError(
+                        what=f"Authentication failed for source '{source_name}': {last_error}",
+                        where=f"Fetcher.{source_name}",
+                        fix=f"run algodesk login {source_name}",
+                    ) from exc
+
                 if (
                     "429" in last_error
                     or "too many requests" in last_error.lower()
@@ -274,7 +348,7 @@ class Fetcher:
 
                 attempts += 1
 
-        # All retries exhausted -> mark EMPTY with the error
+        # All retries exhausted -> record failure, never overwrite stored bars or COMPLETE days
         finished_iso = datetime.now(UTC).isoformat()
         with self._lock:
             manifest.record_fetch_log(
@@ -283,25 +357,57 @@ class Fetcher:
                 started=started_iso,
                 finished=finished_iso,
                 rows=0,
-                outcome="EMPTY",
+                outcome="FAILED",
                 error=last_error,
             )
 
             ds_id = self._store.dataset_id(base_key)
-            cov_updates = [
-                CoverageDayRecord(
-                    dataset_id=ds_id,
-                    day=d.isoformat(),
-                    status=CoverageStatus.EMPTY,
-                    rows=0,
-                    expected_rows=0,
-                    part_path="",
-                    fetched_at=finished_iso,
-                    note=f"Fetch failed after {self._attempts} retries: {last_error}",
+            existing_cov = {
+                r.day: r
+                for r in manifest.get_coverage_days(
+                    ds_id,
+                    start_day=chunk.start_day.isoformat(),
+                    end_day=chunk.end_day.isoformat(),
                 )
-                for d in chunk.days
-            ]
-            manifest.record_coverage_days(cov_updates)
+            }
+            cov_updates = []
+            for d in chunk.days:
+                d_str = d.isoformat()
+                old_rec = existing_cov.get(d_str)
+                has_complete = old_rec is not None and old_rec.status == CoverageStatus.COMPLETE
+                has_cov_rows = old_rec is not None and old_rec.rows > 0
+                has_stored_bars = False
+                if not has_complete and not has_cov_rows:
+                    d_start = datetime.combine(d, time(0, 0), tzinfo=self._store_tz()).astimezone(
+                        UTC
+                    )
+                    d_end = datetime.combine(
+                        d, time(23, 59, 59), tzinfo=self._store_tz()
+                    ).astimezone(UTC)
+                    try:
+                        has_stored_bars = len(self._store.read(base_key, d_start, d_end).bars) > 0
+                    except Exception:
+                        has_stored_bars = False
+
+                if has_complete or has_cov_rows or has_stored_bars:
+                    # Never overwrite stored bars or COMPLETE status on failure
+                    continue
+
+                cov_updates.append(
+                    CoverageDayRecord(
+                        dataset_id=ds_id,
+                        day=d_str,
+                        status=CoverageStatus.EMPTY,
+                        rows=0,
+                        expected_rows=0,
+                        part_path="",
+                        fetched_at=finished_iso,
+                        note=f"Fetch failed after {self._attempts} retries: {last_error}",
+                    )
+                )
+
+            if cov_updates:
+                manifest.record_coverage_days(cov_updates)
 
             if self._journal is not None:
                 self._journal.append(

@@ -43,6 +43,14 @@ Checklists and tooling to minimize iteration loop latency and context token cons
 7. **Symbol ranged reads**:
    - `algodesk api index` regenerates `_workbench/API_INDEX.md` with AST-derived `file:start-end` line ranges for every public class, function, and method. Agents locate definitions via grep and perform targeted line-range reads.
 
+8. **Graphify codebase graph**:
+   - **Build**: create graph via `graphify .` (or extract code without LLM via `graphify update .`).
+   - **Rebuild after commit**: keep the graph current via `graphify update .` (AST-only code re-extraction, zero API cost).
+   - **Uninstall**: remove the venv, `.agents/skills/graphify`, and `graphify-out` via:
+     ```bash
+     rm -rf .local/graphify-venv .agents/skills/graphify graphify-out
+     ```
+
 ## Before every commit
 
 1. Run quality gates in `scripts/check.sh` via `bash scripts/check.sh`; expect `CHECK: PASS`.
@@ -316,7 +324,10 @@ Compare performance metrics and ordered event sequences (signals, risk decisions
 ```bash
 algodesk results compare <paper_run_id> <replay_run_id>
 ```
-On any divergence, `results compare` prints the exact first differing signal, order, or fill with both timestamps and prices (e.g., `signals[31]: A [ts=..., price=...] != B [ts=..., price=...] (metrics.gross_pnl: -20.7 != -20.3)`).
+On any divergence, `results compare` prints sequence counts (`signals`, `risk_decisions`, `orders`, `fills`) and up to 3 individual differences per sequence with timestamps, instruments, sides, and prices (e.g. `signals[39]: A [ts=..., price=..., inst=..., side=...] != B [ts=..., price=..., inst=..., side=...]`). Subsecond microsecond jitter in timer exit intent IDs and minor float variations in stale quote age reasons are normalized during semantic comparison.
+
+**Dropped signal observability and Rejects by Rule**:
+Every signal emitted by a strategy that does not become an order is journaled with the rejecting rule or component (data_integrity stale data, duplicate_entry_guard, oms, etc.) and aggregated into Rejects by Rule in `metrics.json` and session reports. In replay, asynchronous bar tasks are gathered and awaited synchronously (`_drain_pending_bar_tasks`) before subsequent ticks or recorded events are dispatched, advancing `SimClock` monotonically to recorded timestamps so that quote age evaluations match paper execution identically.
 
 **Graceful shutdown and operator interrupts**:
 For sessions of 60 minutes or longer, prevent OS system sleep using `caffeinate -i algodesk run demo_paper_fast`.
@@ -427,13 +438,17 @@ algodesk data coverage reset-empty --source yfinance --timeframe 1m --dry-run
 # Reset stale EMPTY records to MISSING in manifest and journal
 algodesk data coverage reset-empty --source yfinance --timeframe 1m
 
+# Re-derive coverage_days from stored parquet bars (repairs any EMPTY/PARTIAL regressions)
+algodesk data coverage repair --source upstox --timeframe 1m --dry-run
+algodesk data coverage repair --source upstox --timeframe 1m
+
 # Preview accumulation plan without network calls
 algodesk data accumulate --group demo5 --source upstox --days 5 --dry-run
 
-# Execute accumulation
+# Execute accumulation (refetch COMPLETE days only when --refresh is specified)
 algodesk data accumulate --group demo5 --source upstox --days 5
 ```
-Reports rows added per instrument and timeframe, refetched days, remaining missing days, and unrecoverable days beyond broker retention windows (e.g. 7 days for yfinance 1m). Uses the shared GapPlanner to evaluate real coverage gaps: when the cache is up to date, it prints "Up to date: no missing completed sessions" and exits 0; days beyond source retention are listed as lost and never planned. Loud failure triggers only when chunks were actually fetched and zero rows were added for days that are not final EMPTY. Records `data.accumulate` to the journal.
+Reports rows added per instrument and timeframe, refetched days, remaining missing days, and unrecoverable days beyond broker retention windows (e.g. 7 days for yfinance 1m). Uses the shared GapPlanner to evaluate real coverage gaps: when the cache is up to date, it prints "Up to date: no missing completed sessions" and exits 0; days beyond source retention are listed as lost and never planned. Loud failure triggers only when chunks were actually fetched without error and zero rows were added for days that are not final EMPTY. Refetches that return zero rows or fail (HTTP 401, 403, 429, timeout) never overwrite a day that has stored bars or COMPLETE status; auth errors raise a typed error naming `run algodesk login <source>` and are never stored as EMPTY. Records `data.accumulate` to the journal.
 
 ### 4. Integrity verification, comparison & live smoke test
 Verify store integrity and compare against recorded ticks or secondary sources:
@@ -447,7 +462,7 @@ algodesk data compare --date 2026-11-09 --symbols RELIANCE,TCS --source yfinance
 # Execute live smoke test (owner-run, network)
 algodesk data smoke --symbols RELIANCE,TCS
 ```
-`data compare` reconstructs 1m bars in memory from recorded ticks using `BarBuilder` (aligned to the exchange IST session across UTC partitions), closes active boundary bars deterministically, and fetches vendor source 1m bars through `DataService`. The output table reports bar counts (`BUILT`, `SOURCE`, `MATCHED`), first/last bar timestamps in IST (`BUILT FIRST`, `BUILT LAST`, `SRC FIRST`, `SRC LAST`), one-sided bar counts (`BUILT ONLY`, `SRC ONLY`), and price/volume difference metrics. When tick recording starts mid-session, the first built bar's volume difference (which carries cumulative day volume) is excluded from `MAX VOL DIFF` and `MEDIAN VOL DIFF`, marked `MAX VOL DIFF*`, and explained with a footnote. When built bars exist where the vendor source has no bars (e.g. dropped historical minutes), an explicit "SRC MISSING" explanation line is emitted. If either side has no bars, it refuses cleanly with exit code 1 naming which side was empty and why (`no ticks recorded`, `source returned nothing`, or `date beyond the source's retention`), never printing a table of zeros.
+`data compare` reconstructs 1m bars in memory from recorded ticks using `BarBuilder` (aligned to the exchange IST session across UTC partitions), closes active boundary bars deterministically, and fetches vendor source 1m bars through `DataService`. The output table reports bar counts (`BUILT`, `SOURCE`, `MATCHED`), first/last bar timestamps in IST (`BUILT FIRST`, `BUILT LAST`, `SRC FIRST`, `SRC LAST`), one-sided bar counts (`BUILT ONLY`, `SRC ONLY`), and price/volume difference metrics. When tick recording starts mid-session, the first built bar's volume difference (which carries cumulative day volume) is excluded from `MAX VOL DIFF` and `MEDIAN VOL DIFF`, marked `MAX VOL DIFF*`, and explained with a footnote. When built bars exist where the vendor source has no bars (e.g. dropped historical minutes), an explicit "SRC MISSING" explanation line is emitted. If either side has no bars, it refuses cleanly with exit code 1 naming which side was empty and why (`no ticks recorded`, `same-day candles are not served by the history endpoint`, `source returned nothing`, or `date beyond the source's retention`), never printing a table of zeros.
 
 `data smoke` verifies that repeated `get` queries execute with zero network calls (100% cache hits) across COMPLETE, CLOSED, or retry-exhausted EMPTY days. In-progress sessions (`CoverageStatus.PARTIAL`) before settlement deadline are excluded from failure checks and listed, and any network calls made on Run 2 are itemized. EMPTY days are final after `data.fetch_retries` until refetched via `algodesk data get ... --refresh`.
 

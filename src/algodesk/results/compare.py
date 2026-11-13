@@ -148,7 +148,23 @@ def _compare_metrics(
 def _item_semantic_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
     """Compare items ignoring internal tracking metadata (_ts, _price)."""
     keys = (set(a.keys()) | set(b.keys())) - {"_ts", "_price"}
-    return all(a.get(k) == b.get(k) for k in keys)
+    for k in keys:
+        va, vb = a.get(k), b.get(k)
+        if k == "reason" and isinstance(va, str) and isinstance(vb, str):
+            norm_a = re.sub(r"Quote age \d+\.\d+s", "Quote age <age>s", va)
+            norm_b = re.sub(r"Quote age \d+\.\d+s", "Quote age <age>s", vb)
+            if norm_a != norm_b:
+                return False
+            continue
+        if k == "intent_id" and isinstance(va, str) and isinstance(vb, str):
+            norm_a = re.sub(r"^(timer_exit_.*_\d+)\.\d+$", r"\1", va)
+            norm_b = re.sub(r"^(timer_exit_.*_\d+)\.\d+$", r"\1", vb)
+            if norm_a != norm_b:
+                return False
+            continue
+        if va != vb:
+            return False
+    return True
 
 
 def _format_item_diff(
@@ -180,22 +196,44 @@ def _format_item_diff(
     )
 
 
+def _collect_sequence_diffs(
+    name: str,
+    seq_a: list[dict[str, Any]],
+    seq_b: list[dict[str, Any]],
+    diff_count: int = 1,
+) -> list[str]:
+    """Collect up to diff_count differences for a sequence."""
+    diffs: list[str] = []
+    common_len = min(len(seq_a), len(seq_b))
+    for idx in range(common_len):
+        if not _item_semantic_equal(seq_a[idx], seq_b[idx]):
+            diffs.append(_format_item_diff(name, idx, seq_a[idx], seq_b[idx]))
+            if len(diffs) >= diff_count:
+                return diffs
+    if len(seq_a) != len(seq_b):
+        for idx in range(common_len, max(len(seq_a), len(seq_b))):
+            item_a = seq_a[idx] if idx < len(seq_a) else None
+            item_b = seq_b[idx] if idx < len(seq_b) else None
+            diff_str = _format_item_diff(name, idx, item_a, item_b)
+            if not diffs and idx == common_len:
+                diff_str = f"{name} count ({len(seq_a)} != {len(seq_b)}): {diff_str}"
+            diffs.append(diff_str)
+            if len(diffs) >= diff_count:
+                break
+    return diffs
+
+
 def _compare_sequence_items(
     name: str,
     seq_a: list[dict[str, Any]],
     seq_b: list[dict[str, Any]],
 ) -> str | None:
     """Compare two ordered event lists and return first difference with timestamps/prices."""
-    common_len = min(len(seq_a), len(seq_b))
-    for idx in range(common_len):
-        if not _item_semantic_equal(seq_a[idx], seq_b[idx]):
-            return _format_item_diff(name, idx, seq_a[idx], seq_b[idx])
-    if len(seq_a) != len(seq_b):
-        idx = common_len
-        item_a = seq_a[idx] if idx < len(seq_a) else None
-        item_b = seq_b[idx] if idx < len(seq_b) else None
-        diff_str = _format_item_diff(name, idx, item_a, item_b)
-        return f"{name} count ({len(seq_a)} != {len(seq_b)}): {diff_str}"
+    diffs = _collect_sequence_diffs(name, seq_a, seq_b, diff_count=1)
+    if diffs:
+        if len(seq_a) != len(seq_b) and min(len(seq_a), len(seq_b)) == 0:
+            return f"{name} count ({len(seq_a)} != {len(seq_b)}): {diffs[0]}"
+        return diffs[0]
     return None
 
 
@@ -308,18 +346,35 @@ def compare_runs(
     seqs_a = _extract_sequences(events_a)
     seqs_b = _extract_sequences(events_b)
 
-    diff_seq: str | None = None
-    for seq_name in ("signals", "orders", "fills", "risk_decisions"):
-        diff_seq = _compare_sequence_items(seq_name, seqs_a[seq_name], seqs_b[seq_name])
-        if diff_seq is not None:
-            break
+    seq_names = ("signals", "risk_decisions", "orders", "fills")
+    counts = {s_name: (len(seqs_a[s_name]), len(seqs_b[s_name])) for s_name in seq_names}
+    seq_diffs = {
+        s_name: _collect_sequence_diffs(s_name, seqs_a[s_name], seqs_b[s_name], diff_count=3)
+        for s_name in seq_names
+    }
 
-    if diff_seq is not None:
-        detail = f"{diff_seq} ({diff_metric})" if diff_metric else diff_seq
+    has_diffs = any(bool(d) for d in seq_diffs.values())
+    if has_diffs or diff_metric is not None:
+        first_diff: str | None = None
+        for s_name in ("signals", "orders", "fills", "risk_decisions"):
+            if seq_diffs.get(s_name):
+                first_diff = seq_diffs[s_name][0]
+                break
+        if first_diff is None:
+            first_diff = diff_metric or "metrics difference"
+        elif diff_metric:
+            first_diff = f"{first_diff} ({diff_metric})"
+
+        counts_str = ", ".join(f"{k} (A={v[0]}, B={v[1]})" for k, v in counts.items())
+        diff_lines = [first_diff, f"counts: {counts_str}"]
+        for s_name in seq_names:
+            diff_list = seq_diffs.get(s_name, [])
+            if diff_list:
+                diff_lines.append(f"{s_name} differences (showing first {len(diff_list)}):")
+                for d in diff_list:
+                    diff_lines.append(f"  {d}")
+        detail = "\n".join(diff_lines)
         return False, _attach_version_diffs(dir_a, dir_b, detail)
-
-    if diff_metric is not None:
-        return False, _attach_version_diffs(dir_a, dir_b, diff_metric)
 
     v_diffs = _format_version_differences(dir_a, dir_b)
     if v_diffs:

@@ -181,6 +181,7 @@ def _plan_item_for_series(
     src_manifest: PluginManifest,
     now_utc: datetime,
     ist_tz: zoneinfo.ZoneInfo,
+    refresh: bool = False,
 ) -> AccumulationPlanItem:
     """Evaluate single series using GapPlanner and build AccumulationPlanItem."""
     key = SeriesKey(
@@ -199,7 +200,7 @@ def _plan_item_for_series(
         source_manifest=src_manifest,
         as_of=now_utc,
         exchange_tz=ist_tz,
-        refresh=False,
+        refresh=refresh,
     )
     missing_set = set(plan.missing_days)
     unavailable_set = set(plan.unavailable_days)
@@ -241,6 +242,7 @@ def plan_accumulation(
     runtime: Any,
     calendar: Any = None,
     now_dt: datetime | None = None,
+    refresh: bool = False,
 ) -> tuple[list[str], list[AccumulationPlanItem]]:
     """Build accumulation plan for group instruments across 1m and 1d using GapPlanner."""
     root, data_dir = _resolve_paths(runtime)
@@ -277,6 +279,7 @@ def plan_accumulation(
                         src_manifest,
                         now_utc,
                         ist_tz,
+                        refresh=refresh,
                     )
                 )
     finally:
@@ -290,6 +293,7 @@ def _fetch_item_bars(
     item: AccumulationPlanItem,
     source: str,
     ds: Any,
+    refresh: bool = False,
 ) -> tuple[int, bool]:
     """Fetch bars for a single plan item, returning (rows_added, success)."""
     if not item.fetchable_sessions:
@@ -308,18 +312,37 @@ def _fetch_item_bars(
         source=source,
     )
     try:
-        d_slice = ds.get(series=key, start=start_dt, end=end_dt, download="raw", fill_only=True)
-        return (len(d_slice.bars) if d_slice else 0), True
+        try:
+            d_slice = ds.get(
+                series=key,
+                start=start_dt,
+                end=end_dt,
+                download="raw",
+                fill_only=False,
+                refresh=refresh,
+            )
+        except TypeError:
+            d_slice = ds.get(
+                series=key,
+                start=start_dt,
+                end=end_dt,
+                download="raw",
+                fill_only=False,
+            )
+        return (len(d_slice.bars) if d_slice and d_slice.bars else 0), True
     except Exception:
         return 0, False
 
 
 def _run_fetches(
-    plan_items: Sequence[AccumulationPlanItem], source: str, ds: Any
+    plan_items: Sequence[AccumulationPlanItem],
+    source: str,
+    ds: Any,
+    refresh: bool = False,
 ) -> tuple[int, int]:
     rows_added, missing_after = 0, 0
     for it in plan_items:
-        added, ok = _fetch_item_bars(it, source, ds)
+        added, ok = _fetch_item_bars(it, source, ds, refresh=refresh)
         rows_added += added
         if not ok:
             missing_after += len(it.fetchable_sessions)
@@ -371,6 +394,7 @@ def execute_accumulation(
     data_service: Any = None,
     calendar: Any = None,
     now_dt: datetime | None = None,
+    refresh: bool = False,
 ) -> AccumulationReport:
     """Execute data accumulation for group, fetching missing bars and journaling."""
     instruments, plan_items = plan_accumulation(
@@ -380,6 +404,7 @@ def execute_accumulation(
         runtime=runtime,
         calendar=calendar,
         now_dt=now_dt,
+        refresh=refresh,
     )
     total_lost = sum(len(it.lost_sessions) for it in plan_items)
     report = AccumulationReport(
@@ -410,7 +435,7 @@ def execute_accumulation(
     total_refetched = 0
     instrument_rows: dict[tuple[str, str], int] = {}
     for it in plan_items:
-        added, ok = _fetch_item_bars(it, source, data_service)
+        added, ok = _fetch_item_bars(it, source, data_service, refresh=refresh)
         it.rows_added = added
         instrument_rows[(it.instrument, it.timeframe)] = added
         rows_added += added

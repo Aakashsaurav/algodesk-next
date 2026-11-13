@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from dataclasses import asdict, dataclass
+from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any
 
 from algodesk.api.market import CoverageStatus, DataGap
@@ -419,3 +421,162 @@ def reset_stale_empty_coverage(
             )
 
     return to_reset
+
+
+@dataclass(frozen=True)
+class CoverageRepairItem:
+    """Record of a coverage day repair action re-derived from parquet bars."""
+
+    dataset_id: str
+    day: str
+    old_status: str
+    new_status: str
+    old_rows: int
+    new_rows: int
+    part_path: str
+    note: str
+
+
+def repair_coverage(
+    manifest: DataManifest,
+    data_dir: Path,
+    calendar: Calendar | None = None,
+    source: str | None = None,
+    timeframe: str | None = None,
+    dry_run: bool = False,
+    journal: Any = None,
+    now_dt: datetime | None = None,
+) -> list[CoverageRepairItem]:
+    """Re-derive coverage_days from stored parquet files.
+
+    If bars are present in stored parquet and the session is complete,
+    ensures status is COMPLETE with accurate row count, journaling any changes.
+    """
+    from zoneinfo import ZoneInfo
+
+    import pyarrow.parquet as pq
+
+    exch_tz = ZoneInfo("Asia/Kolkata")
+    now_ist = (now_dt or datetime.now(UTC)).astimezone(exch_tz)
+    today = now_ist.date()
+
+    datasets = manifest.list_datasets(kind="bars")
+    repaired_items: list[CoverageRepairItem] = []
+    to_update_records: list[CoverageDayRecord] = []
+
+    for ds in datasets:
+        parts = ds.dataset_id.split(":")
+        r_source = parts[1].lower() if len(parts) >= 2 else ""
+        r_tf = parts[2].lower() if len(parts) >= 3 else ""
+
+        if source and r_source != source.strip().lower():
+            continue
+        if timeframe and r_tf != timeframe.strip().lower():
+            continue
+
+        existing_cov = {r.day: r for r in manifest.get_coverage_days(ds.dataset_id)}
+        ds_parts = manifest.get_parts(ds.dataset_id)
+        if not ds_parts:
+            continue
+
+        day_counts: dict[str, int] = {}
+        day_paths: dict[str, str] = {}
+
+        for p in ds_parts:
+            p_full = data_dir / p.path if not Path(p.path).is_absolute() else Path(p.path)
+            if not p_full.exists():
+                continue
+            try:
+                tbl = pq.read_table(p_full, columns=["start_ts"])
+                if "start_ts" not in tbl.column_names or tbl.num_rows == 0:
+                    continue
+                for ts_val in tbl.column("start_ts").to_pylist():
+                    if isinstance(ts_val, datetime):
+                        ts_ist = (
+                            ts_val.astimezone(exch_tz)
+                            if ts_val.tzinfo
+                            else ts_val.replace(tzinfo=UTC).astimezone(exch_tz)
+                        )
+                        d_str = ts_ist.strftime("%Y-%m-%d")
+                        day_counts[d_str] = day_counts.get(d_str, 0) + 1
+                        day_paths[d_str] = p.path
+            except Exception:
+                continue
+
+        for d_str, count in sorted(day_counts.items()):
+            if count <= 0:
+                continue
+            d_date = date.fromisoformat(d_str)
+
+            is_complete_session = False
+            if d_date < today:
+                is_complete_session = True
+            elif d_date == today:
+                if calendar is not None:
+                    try:
+                        s_list = calendar.sessions(d_date)
+                        if (
+                            s_list
+                            and hasattr(s_list[-1], "end")
+                            and isinstance(s_list[-1].end, datetime)
+                        ):
+                            sess_end = s_list[-1].end.astimezone(exch_tz)
+                            if now_ist >= sess_end:
+                                is_complete_session = True
+                    except Exception:
+                        pass
+                if not is_complete_session and now_ist.time() >= time(15, 30):
+                    is_complete_session = True
+
+            if not is_complete_session:
+                continue
+
+            old_rec = existing_cov.get(d_str)
+            old_st = old_rec.status if old_rec else "MISSING"
+            old_rows = old_rec.rows if old_rec else 0
+            old_path = old_rec.part_path if old_rec else ""
+
+            if old_st != CoverageStatus.COMPLETE or old_rows != count:
+                rep_item = CoverageRepairItem(
+                    dataset_id=ds.dataset_id,
+                    day=d_str,
+                    old_status=str(old_st),
+                    new_status=CoverageStatus.COMPLETE,
+                    old_rows=old_rows,
+                    new_rows=count,
+                    part_path=day_paths.get(d_str, old_path),
+                    note="Re-derived from stored parquet bars",
+                )
+                repaired_items.append(rep_item)
+                to_update_records.append(
+                    CoverageDayRecord(
+                        dataset_id=ds.dataset_id,
+                        day=d_str,
+                        status=CoverageStatus.COMPLETE,
+                        rows=count,
+                        expected_rows=count,
+                        part_path=day_paths.get(d_str, old_path),
+                        fetched_at=(
+                            old_rec.fetched_at
+                            if old_rec and old_rec.fetched_at
+                            else now_ist.astimezone(UTC).isoformat()
+                        ),
+                        note="",
+                    )
+                )
+
+    if not dry_run and to_update_records:
+        manifest.record_coverage_days(to_update_records)
+        if journal is not None:
+            journal.append(
+                kind="data.coverage.repair",
+                payload={
+                    "source": source or "all",
+                    "timeframe": timeframe or "all",
+                    "repair_count": len(repaired_items),
+                    "items": [asdict(item) for item in repaired_items],
+                },
+                durable=True,
+            )
+
+    return repaired_items

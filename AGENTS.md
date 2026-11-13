@@ -31,6 +31,7 @@ Do not restate task or files. Output only code changes, commands with real outpu
 
 ## Efficiency (saves tokens and time)
 - Run commands in the foreground via `scripts/run.sh <command...>`. No background tasks; no polling.
+- Where is X / who calls Y: `graphify query` first, then ranged reads from API_INDEX.md; do not read GRAPH_REPORT.md in full; stop reading the graph when the answer is found.
 - Before opening files to learn signatures, read `_workbench/API_INDEX.md` (`algodesk api index`). Read files using search plus ranged reads from `API_INDEX.md` line ranges. Open a file only for parts changed; read at most once per checkpoint.
 - While iterating, use `bash scripts/t.sh` and `bash scripts/check.sh --quick`. Run full `bash scripts/check.sh` once at card end and after any checkpoint changing engine, oms, risk, portfolio, journal, or fees. Use `--summary` for failing sections only.
 - Pick the simplest mechanism satisfying `Accept`; do not experiment with internals.

@@ -27,6 +27,11 @@ export PRE_COMMIT_HOME="$ROOT/.local/cache/pre-commit"
 export PYTHONNOUSERSITE=1
 export PIP_REQUIRE_VIRTUALENV=true
 
+# Add graphify venv to PATH if present
+if [ -d "$ROOT/.local/graphify-venv/bin" ]; then
+    export PATH="$ROOT/.local/graphify-venv/bin:$PATH"
+fi
+
 mkdir -p "$ROOT/.local/cache/uv" \
          "$ROOT/.local/python" \
          "$ROOT/.local/bin" \

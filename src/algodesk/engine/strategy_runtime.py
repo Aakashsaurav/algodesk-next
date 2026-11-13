@@ -38,6 +38,7 @@ class StrategyRuntime:
         bus: Any | None = None,
         notifier: Any | None = None,
         on_intent: Callable[[Any, datetime], None] | None = None,
+        on_reject: Callable[[Any, Any | None, str], None] | None = None,
     ) -> None:
         self._registry = registry
         self._order_manager = order_manager
@@ -48,6 +49,7 @@ class StrategyRuntime:
         self._bus = bus
         self._notifier = notifier
         self._on_intent = on_intent
+        self._on_reject = on_reject
 
         self._strategies: dict[str, Strategy] = {}
         self._contexts: dict[str, StrategyContext] = {}
@@ -233,14 +235,33 @@ class StrategyRuntime:
                     inst,
                     decision.reason,
                 )
+                if self._on_reject is not None:
+                    self._on_reject(intent, decision, "risk")
+                continue
 
             # 3. Submit to OMS if approved
             if decision is None or decision.allow:
                 if self._order_manager is not None:
-                    if isinstance(intent, PlaceOrder):
-                        await self._order_manager.submit(intent, decision)
-                    elif isinstance(intent, CancelOrder):
-                        await self._order_manager.cancel(intent.client_ref)
+                    try:
+                        if isinstance(intent, PlaceOrder):
+                            await self._order_manager.submit(intent, decision)
+                        elif isinstance(intent, CancelOrder):
+                            await self._order_manager.cancel(intent.client_ref)
+                    except Exception as exc:
+                        logger.error("OMS rejected intent %s: %s", intent_id, exc)
+                        if self._journal is not None and hasattr(self._journal, "append"):
+                            self._journal.append(
+                                "error",
+                                {
+                                    "component": "oms",
+                                    "intent_id": intent_id,
+                                    "error": str(exc),
+                                    "ts": now_ts.isoformat(),
+                                },
+                            )
+                        if self._on_reject is not None:
+                            self._on_reject(intent, None, "oms")
+                        raise
 
     def dispatch_start(self) -> None:
         """Call on_start on all active strategies."""

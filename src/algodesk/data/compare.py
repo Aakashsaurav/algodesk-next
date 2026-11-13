@@ -325,10 +325,18 @@ def _resolve_symbols_for_date(
     return sorted(found)
 
 
-def _check_source_retention(source: str, target_date: date) -> str | None:
-    """Return refusal reason string if target date is beyond source retention."""
-    ret_days = get_source_retention_days(source, "1m")
+def _check_source_availability(source: str, target_date: date) -> str | None:
+    """Return refusal reason string if target date cannot be served by source."""
     today = datetime.now(_EXCH_TZ).date()
+    if target_date > today:
+        return f"date {target_date.isoformat()} is in the future"
+    if target_date == today:
+        src = source.lower()
+        if src == "upstox":
+            return "same-day candles are not served by the history endpoint"
+        if src == "nse_bhavcopy":
+            return "bhavcopy is not available for current session until after EOD publish"
+    ret_days = get_source_retention_days(source, "1m")
     if target_date < (today - timedelta(days=ret_days)):
         return f"date beyond the source's retention ({ret_days}d for {source} 1m)"
     return None
@@ -394,7 +402,7 @@ def _compare_single_symbol(
 
     source_refusal = None
     if not source_bars:
-        source_refusal = _check_source_retention(source, date_val) or "source returned nothing"
+        source_refusal = _check_source_availability(source, date_val) or "source returned nothing"
 
     if built_refusal or source_refusal:
         return None, built_refusal, source_refusal

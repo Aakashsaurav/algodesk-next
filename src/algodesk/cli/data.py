@@ -409,6 +409,7 @@ def data_accumulate(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Display accumulation plan without fetching"
     ),
+    refresh: bool = typer.Option(False, "--refresh", help="Force refetch of complete sessions"),
 ) -> None:
     """Fetch latest complete sessions for an instrument group into the store."""
     from algodesk.data.accumulate import execute_accumulation
@@ -435,6 +436,7 @@ def data_accumulate(
             data_service=_build_data_service(rt, source) if not dry_run else None,
             calendar=cal,
             dry_run=dry_run,
+            refresh=refresh,
         )
 
         total_fetchable = sum(len(it.fetchable_sessions) for it in report.plan_items)
@@ -527,6 +529,78 @@ def coverage_reset_empty(
 
         mode_str = "identified for reset (dry run)" if dry_run else "reset to MISSING"
         typer.echo(f"\nTotal: {len(reset_records)} stale EMPTY record(s) {mode_str}.")
+
+
+@coverage_app.command("repair")
+@handle_cli_errors
+def coverage_repair(
+    ctx: typer.Context,
+    source: str | None = typer.Option(
+        None, "--source", "-s", help="Filter by data source (e.g. yfinance, upstox)"
+    ),
+    timeframe: str | None = typer.Option(
+        None, "--timeframe", "-t", help="Filter by timeframe (e.g. 1m, 1d)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Simulate repair without modifying coverage records"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
+) -> None:
+    """Re-derive coverage_days from stored parquet files and fix regressions."""
+    from algodesk.data.coverage import repair_coverage
+
+    with _open_rt(ctx, ensure=False) as rt:
+        manifest = _get_manifest(rt)
+        cal: Any = None
+        try:
+            sec_prov = _resolve_secrets_provider(rt)
+            p_ctx = build_context(Mode.RESEARCH, run_id="coverage_repair", secrets=sec_prov)
+            cal = rt.plugins.create(
+                PluginKind.CALENDAR,
+                "exchange",
+                config={"exchange": "nse"},
+                ctx=p_ctx,
+            )
+        except Exception:
+            pass
+
+        data_dir = getattr(getattr(rt, "paths", None), "data", Path("data"))
+        repaired = repair_coverage(
+            manifest=manifest,
+            data_dir=data_dir,
+            calendar=cal,
+            source=source,
+            timeframe=timeframe,
+            dry_run=dry_run,
+            journal=getattr(rt, "journal", None),
+        )
+
+        if json_out:
+            typer.echo(json.dumps([asdict(item) for item in repaired], indent=2))
+            return
+
+        mode_str = "[DRY RUN] " if dry_run else ""
+        if not repaired:
+            typer.echo(
+                f"{mode_str}Coverage repair complete: all stored parquet bars match "
+                "coverage_days (0 repaired)."
+            )
+            return
+
+        headers = ["DATASET", "DAY", "OLD STATUS", "NEW STATUS", "OLD ROWS", "NEW ROWS"]
+        rows = [
+            [
+                it.dataset_id,
+                it.day,
+                it.old_status,
+                it.new_status,
+                str(it.old_rows),
+                str(it.new_rows),
+            ]
+            for it in repaired
+        ]
+        typer.echo(f"{mode_str}Repaired {len(repaired)} coverage record(s) from stored parquet:")
+        typer.echo(format_table(headers, rows))
 
 
 def _format_and_print_compare_table(rep: Any, date_val: str, source: str) -> None:

@@ -15,3 +15,5 @@ token*.json
 *.csv
 *.json
 *.zip
+.graphifyignore
+/graphify-out/
