@@ -74,16 +74,55 @@ def compute_result_hash(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _format_skip_detail(sym: str, reason: SkipReason, detail: str) -> str:
+def _format_skip_detail(sym: str, reason: SkipReason, detail: str, group: str | None = None) -> str:
     r_val = reason.value if hasattr(reason, "value") else str(reason)
     clean_sym = sym.split(":")[-1]
     if "Fix with:" in detail:
-        return detail
+        if group and group != "G" and "--group G" in detail:
+            detail = detail.replace("--group G", f"--group {group}")
+        if f"{clean_sym}: {r_val}:" in detail:
+            return detail
+        return f"{clean_sym}: {r_val}: {detail}"
     if reason == SkipReason.ADJUSTMENT_REFUSED:
         fix = f"Fix with: algodesk data actions override add --symbol {clean_sym} ..."
     else:
-        fix = f"Fix with: algodesk data accumulate --symbols {clean_sym} --days 500"
+        grp_str = f"--group {group}" if group else "--group G"
+        fix = f"Fix with: algodesk data accumulate {grp_str} --timeframe 1d"
     return f"{clean_sym}: {r_val}: {detail}. {fix}"
+
+
+def _extract_required_indicators(screen: Any) -> list[dict[str, Any]]:
+    required_inds: list[dict[str, Any]] = []
+    if isinstance(screen, TomlScreenModel):
+        for req in screen.require:
+            for op in (req.left, req.right):
+                if isinstance(op, OperandModel) and op.is_indicator:
+                    assert op.ind is not None
+                    required_inds.append({"ind": op.ind, "params": op.params})
+        for grp in screen.group:
+            for req in grp.require:
+                for op in (req.left, req.right):
+                    if isinstance(op, OperandModel) and op.is_indicator:
+                        assert op.ind is not None
+                        required_inds.append({"ind": op.ind, "params": op.params})
+        if screen.rank and screen.rank.by.is_indicator:
+            assert screen.rank.by.ind is not None
+            required_inds.append({"ind": screen.rank.by.ind, "params": screen.rank.by.params})
+    else:
+        spec = getattr(screen, "spec", None)
+        if spec and hasattr(spec, "required_indicators"):
+            required_inds.extend(spec.required_indicators)
+    return required_inds
+
+
+def _compute_max_warmup(required_inds: Sequence[Mapping[str, Any]]) -> int:
+    max_warmup = 0
+    for ind_info in required_inds:
+        p_dict = ind_info.get("params", {}) or {}
+        for p_key in ("period", "timeperiod", "length", "slow", "signal", "window"):
+            if p_key in p_dict and isinstance(p_dict[p_key], (int, float)):
+                max_warmup = max(max_warmup, int(p_dict[p_key]))
+    return max_warmup
 
 
 class ScreenRunner:
@@ -162,8 +201,97 @@ class ScreenRunner:
         parameters: Mapping[str, Any] | None = None,
         run_id: str | None = None,
         screen_file_hash: str | None = None,
+        group: str | None = None,
     ) -> ScreenResult:
         """Execute screen over universe and return ScreenResult."""
+        try:
+            return self._run_internal(
+                screen=screen,
+                symbols=symbols,
+                as_of=as_of,
+                limit=limit,
+                adjust=adjust,
+                accept_unverified=accept_unverified,
+                parameters=parameters,
+                run_id=run_id,
+                screen_file_hash=screen_file_hash,
+                group=group,
+            )
+        except KeyboardInterrupt:
+            return self.create_aborted_result(
+                screen=screen,
+                symbols=symbols,
+                as_of=as_of,
+                limit=limit,
+                adjust=adjust,
+                accept_unverified=accept_unverified,
+                parameters=parameters,
+                run_id=run_id,
+                screen_file_hash=screen_file_hash,
+                verdict="STOPPED",
+                fail_reason="Screen execution interrupted by user (KeyboardInterrupt)",
+            )
+
+    def create_aborted_result(
+        self,
+        screen: TomlScreenModel | Screen,
+        symbols: Sequence[str],
+        as_of: date | str | None = None,
+        limit: int | None = None,
+        adjust: str | None = None,
+        accept_unverified: bool = False,
+        parameters: Mapping[str, Any] | None = None,
+        run_id: str | None = None,
+        screen_file_hash: str | None = None,
+        verdict: str = "FAIL",
+        fail_reason: str = "Screen aborted",
+    ) -> ScreenResult:
+        as_of_date = self.resolve_as_of(as_of)
+        s_spec = getattr(screen, "spec", None)
+        if isinstance(screen, TomlScreenModel):
+            s_name = screen.name
+            tf = screen.timeframe
+        else:
+            s_name = getattr(s_spec, "name", "screen")
+            tf = getattr(s_spec, "timeframe", "1d")
+        adj = str(adjust or getattr(screen, "adjust", None) or getattr(s_spec, "adjust", "splits"))
+        sym_list = list(symbols)[:limit] if limit and limit > 0 else list(symbols)
+        u_hash = hashlib.sha256(",".join(sorted(sym_list)).encode("utf-8")).hexdigest()
+        now_dt = self.clock.now() if self.clock is not None else datetime.now(UTC)
+        now_s = now_dt.strftime("%Y%m%d_%H%M%S")
+        r_id = run_id or f"screen_{s_name}_{as_of_date.strftime('%Y%m%d')}_{now_s}"
+        res_hash = hashlib.sha256(f"{r_id}:{verdict}:{fail_reason}".encode()).hexdigest()
+        skipped = [(s, SkipReason.NO_DATA, f"{s}: Aborted ({fail_reason})") for s in sym_list]
+        return ScreenResult(
+            name=s_name,
+            as_of=as_of_date,
+            timeframe=tf,
+            rows=[],
+            skipped=skipped,
+            universe_hash=u_hash,
+            result_hash=res_hash,
+            provenance={},
+            parameters=dict(parameters or {}),
+            flags={"adjust": adj, "accept_unverified": accept_unverified},
+            verdict=verdict,
+            fail_reason=fail_reason,
+            run_id=r_id,
+            timing={"reads": 0.0, "indicators": 0.0, "rules": 0.0},
+        )
+
+    def _run_internal(
+        self,
+        screen: TomlScreenModel | Screen,
+        symbols: Sequence[str],
+        as_of: date | str | None = None,
+        limit: int | None = None,
+        adjust: str | None = None,
+        accept_unverified: bool = False,
+        parameters: Mapping[str, Any] | None = None,
+        run_id: str | None = None,
+        screen_file_hash: str | None = None,
+        group: str | None = None,
+    ) -> ScreenResult:
         as_of_date = self.resolve_as_of(as_of)
 
         screen_name = (
@@ -199,6 +327,9 @@ class ScreenRunner:
         provenance_by_symbol: dict[str, Mapping[str, Any]] = {}
         skipped: list[tuple[str, SkipReason, str]] = []
 
+        required_inds = _extract_required_indicators(screen)
+        max_warmup = _compute_max_warmup(required_inds)
+
         t0_reads = perf_counter()
         for idx, sym in enumerate(sym_list, 1):
             if (
@@ -207,10 +338,16 @@ class ScreenRunner:
                 and (idx % self.progress_every == 0 or idx == len(sym_list))
             ):
                 elapsed = perf_counter() - t0_reads
-                print(
-                    f"[screen] {idx}/{len(sym_list)} symbols evaluated ({elapsed:.1f}s)",
-                    flush=True,
-                )
+                try:
+                    import sys
+
+                    print(
+                        f"[screen] {idx}/{len(sym_list)} symbols evaluated ({elapsed:.1f}s)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                except BrokenPipeError:
+                    pass
             try:
                 res = self.data_reader.get_bars(
                     instrument=sym,
@@ -221,17 +358,19 @@ class ScreenRunner:
                     accept_unverified=accept_unverified,
                 )
             except Exception as exc:
-                detail = _format_skip_detail(sym, SkipReason.NO_DATA, f"Data fetch error: {exc}")
+                detail = _format_skip_detail(
+                    sym, SkipReason.NO_DATA, f"Data fetch error: {exc}", group=group
+                )
                 skipped.append((sym, SkipReason.NO_DATA, detail))
                 continue
 
             if isinstance(res, ScreenRefusal):
-                detail = _format_skip_detail(sym, res.reason, res.detail)
+                detail = _format_skip_detail(sym, res.reason, res.detail, group=group)
                 skipped.append((sym, res.reason, detail))
             elif isinstance(res, ScreenBars):
                 if not res.bars:
                     detail = _format_skip_detail(
-                        sym, SkipReason.NO_DATA, f"No bars found up to {as_of_date}"
+                        sym, SkipReason.NO_DATA, f"No bars found up to {as_of_date}", group=group
                     )
                     skipped.append((sym, SkipReason.NO_DATA, detail))
                 else:
@@ -242,8 +381,20 @@ class ScreenRunner:
                             sym,
                             SkipReason.NO_DATA,
                             f"No completed bars on or before {as_of_date}",
+                            group=group,
                         )
                         skipped.append((sym, SkipReason.NO_DATA, detail))
+                    elif max_warmup > 0 and len(bars_up_to_as_of) < max_warmup:
+                        detail = _format_skip_detail(
+                            sym,
+                            SkipReason.INSUFFICIENT_HISTORY,
+                            (
+                                f"Symbol {sym} has {len(bars_up_to_as_of)} bars, "
+                                f"fewer than required warm-up ({max_warmup} bars)"
+                            ),
+                            group=group,
+                        )
+                        skipped.append((sym, SkipReason.INSUFFICIENT_HISTORY, detail))
                     else:
                         bars_by_symbol[sym] = bars_up_to_as_of
                         provenance_by_symbol[sym] = res.provenance
@@ -253,10 +404,12 @@ class ScreenRunner:
                 if bars_val is None:
                     if isinstance(prov_or_refusal, tuple) and len(prov_or_refusal) == 2:
                         r_code, r_msg = prov_or_refusal
-                        detail = _format_skip_detail(sym, r_code, r_msg)
+                        detail = _format_skip_detail(sym, r_code, r_msg, group=group)
                         skipped.append((sym, r_code, detail))
                     else:
-                        detail = _format_skip_detail(sym, SkipReason.NO_DATA, str(prov_or_refusal))
+                        detail = _format_skip_detail(
+                            sym, SkipReason.NO_DATA, str(prov_or_refusal), group=group
+                        )
                         skipped.append((sym, SkipReason.NO_DATA, detail))
                 else:
                     bars_up_to = tuple(b for b in bars_val if b.end_ts <= end_dt)
@@ -265,8 +418,20 @@ class ScreenRunner:
                             sym,
                             SkipReason.NO_DATA,
                             f"No completed bars on or before {as_of_date}",
+                            group=group,
                         )
                         skipped.append((sym, SkipReason.NO_DATA, detail))
+                    elif max_warmup > 0 and len(bars_up_to) < max_warmup:
+                        detail = _format_skip_detail(
+                            sym,
+                            SkipReason.INSUFFICIENT_HISTORY,
+                            (
+                                f"Symbol {sym} has {len(bars_up_to)} bars, "
+                                f"fewer than required warm-up ({max_warmup} bars)"
+                            ),
+                            group=group,
+                        )
+                        skipped.append((sym, SkipReason.INSUFFICIENT_HISTORY, detail))
                     else:
                         bars_by_symbol[sym] = bars_up_to
                         provenance_by_symbol[sym] = (
@@ -275,26 +440,7 @@ class ScreenRunner:
         t_reads = perf_counter() - t0_reads
 
         # Extract required indicators
-        required_inds: list[dict[str, Any]] = []
-        if isinstance(screen, TomlScreenModel):
-            for req in screen.require:
-                for op in (req.left, req.right):
-                    if isinstance(op, OperandModel) and op.is_indicator:
-                        assert op.ind is not None
-                        required_inds.append({"ind": op.ind, "params": op.params})
-            for grp in screen.group:
-                for req in grp.require:
-                    for op in (req.left, req.right):
-                        if isinstance(op, OperandModel) and op.is_indicator:
-                            assert op.ind is not None
-                            required_inds.append({"ind": op.ind, "params": op.params})
-            if screen.rank and screen.rank.by.is_indicator:
-                assert screen.rank.by.ind is not None
-                required_inds.append({"ind": screen.rank.by.ind, "params": screen.rank.by.params})
-        else:
-            spec = getattr(screen, "spec", None)
-            if spec and hasattr(spec, "required_indicators"):
-                required_inds.extend(spec.required_indicators)
+        required_inds = _extract_required_indicators(screen)
 
         valid_symbols = [s for s in sym_list if s in bars_by_symbol]
         t0_ind = perf_counter()
@@ -315,10 +461,12 @@ class ScreenRunner:
                     row = eval_screen_rules(screen, sym_view)
                     rows.append(row)
                 except RuleEvaluationError as exc:
-                    detail = _format_skip_detail(sym, exc.reason, exc.message)
+                    detail = _format_skip_detail(sym, exc.reason, exc.message, group=group)
                     skipped.append((sym, exc.reason, detail))
                 except Exception as exc:
-                    detail = _format_skip_detail(sym, SkipReason.INDICATOR_ERROR, str(exc))
+                    detail = _format_skip_detail(
+                        sym, SkipReason.INDICATOR_ERROR, str(exc), group=group
+                    )
                     skipped.append((sym, SkipReason.INDICATOR_ERROR, detail))
 
             # Apply ranking if specified
@@ -331,7 +479,10 @@ class ScreenRunner:
                         m_val = _eval_operand(screen.rank.by, sym_view, 0)
                         if m_val is None:
                             detail = _format_skip_detail(
-                                s, SkipReason.INSUFFICIENT_HISTORY, "Rank metric returned None"
+                                s,
+                                SkipReason.INSUFFICIENT_HISTORY,
+                                "Rank metric returned None",
+                                group=group,
                             )
                             skipped.append((s, SkipReason.INSUFFICIENT_HISTORY, detail))
                             rows = [r for r in rows if r.symbol != s]
@@ -339,7 +490,7 @@ class ScreenRunner:
                             metric_values[s] = float(m_val)
                     except Exception as exc:
                         detail = _format_skip_detail(
-                            s, SkipReason.INDICATOR_ERROR, f"Rank error: {exc}"
+                            s, SkipReason.INDICATOR_ERROR, f"Rank error: {exc}", group=group
                         )
                         skipped.append((s, SkipReason.INDICATOR_ERROR, detail))
                         rows = [r for r in rows if r.symbol != s]

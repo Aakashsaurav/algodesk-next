@@ -138,7 +138,7 @@ class GapPlanner:
 
         # Resolve retention and max_span for base timeframe
         retention_val: object = None
-        span_bound_days = chunk_days
+        span_bound_days: int | None = None
 
         if source_manifest is not None:
             ret = getattr(source_manifest, "retention", None) or getattr(
@@ -154,7 +154,15 @@ class GapPlanner:
                 except Exception:
                     pass
 
-        effective_chunk_limit = max(1, min(span_bound_days, chunk_days))
+        # 1d series chunk by source declared max_span (e.g. 3650 days).
+        # data.fetch_chunk_days applies only where source span is short (e.g. 1m) or undeclared.
+        if source_manifest is not None and span_bound_days is not None:
+            if base_tf == "1d":
+                effective_chunk_limit = span_bound_days
+            else:
+                effective_chunk_limit = max(1, min(span_bound_days, chunk_days))
+        else:
+            effective_chunk_limit = max(1, chunk_days)
 
         # Retrieve existing coverage records
         existing_cov: dict[str, CoverageDayRecord] = {}

@@ -139,15 +139,27 @@ description = "Upstox history rate limit per second (80% of published 50/s)"
 owner = "upstox"
 
 [[param]]
-name = "source.upstox.history.requests_per_minute"
+name = "source.upstox.rate_limit_per_minute"
 type = "float"
-default = 400.0
+default = 300.0
 min = 1.0
 max = 1000.0
 unit = "req/min"
 scope = "global"
 tighten = "down"
-description = "Upstox history rate limit per minute (80% of published 500/min)"
+description = "Upstox overall rate limit per minute (proposed default 300/min)"
+owner = "upstox"
+
+[[param]]
+name = "source.upstox.history.requests_per_minute"
+type = "float"
+default = 300.0
+min = 1.0
+max = 1000.0
+unit = "req/min"
+scope = "global"
+tighten = "down"
+description = "Upstox history rate limit per minute (300/min)"
 owner = "upstox"
 
 [[param]]

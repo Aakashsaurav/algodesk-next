@@ -84,14 +84,20 @@ class DataServiceScreenAdapter(ScreenDataReader):
                 fill_only=False,
                 source=self._default_source,
                 accept_unverified=accept_unverified,
+                cache_only=True,
                 columns=("start_ts", "end_ts", "open", "high", "low", "close", "volume"),
             )
         except NotSupported as exc:
             return ScreenRefusal(reason=SkipReason.ADJUSTMENT_REFUSED, detail=str(exc))
         except Exception as exc:
             msg = str(exc).lower()
+            sym_str = str(instrument).split(":")[-1]
             if "gap" in msg or "calendar" in msg:
-                return ScreenRefusal(reason=SkipReason.CALENDAR_GAP, detail=str(exc))
+                detail = (
+                    f"Calendar gap for {sym_str}: {exc}. "
+                    f"Fix with: algodesk data accumulate --group G --timeframe 1d"
+                )
+                return ScreenRefusal(reason=SkipReason.NO_DATA, detail=detail)
             if (
                 "adjust" in msg
                 or "conflict" in msg
@@ -100,18 +106,38 @@ class DataServiceScreenAdapter(ScreenDataReader):
                 or "action" in msg
                 and "status" in msg
             ):
-                sym_str = str(instrument).split(":")[-1]
                 detail = (
                     f"Adjustment refused for {sym_str}: {exc}. "
                     f"Fix with: algodesk data actions override add --symbol {sym_str}"
                 )
                 return ScreenRefusal(reason=SkipReason.ADJUSTMENT_REFUSED, detail=detail)
-            return ScreenRefusal(reason=SkipReason.NO_DATA, detail=str(exc))
+            detail = (
+                f"Data error for {sym_str}: {exc}. "
+                f"Fix with: algodesk data accumulate --group G --timeframe 1d"
+            )
+            return ScreenRefusal(reason=SkipReason.NO_DATA, detail=detail)
 
+        sym_str = str(instrument).split(":")[-1]
         if not slice_res.bars:
             return ScreenRefusal(
                 reason=SkipReason.NO_DATA,
-                detail=f"No bars found for {instrument} between {start.date()} and {end.date()}",
+                detail=(
+                    f"No cached bars found for {sym_str} between {start.date()} and {end.date()}. "
+                    f"Fix with: algodesk data accumulate --group G --timeframe 1d"
+                ),
+            )
+
+        # Check for gaps within the needed bars window
+        earliest_bar_date = slice_res.bars[0].start_ts.date()
+        end_date = end.date()
+        internal_gaps = [g for g in slice_res.gaps if earliest_bar_date <= g.day <= end_date]
+        if internal_gaps:
+            return ScreenRefusal(
+                reason=SkipReason.NO_DATA,
+                detail=(
+                    f"Gaps detected inside cache window for {sym_str} ({len(internal_gaps)} gaps). "
+                    f"Fix with: algodesk data accumulate --group G --timeframe 1d"
+                ),
             )
 
         return ScreenBars(

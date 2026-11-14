@@ -81,7 +81,7 @@ class Fetcher:
                 return default
 
         self._workers = max(
-            1, max_workers if max_workers is not None else _p_int("data.fetch_max_workers", 1)
+            1, max_workers if max_workers is not None else _p_int("data.fetch_max_workers", 4)
         )
         self._attempts = max(0, retries if retries is not None else _p_int("data.fetch_retries", 1))
 

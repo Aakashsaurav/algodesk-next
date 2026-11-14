@@ -279,15 +279,41 @@ def screen_run(
             else f"# Screen: {name}\n"
         )
 
-        result: ScreenResult = runner.run(
-            screen=screen_obj,
-            symbols=sym_list,
-            as_of=as_of,
-            limit=limit,
-            adjust=adjust,
-            accept_unverified=accept_unverified,
-            screen_file_hash=info.get("file_hash"),
-        )
+        try:
+            result: ScreenResult = runner.run(
+                screen=screen_obj,
+                symbols=sym_list,
+                as_of=as_of,
+                limit=limit,
+                adjust=adjust,
+                accept_unverified=accept_unverified,
+                screen_file_hash=info.get("file_hash"),
+                group=group,
+            )
+        except KeyboardInterrupt:
+            result = runner.create_aborted_result(
+                screen=screen_obj,
+                symbols=sym_list,
+                as_of=as_of,
+                limit=limit,
+                adjust=adjust,
+                accept_unverified=accept_unverified,
+                screen_file_hash=info.get("file_hash"),
+                verdict="STOPPED",
+                fail_reason="Screen execution interrupted by user (KeyboardInterrupt)",
+            )
+        except Exception as exc:
+            result = runner.create_aborted_result(
+                screen=screen_obj,
+                symbols=sym_list,
+                as_of=as_of,
+                limit=limit,
+                adjust=adjust,
+                accept_unverified=accept_unverified,
+                screen_file_hash=info.get("file_hash"),
+                verdict="FAIL",
+                fail_reason=f"Screen execution error: {exc}",
+            )
 
         # Write results bundle
         import time as _time
@@ -300,70 +326,75 @@ def screen_run(
         t_writing = _time.perf_counter() - t_write0
 
     # Output presentation
-    passed_rows = [r for r in result.rows if r.passed]
-    total_symbols = len(result.rows) + len(result.skipped)
+    try:
+        passed_rows = [r for r in result.rows if r.passed]
+        total_symbols = len(result.rows) + len(result.skipped)
 
-    t_reads = float(result.timing.get("reads", 0.0))
-    t_indicators = float(result.timing.get("indicators", 0.0))
-    t_rules = float(result.timing.get("rules", 0.0))
-    t_total = t_reads + t_indicators + t_rules + t_writing
-    symbols_per_sec = (total_symbols / t_total) if t_total > 0 else 0.0
+        t_reads = float(result.timing.get("reads", 0.0))
+        t_indicators = float(result.timing.get("indicators", 0.0))
+        t_rules = float(result.timing.get("rules", 0.0))
+        t_total = t_reads + t_indicators + t_rules + t_writing
+        symbols_per_sec = (total_symbols / t_total) if t_total > 0 else 0.0
 
-    if json_output:
-        out_dict = {
-            "run_id": result.run_id,
-            "name": result.name,
-            "as_of": str(result.as_of),
-            "verdict": result.verdict,
-            "fail_reason": result.fail_reason,
-            "result_hash": result.result_hash,
-            "universe_hash": result.universe_hash,
-            "stats": {
-                "universe_size": total_symbols,
-                "passed": len(passed_rows),
-                "skipped": len(result.skipped),
-            },
-            "passed_symbols": [r.symbol for r in passed_rows],
-            "results_dir": str(run_dir),
-            "timing": {
-                "reads": t_reads,
-                "indicators": t_indicators,
-                "rules": t_rules,
-                "writing": t_writing,
-                "total": t_total,
-                "symbols_per_sec": symbols_per_sec,
-            },
-        }
-        typer.echo(json.dumps(out_dict, indent=2))
-    else:
-        typer.echo(f"\nScreen Run: {result.name}")
-        typer.echo(f"As-of:       {result.as_of}")
-        typer.echo(
-            f"Verdict:     {result.verdict}"
-            + (f" ({result.fail_reason})" if result.fail_reason else "")
-        )
-        typer.echo(f"Result Hash: {result.result_hash[:16]}...")
-        typer.echo(
-            f"Universe:    {total_symbols} | Passed: {len(passed_rows)} | "
-            f"Skipped: {len(result.skipped)}"
-        )
-        typer.echo(f"Artifacts:   {run_dir}\n")
-
-        if timing:
-            typer.echo(
-                f"Timing: reads={t_reads:.3f}s, indicators={t_indicators:.3f}s, "
-                f"rules={t_rules:.3f}s, writing={t_writing:.3f}s | "
-                f"Throughput: {symbols_per_sec:.1f} symbols/s\n"
-            )
-
-        if passed_rows:
-            headers = ["SYMBOL", "PASSED", "SCORE"]
-            rows: list[list[str]] = []
-            for r in passed_rows:
-                rows.append([r.symbol, "YES", f"{r.score:.2f}"])
-            typer.echo(format_table(headers, rows))
+        if json_output:
+            out_dict = {
+                "run_id": result.run_id,
+                "name": result.name,
+                "as_of": str(result.as_of),
+                "verdict": result.verdict,
+                "fail_reason": result.fail_reason,
+                "result_hash": result.result_hash,
+                "universe_hash": result.universe_hash,
+                "stats": {
+                    "universe_size": total_symbols,
+                    "passed": len(passed_rows),
+                    "skipped": len(result.skipped),
+                },
+                "passed_symbols": [r.symbol for r in passed_rows],
+                "results_dir": str(run_dir),
+                "timing": {
+                    "reads": t_reads,
+                    "indicators": t_indicators,
+                    "rules": t_rules,
+                    "writing": t_writing,
+                    "total": t_total,
+                    "symbols_per_sec": symbols_per_sec,
+                },
+            }
+            typer.echo(json.dumps(out_dict, indent=2))
         else:
-            typer.echo("No symbols passed screen conditions.")
+            typer.echo(f"\nScreen Run: {result.name}")
+            typer.echo(f"As-of:       {result.as_of}")
+            typer.echo(
+                f"Verdict:     {result.verdict}"
+                + (f" ({result.fail_reason})" if result.fail_reason else "")
+            )
+            typer.echo(f"Result Hash: {result.result_hash[:16]}...")
+            typer.echo(
+                f"Universe:    {total_symbols} | Passed: {len(passed_rows)} | "
+                f"Skipped: {len(result.skipped)}"
+            )
+            typer.echo(f"Artifacts:   {run_dir}\n")
 
+            if timing:
+                typer.echo(
+                    f"Timing: reads={t_reads:.3f}s, indicators={t_indicators:.3f}s, "
+                    f"rules={t_rules:.3f}s, writing={t_writing:.3f}s | "
+                    f"Throughput: {symbols_per_sec:.1f} symbols/s\n"
+                )
+
+            if passed_rows:
+                headers = ["SYMBOL", "PASSED", "SCORE"]
+                rows: list[list[str]] = []
+                for r in passed_rows:
+                    rows.append([r.symbol, "YES", f"{r.score:.2f}"])
+                typer.echo(format_table(headers, rows))
+            else:
+                typer.echo("No symbols passed screen conditions.")
+    except BrokenPipeError:
+        pass
+
+    if result.verdict == "STOPPED":
+        raise typer.Exit(code=130)
     if result.verdict == "FAIL":
         raise typer.Exit(code=1)

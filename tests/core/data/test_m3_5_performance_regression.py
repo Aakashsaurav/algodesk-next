@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import io
 from collections.abc import Sequence
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -559,6 +559,7 @@ def test_screen_runner_500_symbols_operation_bounds(tmp_path: Path) -> None:
     t0 = time_mod.perf_counter()
     with (
         redirect_stdout(buf),
+        redirect_stderr(buf),
         patch("pyarrow.parquet.read_table", wraps=pa.parquet.read_table) as mock_read,
     ):
         result = runner.run(

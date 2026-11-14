@@ -77,6 +77,10 @@ def _apply_raw_adjustments(
             tuple(bars), [], "", factor_kinds=[], basis=tgt_basis, from_basis=from_basis
         )
     acts = _get_reconciled(key, store, params)
+    if not acts:
+        return AdjustmentResult(
+            tuple(bars), [], "", factor_kinds=[], basis=tgt_basis, from_basis=from_basis
+        )
     d_key = SeriesKey(key.instrument, "bars", "1d", "raw", key.source)
     d_slice = store.read(d_key, datetime(2000, 1, 1, tzinfo=UTC), datetime.now(UTC))
     allow_unver_div = True
@@ -240,6 +244,7 @@ class DataService:
         accept_unverified: bool = False,
         presence_only: bool = False,
         refresh: bool = False,
+        cache_only: bool = False,
         columns: Sequence[str] | None = None,
     ) -> DataSlice:
         """Fetch historical bars with gap planning, rate limiting, and dynamic adjustment."""
@@ -305,31 +310,34 @@ class DataService:
                 fix="Use download='raw' with adjust='total' or verify source candle basis",
             )
 
-        if download == "adjusted" and from_basis != adj_mode:
+        if not cache_only and download == "adjusted" and from_basis != adj_mode:
             _check_staleness(base_key, self._store, self._sources, self._params, self._exchange_tz)
 
-        chunk_days = int(self._params.get("data.fetch_chunk_days", "30")) if self._params else 30
-        plan = GapPlanner.plan(
-            key=base_key,
-            start=start,
-            end=end,
-            manifest=self._store.manifest,
-            calendar=self._calendar,
-            source_manifest=src_manifest,
-            chunk_days=chunk_days,
-            exchange_tz=self._exchange_tz,
-            refresh=refresh,
-        )
         fetch_rows = 0
-        if plan.has_work:
-            results = Fetcher(
-                store=self._store,
-                limiter=self._limiter,
-                sources=self._sources,
-                params=self._params,
-                journal=self._journal,
-            ).fetch(plan)
-            fetch_rows = sum(r.rows for r in results if r.rows > 0)
+        if not cache_only:
+            chunk_days = (
+                int(self._params.get("data.fetch_chunk_days", "30")) if self._params else 30
+            )
+            plan = GapPlanner.plan(
+                key=base_key,
+                start=start,
+                end=end,
+                manifest=self._store.manifest,
+                calendar=self._calendar,
+                source_manifest=src_manifest,
+                chunk_days=chunk_days,
+                exchange_tz=self._exchange_tz,
+                refresh=refresh,
+            )
+            if plan.has_work:
+                results = Fetcher(
+                    store=self._store,
+                    limiter=self._limiter,
+                    sources=self._sources,
+                    params=self._params,
+                    journal=self._journal,
+                ).fetch(plan)
+                fetch_rows = sum(r.rows for r in results if r.rows > 0)
         self._last_fetch_rows = fetch_rows
 
         self._recorded_datasets.add(ds_id)
@@ -357,6 +365,19 @@ class DataService:
             )
 
         base_slice = self._store.read(base_key, start, end, columns=columns)
+        if not base_slice.bars and download == "adjusted":
+            raw_key = SeriesKey(
+                instrument=base_key.instrument,
+                kind=base_key.kind,
+                timeframe=base_key.timeframe,
+                adjustment="raw",
+                source=base_key.source,
+            )
+            raw_slice = self._store.read(raw_key, start, end, columns=columns)
+            if raw_slice.bars:
+                base_key = raw_key
+                base_slice = raw_slice
+
         for cs in base_slice.checksums:
             self._recorded_checksums.add(cs)
         raw_bars = (

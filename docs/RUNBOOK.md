@@ -524,6 +524,31 @@ algodesk data verify --fix
 ```
 Screens default to `adjust = "splits"`: when stored candles match requested basis, no corporate actions are read, preventing false refusals. Screen configurations specify `adjust` explicitly (`splits`, `total`, `none`). Honest skip messages always name the symbol, specific failure reason, and remediation command. `data accumulate` operates strictly in raw mode (`download="raw"`, `adjust="none"`), ensuring missing-bar accumulation never halts on corporate action discrepancies. Non-price actions (buybacks, AGM/EGM) are ignored via `config/corporate_action_purposes.toml`. History imports treat `symbols` as authority for each date, logging mismatches to `<name>.inconsistencies.json`. Run configurations accept `universe.screen = "<name>"`, freezing passed symbols and content hash into the journal at run start.
 
+#### Best practices: long runs, cache-only screens & backfill speed
+
+1. **Long runs: redirect to file, do not pipe into head**:
+   Always redirect console output from long-running screens or accumulation commands to a log file instead of piping directly into truncation filters like `head`:
+   ```bash
+   # RECOMMENDED: Redirect to file, then inspect
+   uv run algodesk screen run sma_trend_test --group nifty500 --as-of 2026-11-12 --timing > _workbench/screen500.log 2>&1
+   tail -20 _workbench/screen500.log
+
+   # AVOID: Piping into head closes stdout prematurely (SIGPIPE)
+   uv run algodesk screen run ... | head -20
+   ```
+   While screen and CLI runners gracefully catch `BrokenPipeError` and guarantee result bundle persistence under `results/run_<run_id>/`, piping into `head` closes stdout early and truncates runtime summaries. Redirecting ensures full diagnostic history.
+
+2. **Cache-only screen execution**:
+   Screens operate strictly offline on local cached Parquet data; they never touch the network or call broker APIs. If a symbol lacks local data or has fewer completed trading sessions than required by indicator warm-up periods, the runner skips it honestly with `no_data` or `insufficient_history` and emits the remediation command:
+   ```bash
+   algodesk data accumulate --group <group> --timeframe 1d
+   ```
+   Newly listed symbols with short listing histories will legitimately skip as `insufficient_history`.
+
+3. **Backfill speed & decade chunking**:
+   Daily (`1d`) candles support single-request spans up to 3,650 days (10 years) under Upstox API limits. A 500-day daily backfill requires exactly 1 HTTP request per symbol rather than multiple small slices. Combined with default parameters `source.upstox.rate_limit_per_minute = 300.0` and `data.fetch_max_workers = 4`, multi-symbol group backfills execute at maximum throughput while safely respecting 1-second, 1-minute, and 30-minute rate limiting windows.
+
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |

@@ -68,21 +68,39 @@ class RateLimiter:
         # 1. Registry parameters
         if self._params is not None:
             try:
-                val = self._params.get(f"source.{source}.{endpoint}.requests_per_second")
-                if val is not None:
-                    limit_s = float(val)
+                for k in (
+                    f"source.{source}.{endpoint}.requests_per_second",
+                    f"source.{source}.rate_limit_per_second",
+                    f"source.{source}.requests_per_second",
+                ):
+                    val = self._params.get(k)
+                    if val is not None:
+                        limit_s = float(val)
+                        break
             except Exception:
                 pass
             try:
-                val = self._params.get(f"source.{source}.{endpoint}.requests_per_minute")
-                if val is not None:
-                    limit_m = float(val)
+                for k in (
+                    f"source.{source}.{endpoint}.requests_per_minute",
+                    f"source.{source}.rate_limit_per_minute",
+                    f"source.{source}.requests_per_minute",
+                ):
+                    val = self._params.get(k)
+                    if val is not None:
+                        limit_m = float(val)
+                        break
             except Exception:
                 pass
             try:
-                val = self._params.get(f"source.{source}.{endpoint}.requests_per_30min")
-                if val is not None:
-                    limit_30m = float(val)
+                for k in (
+                    f"source.{source}.{endpoint}.requests_per_30min",
+                    f"source.{source}.rate_limit_per_30min",
+                    f"source.{source}.requests_per_30min",
+                ):
+                    val = self._params.get(k)
+                    if val is not None:
+                        limit_30m = float(val)
+                        break
             except Exception:
                 pass
 
