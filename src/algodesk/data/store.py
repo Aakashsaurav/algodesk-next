@@ -28,6 +28,7 @@ from algodesk.api.market import (
 )
 from algodesk.api.protocols import Calendar
 from algodesk.api.services import JournalWriter, ParamReader
+from algodesk.data.calendar_cache import CachedCalendar
 from algodesk.data.coverage import CoverageIndex
 from algodesk.data.layout import (
     bar_file_path,
@@ -147,7 +148,7 @@ class BarStore:
         self._manifest = manifest
         self._params = params
         self._journal = journal
-        self._calendar = calendar
+        self._calendar = CachedCalendar.wrap(calendar)
         self._exchange_tz = exchange_tz or _DEFAULT_EXCH_TZ
         self._manifests = dict(manifests) if manifests else {}
 
@@ -419,6 +420,7 @@ class BarStore:
         key: SeriesKey,
         start: datetime,
         end: datetime,
+        columns: Sequence[str] | None = None,
     ) -> DataSlice:
         """Read historical bars slice with gap detection and dataset provenance."""
         ds_id = self.dataset_id(key)
@@ -427,19 +429,36 @@ class BarStore:
 
         # Collect files spanning the date range
         files_to_read: set[Path] = set()
-        cur_day = start_day
-        while cur_day <= end_day:
-            cur_dt = datetime(cur_day.year, cur_day.month, cur_day.day, 10, 0, tzinfo=UTC)
-            p = bar_file_path(self._data_dir, key, cur_dt)
+        if key.timeframe == "1d":
+            p = bar_file_path(self._data_dir, key, start)
             if p.exists():
                 files_to_read.add(p)
-            cur_day += timedelta(days=1)
+        elif key.timeframe == "1m":
+            cur_month = date(start_day.year, start_day.month, 1)
+            end_month = date(end_day.year, end_day.month, 1)
+            while cur_month <= end_month:
+                cur_dt = datetime(cur_month.year, cur_month.month, 1, 10, 0, tzinfo=UTC)
+                p = bar_file_path(self._data_dir, key, cur_dt)
+                if p.exists():
+                    files_to_read.add(p)
+                if cur_month.month == 12:
+                    cur_month = date(cur_month.year + 1, 1, 1)
+                else:
+                    cur_month = date(cur_month.year, cur_month.month + 1, 1)
+        else:
+            cur_day = start_day
+            while cur_day <= end_day:
+                cur_dt = datetime(cur_day.year, cur_day.month, cur_day.day, 10, 0, tzinfo=UTC)
+                p = bar_file_path(self._data_dir, key, cur_dt)
+                if p.exists():
+                    files_to_read.add(p)
+                cur_day += timedelta(days=1)
 
         all_bars: list[Bar] = []
         checksums: list[str] = []
 
         for f in sorted(files_to_read):
-            bars = read_bars_parquet(f, key.instrument, key.timeframe)
+            bars = read_bars_parquet(f, key.instrument, key.timeframe, columns=columns)
             all_bars.extend(bars)
             try:
                 rel = str(f.relative_to(self._data_dir))

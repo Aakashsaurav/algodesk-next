@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from zoneinfo import ZoneInfo
@@ -10,6 +11,7 @@ from algodesk.api.errors import CalendarCoverageError, DataError
 from algodesk.api.manifest import PluginManifest
 from algodesk.api.market import CoverageStatus, SeriesKey
 from algodesk.api.protocols import Calendar
+from algodesk.data.calendar_cache import CachedCalendar
 from algodesk.data.closures import has_all_samples_evidence
 from algodesk.data.coverage import CoverageIndex, is_empty_record_final
 from algodesk.data.layout import dataset_id_for_key
@@ -104,6 +106,8 @@ class GapPlanner:
         as_of: datetime | None = None,
         exchange_tz: tzinfo | None = None,
         refresh: bool = False,
+        preloaded_coverage: Mapping[str, CoverageDayRecord] | None = None,
+        preloaded_closures: Mapping[str, MarketClosureRecord] | None = None,
     ) -> FetchPlan:
         """Construct pure FetchPlan for key between start and end."""
         if start > end:
@@ -114,6 +118,7 @@ class GapPlanner:
                 fix="Ensure start time precedes end time",
             )
 
+        cal_wrapped = CachedCalendar.wrap(calendar)
         tz = exchange_tz or _DEFAULT_EXCH_TZ
         now_dt = as_of or datetime.now(UTC)
         as_of_date = now_dt.astimezone(tz).date()
@@ -153,7 +158,9 @@ class GapPlanner:
 
         # Retrieve existing coverage records
         existing_cov: dict[str, CoverageDayRecord] = {}
-        if manifest is not None:
+        if preloaded_coverage is not None:
+            existing_cov = dict(preloaded_coverage)
+        elif manifest is not None:
             for r in manifest.get_coverage_days(
                 ds_id,
                 start_day=start_day.isoformat(),
@@ -180,7 +187,9 @@ class GapPlanner:
             inst_exch = str(key.instrument.exchange).upper()
 
         closures_records: dict[str, MarketClosureRecord] = {}
-        if manifest is not None and hasattr(manifest, "list_market_closures"):
+        if preloaded_closures is not None:
+            closures_records = dict(preloaded_closures)
+        elif manifest is not None and hasattr(manifest, "list_market_closures"):
             for mc in manifest.list_market_closures(
                 exchange=inst_exch,
                 start_day=start_day.isoformat(),
@@ -208,9 +217,9 @@ class GapPlanner:
                 elif closure_kind in ("calendar", "exchange_file"):
                     is_closed_calendar = True
                 else:
-                    if calendar is not None:
+                    if cal_wrapped is not None:
                         try:
-                            if not calendar.is_trading_day(cur):
+                            if not cal_wrapped.is_trading_day(cur):
                                 is_closed_calendar = True
                         except CalendarCoverageError:
                             if cur.weekday() >= 5:

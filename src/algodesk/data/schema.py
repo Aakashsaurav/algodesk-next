@@ -243,9 +243,41 @@ def table_to_bars(
     pydict = table.to_pydict()
     if not pydict or "start_ts" not in pydict:
         return []
-    n = len(pydict["start_ts"])
-    rows = [{k: pydict[k][i] for k in pydict} for i in range(n)]
-    return [row_to_bar(instrument, timeframe, r) for r in rows]
+    start_ts_col = pydict["start_ts"]
+    n = len(start_ts_col)
+    end_ts_col = pydict.get("end_ts", start_ts_col)
+    open_col = pydict.get("open")
+    high_col = pydict.get("high")
+    low_col = pydict.get("low")
+    close_col = pydict.get("close")
+    vol_col = pydict.get("volume")
+    comp_col = pydict.get("complete")
+    synth_col = pydict.get("synthetic")
+
+    bars: list[Bar] = []
+    for i in range(n):
+        s_ts = start_ts_col[i]
+        if isinstance(s_ts, datetime) and s_ts.tzinfo is None:
+            s_ts = s_ts.replace(tzinfo=UTC)
+        e_ts = end_ts_col[i] if end_ts_col is not None else s_ts
+        if isinstance(e_ts, datetime) and e_ts.tzinfo is None:
+            e_ts = e_ts.replace(tzinfo=UTC)
+        bars.append(
+            Bar(
+                instrument=instrument,
+                timeframe=timeframe,
+                start_ts=s_ts,
+                end_ts=e_ts,
+                open=float(open_col[i]) if open_col is not None else 0.0,
+                high=float(high_col[i]) if high_col is not None else 0.0,
+                low=float(low_col[i]) if low_col is not None else 0.0,
+                close=float(close_col[i]) if close_col is not None else 0.0,
+                volume=int(vol_col[i]) if vol_col is not None else 0,
+                complete=bool(comp_col[i]) if comp_col is not None else True,
+                synthetic=bool(synth_col[i]) if synth_col is not None else False,
+            )
+        )
+    return bars
 
 
 def write_bars_parquet(
@@ -264,10 +296,12 @@ def read_bars_parquet(
     path: Path | str,
     instrument: InstrumentId,
     timeframe: str,
+    columns: Sequence[str] | None = None,
 ) -> list[Bar]:
     """Read Parquet file and parse rows into Bar objects."""
     p = Path(path)
     if not p.exists():
         return []
-    table = pq.read_table(p)
+    cols = list(columns) if columns else None
+    table = pq.read_table(p, columns=cols)
     return table_to_bars(table, instrument, timeframe)

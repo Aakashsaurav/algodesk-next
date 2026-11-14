@@ -21,6 +21,7 @@ from algodesk.api.protocols import Calendar, DataSource
 from algodesk.api.services import JournalWriter, ParamReader
 from algodesk.data.actions_store import ActionsStore
 from algodesk.data.adjust import AdjustmentResult, AdjustmentView
+from algodesk.data.calendar_cache import CachedCalendar
 from algodesk.data.fetcher import Fetcher
 from algodesk.data.limiter import RateLimiter
 from algodesk.data.planner import GapPlanner, resolve_base_timeframe
@@ -106,6 +107,7 @@ class DataService:
         "_default_source",
         "_exchange_tz",
         "_journal",
+        "_last_fetch_rows",
         "_limiter",
         "_manifests",
         "_params",
@@ -131,9 +133,10 @@ class DataService:
         self._default_source = default_source
         self._store = store
         self._manifests = dict(manifests) if manifests else {}
-        self._calendar = calendar
+        self._calendar = CachedCalendar.wrap(calendar)
         self._params = params
         self._journal = journal
+        self._last_fetch_rows = 0
         self._exchange_tz = exchange_tz or _DEFAULT_EXCH_TZ
         self._limiter = limiter or RateLimiter(
             params=params,
@@ -237,6 +240,7 @@ class DataService:
         accept_unverified: bool = False,
         presence_only: bool = False,
         refresh: bool = False,
+        columns: Sequence[str] | None = None,
     ) -> DataSlice:
         """Fetch historical bars with gap planning, rate limiting, and dynamic adjustment."""
         adj_mode = adjust if adjust is not None else "total"
@@ -301,7 +305,7 @@ class DataService:
                 fix="Use download='raw' with adjust='total' or verify source candle basis",
             )
 
-        if download == "adjusted":
+        if download == "adjusted" and from_basis != adj_mode:
             _check_staleness(base_key, self._store, self._sources, self._params, self._exchange_tz)
 
         chunk_days = int(self._params.get("data.fetch_chunk_days", "30")) if self._params else 30
@@ -316,14 +320,17 @@ class DataService:
             exchange_tz=self._exchange_tz,
             refresh=refresh,
         )
+        fetch_rows = 0
         if plan.has_work:
-            Fetcher(
+            results = Fetcher(
                 store=self._store,
                 limiter=self._limiter,
                 sources=self._sources,
                 params=self._params,
                 journal=self._journal,
             ).fetch(plan)
+            fetch_rows = sum(r.rows for r in results if r.rows > 0)
+        self._last_fetch_rows = fetch_rows
 
         self._recorded_datasets.add(ds_id)
         now_iso = datetime.now(UTC).isoformat()
@@ -339,9 +346,17 @@ class DataService:
                 source=req_key.source,
                 adjustment=download,
                 fetched_at=now_iso,
+                provenance={
+                    "dataset_ids": [ds_id],
+                    "checksums": [],
+                    "source": req_key.source,
+                    "adjustment": download,
+                    "fetched_at": now_iso,
+                    "rows_added": fetch_rows,
+                },
             )
 
-        base_slice = self._store.read(base_key, start, end)
+        base_slice = self._store.read(base_key, start, end, columns=columns)
         for cs in base_slice.checksums:
             self._recorded_checksums.add(cs)
         raw_bars = (

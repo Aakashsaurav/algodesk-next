@@ -51,6 +51,7 @@ class InstrumentStore:
 
     def __init__(self, data_dir: Path) -> None:
         self._data_dir = data_dir
+        self._master_cache: dict[tuple[str, date], list[Instrument]] = {}
 
     def _dir_path(self, source: str, dt: date) -> Path:
         return self._data_dir / "instruments" / f"source={source}" / f"date={dt.isoformat()}"
@@ -73,6 +74,10 @@ class InstrumentStore:
 
         sha = hashlib.sha256(gz_bytes).hexdigest()
         (pdir / "checksum.sha256").write_text(f"{sha}  master.json.gz\n", encoding="utf-8")
+        if instruments is not None:
+            self._master_cache[(source, dt)] = list(instruments)
+        else:
+            self._master_cache.pop((source, dt), None)
 
         return pdir
 
@@ -93,6 +98,9 @@ class InstrumentStore:
 
     def load_master(self, source: str, dt: date, parser: Any | None = None) -> list[Instrument]:
         """Load instruments for a given date and source."""
+        if parser is None and (source, dt) in self._master_cache:
+            return list(self._master_cache[(source, dt)])
+
         pdir = self._dir_path(source, dt)
         master_file = pdir / "master.json.gz"
         if not master_file.is_file():
@@ -131,6 +139,8 @@ class InstrumentStore:
             inst = self._map_stored_record(item)
             if inst is not None:
                 res.append(inst)
+        if parser is None:
+            self._master_cache[(source, dt)] = list(res)
         return res
 
     def _map_stored_record(self, item: dict[str, Any]) -> Instrument | None:

@@ -260,6 +260,16 @@ Short decision records (context, decision, reason) in the order they were taken.
 5. *Screen as dynamic universe*: Run configurations accept `universe.screen = "<name>"`. At session start, the specified screen executes on the last completed session, passing symbols freeze into journal event `universe.frozen` with a 16-character SHA-256 hash, and feed subscriptions attach to passed symbols. Start refuses if screen is missing, older than `screen.max_age_days` (default 7), or verdict is FAIL. `run --prepare` outputs resolved universe size.
 6. *Screen timing breakdown and benchmark*: `screen run --timing` reports elapsed seconds across reads, indicators, rules, and results writing, alongside execution throughput in symbols per second.
 
+**ADR-074 Performance optimization for multi-symbol data accumulation planning and market screen execution.**
+1. *Empirical measurement of time sinks (CP0)*: Profiling 500-symbol runs identified that `data accumulate --dry-run` was dominated by unmemoized calendar checks (240,501 `is_trading_day` calls, 5,079 `sessions` calls taking ~7.0s) and redundant SQLite round-trips (7,105 queries to `coverage_days`, `market_closures`, and `fetch_log`). `screen run` on 500 symbols spent over 50% of time in repeated file existence stat loops across 730 days for single-file daily parquets (36,550 `bar_file_path` calculations), unnecessary actions store disk reads when stored basis matched target basis, and unprojected full-table parquet reads.
+2. *Per-run calendar memoization (`CachedCalendar`)*: Added `CachedCalendar` wrapping any `Calendar` protocol implementation with thread-safe in-memory caches for `is_trading_day` and `sessions`. Pre-evaluating completed dates during planning reduces calendar calls from 240,501 to 501.
+3. *Batched manifest coverage and closures caching*: `DataManifest.get_coverage_days_bulk` retrieves multi-dataset coverage in a single SQL `IN (...)` batch query instead of per-dataset queries. Closures and fetch_log outcomes are cached in memory on the `DataManifest` instance and invalidated on local mutations or when `PRAGMA data_version` indicates external modification, dropping SQLite queries from 7,105 to 799.
+4. *Direct single-file daily parquet access and column projection*: For `1d` timeframe, `BarStore.read` inspects the known `daily.parquet` path directly once rather than iterating through 730 day paths with filesystem stats. Pyarrow reading accepts a `columns` projection tuple, reading only requested fields into memory.
+5. *Raw-basis staleness bypass and fill-only shortcut*: `DataService.get` skips staleness checks and actions store reads when stored candle basis matches the requested adjustment mode (`from_basis == adj_mode`). When `fill_only=True`, fetch `rows_added` is captured directly from provenance without re-reading parquet files from disk.
+6. *Instrument master in-memory cache*: `InstrumentStore.load_master` caches parsed `Instrument` records by `(source, date)` in memory, eliminating redundant gzip decompression and JSON decoding across calls.
+7. *Progress visibility*: Added `cli.progress_every` (default 25) to `config/params/core.toml`. Both `data accumulate` planning and fetching loops and `screen run` print progress lines every N symbols with elapsed seconds to ensure long-running operations are visibly alive.
+
+
 
 
 

@@ -9,7 +9,7 @@ import sqlite3
 import threading
 from collections.abc import Sequence
 from dataclasses import astuple, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -118,7 +118,14 @@ class MarketClosureRecord:
 class DataManifest:
     """SQLite-backed metadata catalog with ACID transaction safety."""
 
-    __slots__ = ("_conn", "_db_path", "_lock")
+    __slots__ = (
+        "_closures_cache",
+        "_conn",
+        "_db_path",
+        "_fetch_log_cache",
+        "_last_data_version",
+        "_lock",
+    )
 
     def __init__(self, db_path: Path | str) -> None:
         self._db_path = Path(db_path)
@@ -131,6 +138,9 @@ class DataManifest:
         )
 
         self._conn.row_factory = sqlite3.Row
+        self._closures_cache: dict[tuple[Any, ...], list[MarketClosureRecord]] = {}
+        self._fetch_log_cache: dict[str, tuple[bool, str]] = {}
+        self._last_data_version = 0
         self._init_db()
 
     def _init_db(self) -> None:
@@ -581,6 +591,36 @@ class DataManifest:
         cur = self._conn.execute(query, params)
         return [CoverageDayRecord(**dict(r)) for r in cur.fetchall()]
 
+    def get_coverage_days_bulk(
+        self,
+        dataset_ids: Sequence[str],
+        start_day: str | None = None,
+        end_day: str | None = None,
+    ) -> dict[str, list[CoverageDayRecord]]:
+        """Query coverage records for multiple datasets in batched SQL IN queries."""
+        if not dataset_ids:
+            return {}
+        res: dict[str, list[CoverageDayRecord]] = {ds_id: [] for ds_id in dataset_ids}
+        chunk_size = 500
+        for i in range(0, len(dataset_ids), chunk_size):
+            chunk = list(dataset_ids[i : i + chunk_size])
+            placeholders = ",".join("?" for _ in chunk)
+            query = f"SELECT * FROM coverage_days WHERE dataset_id IN ({placeholders})"
+            params: list[Any] = list(chunk)
+            if start_day:
+                query += " AND day >= ?"
+                params.append(start_day)
+            if end_day:
+                query += " AND day <= ?"
+                params.append(end_day)
+            query += " ORDER BY dataset_id, day"
+            cur = self._conn.execute(query, params)
+            for r in cur.fetchall():
+                rec = CoverageDayRecord(**dict(r))
+                if rec.dataset_id in res:
+                    res[rec.dataset_id].append(rec)
+        return res
+
     def record_fetch_log(
         self,
         chunk: str,
@@ -616,6 +656,27 @@ class DataManifest:
         else:
             cur = self._conn.execute("SELECT * FROM fetch_log ORDER BY id DESC")
         return [FetchLogRecord(**dict(r)) for r in cur.fetchall()]
+
+    def check_fetch_log_ok(self, finished_ts: str | datetime) -> tuple[bool, str]:
+        """Check whether fetch_log outcome was OK for finished timestamp, cached."""
+        ts_str = (
+            finished_ts.isoformat()
+            if isinstance(finished_ts, (datetime, date))
+            else str(finished_ts)
+        )
+        if ts_str in self._fetch_log_cache:
+            return self._fetch_log_cache[ts_str]
+        cur = self._conn.execute(
+            "SELECT outcome, error FROM fetch_log WHERE finished = ?", (ts_str,)
+        )
+        for row in cur.fetchall():
+            if row["outcome"] != "OK" or (row["error"] and row["error"].strip()):
+                res = (False, row["error"] or row["outcome"])
+                self._fetch_log_cache[ts_str] = res
+                return res
+        res = (True, "")
+        self._fetch_log_cache[ts_str] = res
+        return res
 
     def record_quarantine(self, record: QuarantineRecord) -> None:
         """Record quarantined chunk entry under transaction."""
@@ -695,6 +756,7 @@ class DataManifest:
                 "VALUES (?, ?, ?, ?, ?)",
                 (exchange.upper(), day, kind, evidence, created_str),
             )
+            self._closures_cache.clear()
             self._commit()
         except Exception:
             self._rollback()
@@ -715,28 +777,50 @@ class DataManifest:
     def list_market_closures(
         self,
         exchange: str | None = None,
-        start_day: str | None = None,
-        end_day: str | None = None,
+        start_day: str | date | None = None,
+        end_day: str | date | None = None,
         kind: str | None = None,
     ) -> list[MarketClosureRecord]:
         """List market closures with optional exchange, day range, and kind filters."""
+        try:
+            cur_v = self._conn.execute("PRAGMA data_version").fetchone()[0]
+            if cur_v != self._last_data_version:
+                self._closures_cache.clear()
+                self._fetch_log_cache.clear()
+                self._last_data_version = cur_v
+        except Exception:
+            pass
+
+        start_str = start_day.isoformat() if isinstance(start_day, date) else start_day
+        end_str = end_day.isoformat() if isinstance(end_day, date) else end_day
+        cache_key = (
+            exchange.upper() if exchange else None,
+            start_str,
+            end_str,
+            kind,
+        )
+        if cache_key in self._closures_cache:
+            return list(self._closures_cache[cache_key])
+
         query = "SELECT exchange, day, kind, evidence, created FROM market_closures WHERE 1=1"
         params: list[Any] = []
         if exchange:
             query += " AND exchange = ?"
             params.append(exchange.upper())
-        if start_day:
+        if start_str:
             query += " AND day >= ?"
-            params.append(start_day)
-        if end_day:
+            params.append(start_str)
+        if end_str:
             query += " AND day <= ?"
-            params.append(end_day)
+            params.append(end_str)
         if kind:
             query += " AND kind = ?"
             params.append(kind)
         query += " ORDER BY day ASC"
         cur = self._conn.execute(query, params)
-        return [MarketClosureRecord(**dict(r)) for r in cur.fetchall()]
+        records = [MarketClosureRecord(**dict(r)) for r in cur.fetchall()]
+        self._closures_cache[cache_key] = records
+        return list(records)
 
     def delete_market_closure(self, exchange: str, day: str) -> bool:
         """Delete a market closure record by exchange and day."""
@@ -747,6 +831,7 @@ class DataManifest:
                 (exchange.upper(), day),
             )
             deleted = cur.rowcount > 0
+            self._closures_cache.clear()
             self._commit()
             return deleted
         except Exception:
@@ -779,6 +864,7 @@ class DataManifest:
                 params.append(kind)
             cur = self._conn.execute(query, tuple(params))
             deleted = int(cur.rowcount)
+            self._closures_cache.clear()
             self._commit()
             return deleted
         except Exception:

@@ -9,6 +9,7 @@ from typing import Any
 
 from algodesk.api.market import CoverageStatus, DataGap
 from algodesk.api.protocols import Calendar
+from algodesk.data.calendar_cache import CachedCalendar
 from algodesk.data.closures import has_all_samples_evidence
 from algodesk.data.manifest import CoverageDayRecord, DataManifest, MarketClosureRecord
 
@@ -26,7 +27,7 @@ class CoverageIndex:
         params: Any = None,
     ) -> None:
         self._manifest = manifest
-        self._calendar = calendar
+        self._calendar = CachedCalendar.wrap(calendar)
         self._settle_delay_m = settle_minutes if settle_minutes is not None else 0
         self._params = params
         self._last_closure_counts: dict[str, int] = {
@@ -289,6 +290,8 @@ def evaluate_empty_record(
     if not rec.fetched_at:
         return False, "Fetch timestamp missing"
 
+    calendar = CachedCalendar.wrap(calendar)
+
     try:
         fa = datetime.fromisoformat(rec.fetched_at)
         fa_utc = fa.astimezone(UTC) if fa.tzinfo else fa.replace(tzinfo=UTC)
@@ -362,16 +365,21 @@ def evaluate_empty_record(
             if fa_utc < cutoff:
                 return False, "Old yfinance intraday date window (pre-M2-11)"
 
-    if manifest is not None and hasattr(manifest, "_conn"):
-        try:
-            cur = manifest._conn.execute(
-                "SELECT outcome, error FROM fetch_log WHERE finished = ?", (rec.fetched_at,)
-            )
-            for row in cur.fetchall():
-                if row["outcome"] != "OK" or (row["error"] and row["error"].strip()):
-                    return False, f"Fetch log error: {row['error'] or row['outcome']}"
-        except Exception:
-            pass
+    if manifest is not None:
+        if hasattr(manifest, "check_fetch_log_ok"):
+            ok, err = manifest.check_fetch_log_ok(rec.fetched_at)
+            if not ok:
+                return False, f"Fetch log error: {err}"
+        elif hasattr(manifest, "_conn"):
+            try:
+                cur = manifest._conn.execute(
+                    "SELECT outcome, error FROM fetch_log WHERE finished = ?", (rec.fetched_at,)
+                )
+                for row in cur.fetchall():
+                    if row["outcome"] != "OK" or (row["error"] and row["error"].strip()):
+                        return False, f"Fetch log error: {row['error'] or row['outcome']}"
+            except Exception:
+                pass
 
     return True, "Final EMPTY chunk"
 

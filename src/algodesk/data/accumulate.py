@@ -8,7 +8,7 @@ and days lost beyond source retention windows.
 from __future__ import annotations
 
 import zoneinfo
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -18,6 +18,7 @@ from algodesk.api.errors import ConfigError, DataError
 from algodesk.api.kinds import PluginKind
 from algodesk.api.manifest import PluginManifest
 from algodesk.api.market import CoverageStatus, InstrumentId, SeriesKey
+from algodesk.data.calendar_cache import CachedCalendar
 from algodesk.data.groups import get_group, load_groups
 from algodesk.data.layout import dataset_id_for_key
 from algodesk.data.manifest import DataManifest
@@ -236,6 +237,8 @@ def _plan_item_for_series(
     now_utc: datetime,
     ist_tz: zoneinfo.ZoneInfo,
     refresh: bool = False,
+    preloaded_cov: dict[str, Any] | None = None,
+    preloaded_closures: dict[str, Any] | None = None,
 ) -> AccumulationPlanItem:
     """Evaluate single series using GapPlanner and build AccumulationPlanItem."""
     key = SeriesKey(
@@ -255,6 +258,8 @@ def _plan_item_for_series(
         as_of=now_utc,
         exchange_tz=ist_tz,
         refresh=refresh,
+        preloaded_coverage=preloaded_cov,
+        preloaded_closures=preloaded_closures,
     )
     missing_set = set(plan.missing_days)
     unavailable_set = set(plan.unavailable_days)
@@ -263,20 +268,23 @@ def _plan_item_for_series(
     stored = [d for d in sessions if d not in missing_set and d not in unavailable_set]
 
     refetched_cnt = 0
-    if manifest is not None and fetchable:
-        ds_id = dataset_id_for_key(key)
-        try:
-            cov = {
-                r.day: r
-                for r in manifest.get_coverage_days(
-                    ds_id,
-                    start_day=min(sessions).isoformat(),
-                    end_day=max(sessions).isoformat(),
-                )
-            }
-            refetched_cnt = len([d for d in fetchable if d.isoformat() in cov])
-        except Exception:
-            refetched_cnt = 0
+    if fetchable:
+        if preloaded_cov is not None:
+            refetched_cnt = len([d for d in fetchable if d.isoformat() in preloaded_cov])
+        elif manifest is not None:
+            ds_id = dataset_id_for_key(key)
+            try:
+                cov = {
+                    r.day: r
+                    for r in manifest.get_coverage_days(
+                        ds_id,
+                        start_day=min(sessions).isoformat(),
+                        end_day=max(sessions).isoformat(),
+                    )
+                }
+                refetched_cnt = len([d for d in fetchable if d.isoformat() in cov])
+            except Exception:
+                refetched_cnt = 0
 
     return AccumulationPlanItem(
         instrument=inst,
@@ -301,6 +309,7 @@ def plan_accumulation(
     calendar_days: bool = False,
 ) -> tuple[list[str], list[AccumulationPlanItem]]:
     """Build accumulation plan for group instruments using GapPlanner."""
+    calendar = CachedCalendar.wrap(calendar)
     root, data_dir = _resolve_paths(runtime)
     instruments = _resolve_instruments_for_group(group, root / "config" / "groups")
     same_day = _check_same_day_history(source, getattr(runtime, "params", None))
@@ -356,8 +365,41 @@ def plan_accumulation(
     items: list[AccumulationPlanItem] = []
     target_tfs = [timeframe] if timeframe else ["1m", "1d"]
     try:
-        for inst in instruments:
+        all_ds_ids = [
+            dataset_id_for_key(SeriesKey(InstrumentId(inst), "bars", tf, "raw", source))
+            for inst in instruments
+            for tf in target_tfs
+        ]
+        start_day_iso = min(sessions).isoformat()
+        end_day_iso = max(sessions).isoformat()
+        bulk_cov = (
+            manifest.get_coverage_days_bulk(
+                all_ds_ids, start_day=start_day_iso, end_day=end_day_iso
+            )
+            if manifest is not None and hasattr(manifest, "get_coverage_days_bulk")
+            else {}
+        )
+        closures = (
+            manifest.list_market_closures(start_day=start_day_iso, end_day=end_day_iso)
+            if manifest is not None and hasattr(manifest, "list_market_closures")
+            else []
+        )
+        closures_map = {mc.day: mc for mc in closures}
+
+        progress_every = 25
+        if hasattr(runtime, "params") and runtime.params:
+            try:
+                progress_every = int(runtime.params.get("cli.progress_every", "25"))
+            except Exception:
+                progress_every = 25
+        import time as _t
+
+        t_plan0 = _t.perf_counter()
+
+        for idx, inst in enumerate(instruments, 1):
             for tf in target_tfs:
+                ds_id = dataset_id_for_key(SeriesKey(InstrumentId(inst), "bars", tf, "raw", source))
+                inst_cov = {r.day: r for r in bulk_cov.get(ds_id, [])} if bulk_cov else None
                 it = _plan_item_for_series(
                     inst,
                     tf,
@@ -371,6 +413,8 @@ def plan_accumulation(
                     now_utc,
                     ist_tz,
                     refresh=refresh,
+                    preloaded_cov=inst_cov,
+                    preloaded_closures=closures_map,
                 )
                 if today_waiting:
                     it.waiting_sessions = [today]
@@ -383,6 +427,17 @@ def plan_accumulation(
                     it.request_count = 0
 
                 items.append(it)
+            is_prog = (
+                progress_every > 0
+                and len(instruments) > progress_every
+                and (idx % progress_every == 0 or idx == len(instruments))
+            )
+            if is_prog:
+                elapsed = _t.perf_counter() - t_plan0
+                print(
+                    f"[accumulate:plan] {idx}/{len(instruments)} symbols planned ({elapsed:.1f}s)",
+                    flush=True,
+                )
     finally:
         if opened and manifest is not None:
             manifest.close()
@@ -413,6 +468,7 @@ def _fetch_item_bars(
         source=source,
     )
     try:
+        d_slice = None
         try:
             d_slice = ds.get(
                 series=key,
@@ -420,7 +476,7 @@ def _fetch_item_bars(
                 end=end_dt,
                 download="raw",
                 adjust="none",
-                fill_only=False,
+                fill_only=True,
                 refresh=refresh,
             )
         except TypeError:
@@ -430,8 +486,7 @@ def _fetch_item_bars(
                     start=start_dt,
                     end=end_dt,
                     download="raw",
-                    fill_only=False,
-                    refresh=refresh,
+                    fill_only=True,
                 )
             except TypeError:
                 d_slice = ds.get(
@@ -439,9 +494,28 @@ def _fetch_item_bars(
                     start=start_dt,
                     end=end_dt,
                     download="raw",
+                    adjust="none",
                     fill_only=False,
+                    refresh=refresh,
                 )
-        return (len(d_slice.bars) if d_slice and d_slice.bars else 0), True, None
+        added = 0
+        if d_slice is not None:
+            prov = getattr(d_slice, "provenance", None)
+            if prov is None and hasattr(d_slice, "provenance_info"):
+                prov = d_slice.provenance_info
+            if isinstance(prov, Mapping):
+                val = prov.get("rows_added")
+                if isinstance(val, (int, float)):
+                    added = int(val)
+            if added == 0 and hasattr(ds, "_last_fetch_rows"):
+                val = ds._last_fetch_rows
+                if isinstance(val, (int, float)):
+                    added = int(val)
+            if added == 0:
+                bars = getattr(d_slice, "bars", None)
+                if isinstance(bars, (list, tuple)):
+                    added = len(bars)
+        return added, True, None
     except Exception as exc:
         return 0, False, str(exc)
 
@@ -485,21 +559,37 @@ def _are_all_fetchable_days_final_empty(
 
     from algodesk.data.coverage import CoverageIndex
 
-    cov_idx = CoverageIndex(manifest=manifest, calendar=calendar)
+    cal_wrapped = CachedCalendar.wrap(calendar)
+    cov_idx = CoverageIndex(manifest=manifest, calendar=cal_wrapped)
     try:
+        all_checks: list[tuple[str, str]] = []
         for it in plan_items:
             if not it.fetchable_sessions:
                 continue
             key = SeriesKey(InstrumentId(it.instrument), "bars", it.timeframe, "raw", source)
             ds_id = dataset_id_for_key(key)
             for d in it.fetchable_sessions:
-                recs = manifest.get_coverage_days(
-                    ds_id, start_day=d.isoformat(), end_day=d.isoformat()
-                )
-                if not recs or recs[0].status != CoverageStatus.EMPTY:
-                    return False
-                if not cov_idx.is_empty_final(recs[0], now_dt=now_dt):
-                    return False
+                all_checks.append((ds_id, d.isoformat()))
+        if not all_checks:
+            return True
+
+        unique_ds_ids = list(set(ds for ds, _ in all_checks))
+        min_day = min(d for _, d in all_checks)
+        max_day = max(d for _, d in all_checks)
+        bulk_cov = (
+            manifest.get_coverage_days_bulk(unique_ds_ids, start_day=min_day, end_day=max_day)
+            if hasattr(manifest, "get_coverage_days_bulk")
+            else {}
+        )
+
+        for ds_id, d_iso in all_checks:
+            recs = [r for r in bulk_cov.get(ds_id, []) if r.day == d_iso]
+            if not recs and not bulk_cov:
+                recs = manifest.get_coverage_days(ds_id, start_day=d_iso, end_day=d_iso)
+            if not recs or recs[0].status != CoverageStatus.EMPTY:
+                return False
+            if not cov_idx.is_empty_final(recs[0], now_dt=now_dt):
+                return False
         return True
     finally:
         if opened:
@@ -520,6 +610,7 @@ def execute_accumulation(
     calendar_days: bool = False,
 ) -> AccumulationReport:
     """Execute data accumulation for group, fetching missing bars and journaling."""
+    calendar = CachedCalendar.wrap(calendar)
     instruments, plan_items = plan_accumulation(
         group=group,
         source=source,
@@ -565,7 +656,17 @@ def execute_accumulation(
     instrument_rows: dict[tuple[str, str], int] = {}
     failures: list[dict[str, Any]] = []
 
-    for it in plan_items:
+    progress_every = 25
+    if hasattr(runtime, "params") and runtime.params:
+        try:
+            progress_every = int(runtime.params.get("cli.progress_every", "25"))
+        except Exception:
+            progress_every = 25
+    import time as _t
+
+    t_exec0 = _t.perf_counter()
+
+    for idx, it in enumerate(plan_items, 1):
         added, ok, err = _fetch_item_bars(it, source, data_service, refresh=refresh)
         it.rows_added = added
         instrument_rows[(it.instrument, it.timeframe)] = added
@@ -581,6 +682,17 @@ def execute_accumulation(
             )
         else:
             total_refetched += it.refetched_days
+        is_prog = (
+            progress_every > 0
+            and len(plan_items) > progress_every
+            and (idx % progress_every == 0 or idx == len(plan_items))
+        )
+        if is_prog:
+            elapsed = _t.perf_counter() - t_exec0
+            print(
+                f"[accumulate:fetch] {idx}/{len(plan_items)} symbols processed ({elapsed:.1f}s)",
+                flush=True,
+            )
 
     if total_fetchable > 0 and rows_added == 0 and missing_after == 0:
         if not _are_all_fetchable_days_final_empty(plan_items, source, runtime, calendar, now_dt):

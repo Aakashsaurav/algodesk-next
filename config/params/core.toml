@@ -180,3 +180,15 @@ scope = "global"
 tighten = "down"
 description = "Days before calendar coverage expiration when doctor issues warning"
 owner = "core"
+
+[[param]]
+name = "cli.progress_every"
+type = "int"
+default = 25
+min = 0
+max = 1000
+unit = "symbols"
+scope = "global"
+tighten = "down"
+description = "Progress reporting interval in symbols for long-running CLI operations"
+owner = "core"

@@ -18,6 +18,7 @@ from algodesk.api.screens import (
     ScreenRefusal,
     SkipReason,
 )
+from algodesk.data.calendar_cache import CachedCalendar
 from algodesk.data.manifest import DataManifest
 from algodesk.data.service import DataService
 from algodesk.data.store import BarStore
@@ -83,6 +84,7 @@ class DataServiceScreenAdapter(ScreenDataReader):
                 fill_only=False,
                 source=self._default_source,
                 accept_unverified=accept_unverified,
+                columns=("start_ts", "end_ts", "open", "high", "low", "close", "volume"),
             )
         except NotSupported as exc:
             return ScreenRefusal(reason=SkipReason.ADJUSTMENT_REFUSED, detail=str(exc))
@@ -221,9 +223,11 @@ def build_screen_runner(
             )
         except Exception:
             cal = getattr(ds, "_calendar", None)
+    cal = CachedCalendar.wrap(cal)
 
     # Read screen.max_skipped_pct from parameter registry
     skip_pct = 10.0
+    progress_every = 25
     if max_skipped_pct is not None:
         skip_pct = float(max_skipped_pct)
     elif runtime.params is not None:
@@ -233,10 +237,17 @@ def build_screen_runner(
                 skip_pct = float(val)
         except Exception:
             pass
+        try:
+            p_val = runtime.params.get("cli.progress_every")
+            if p_val is not None:
+                progress_every = int(p_val)
+        except Exception:
+            pass
 
     return ScreenRunner(
         data_reader=data_adapter,
         indicator_resolver=indicator_resolver,
         calendar=cal,
         max_skipped_pct=skip_pct,
+        progress_every=progress_every,
     )

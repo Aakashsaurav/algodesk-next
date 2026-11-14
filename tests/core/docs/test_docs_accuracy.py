@@ -35,6 +35,7 @@ ALLOWED_NON_PARAM_NAMES = {
     "uv.lock": "Dependency lockfile filename",
     "zerodha_nse.toml": "Example fee schedule filename",
     "data_manifest.db": "Data manifest database filename",
+    "daily.parquet": "Daily partitioned bars parquet filename",
     "data.quarantine": "Journal event type for market data quarantine",
     "data.accumulate": "Journal event type for data accumulation",
     "data.accumulation_lag": "Doctor diagnostic check ID for data accumulation lag",

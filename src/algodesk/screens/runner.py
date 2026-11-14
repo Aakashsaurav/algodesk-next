@@ -96,12 +96,14 @@ class ScreenRunner:
         calendar: Calendar | None = None,
         max_skipped_pct: float | None = None,
         clock: Clock | None = None,
+        progress_every: int | None = None,
     ) -> None:
         self.data_reader = data_reader
         self.indicator_resolver = indicator_resolver
         self.calendar = calendar
         self.max_skipped_pct = float(max_skipped_pct) if max_skipped_pct is not None else float(10)
         self.clock = clock
+        self.progress_every = int(progress_every) if progress_every is not None else 25
 
     def resolve_as_of(self, as_of: date | str | None) -> date:
         """Resolve effective as-of date (last completed session on or before as-of)."""
@@ -198,7 +200,17 @@ class ScreenRunner:
         skipped: list[tuple[str, SkipReason, str]] = []
 
         t0_reads = perf_counter()
-        for sym in sym_list:
+        for idx, sym in enumerate(sym_list, 1):
+            if (
+                self.progress_every > 0
+                and len(sym_list) > self.progress_every
+                and (idx % self.progress_every == 0 or idx == len(sym_list))
+            ):
+                elapsed = perf_counter() - t0_reads
+                print(
+                    f"[screen] {idx}/{len(sym_list)} symbols evaluated ({elapsed:.1f}s)",
+                    flush=True,
+                )
             try:
                 res = self.data_reader.get_bars(
                     instrument=sym,
