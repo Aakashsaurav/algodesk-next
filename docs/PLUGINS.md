@@ -16,7 +16,7 @@ Plugins implement domain protocols defined in `algodesk.api.protocols` (re-expor
 | `venue` | `ExecutionVenue` | Order routing, paper execution, or live exchange venue |
 | `fees` | `schedule() -> Schedule` | Exchange/broker fee rates and transaction tax schedules |
 | `indicator` | `Indicator` | Batch (`compute`) and streaming (`update`) indicators |
-| `screen` | Screening interface | Universe screening and filtering |
+| `screen` | `Screen` | Universe filtering and cross-sectional ranking (`evaluate`) |
 | `strategy` | `Strategy` | Signal generation and lifecycle (`on_bar`, `on_quote`) |
 | `risk_rule` | `RiskRule` | Pre-trade risk assessment (`check`) |
 | `notifier` | `Notifier` | Operational messaging and alerts (`send`) |
@@ -35,6 +35,7 @@ Plugins implement domain protocols defined in `algodesk.api.protocols` (re-expor
 | `calendars/exchange` | `calendar` | `holidays`, `sessions`, `special_sessions` | Exchange trading calendar providing market session timing, holiday schedules, and special session handling for NSE, BSE, and MCX. |
 | `fees/zerodha_nse` | `fees` | `equity_delivery`, `equity_intraday`, `futures` | Verified dated fee and tax schedule for Zerodha trading on NSE across delivery, intraday, and equity futures. |
 | `indicators/builtin` | `indicator` | `sma`, `ema`, `rsi`, `atr`, `vwap`, `bollinger`, `macd`, `rolling_hl`, `volume_avg`, `roc` | Built-in mathematical indicators supporting batch calculation and streaming updates with golden vectors. |
+| `screens/sma_trend_py` | `screen` | `default` | Reference Python screen evaluating SMA(50) > SMA(200) across daily completed bars. |
 | `risk_rules/builtin` | `risk_rule` | `pre_trade`, `limits`, `capital_checks` | Pre-trade risk rule plugin evaluating 9 safety controls (cash, exposure, orders/min, daily loss) from registry. |
 | `venues/sim` | `venue` | `market_orders`, `limit_orders`, `depth_matching`, `failure_injection` | Simulated execution venue with latency, seeded jitter, depth walking, trade-through limit fills, and failure drills. |
 | `strategies/sma_cross` | `strategy` | `signals`, `lifecycle`, `intraday_exit` | Demo dual moving-average crossover strategy exercising bar processing, warmup, signals, and exit timers. |

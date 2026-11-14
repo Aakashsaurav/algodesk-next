@@ -774,7 +774,7 @@ def test_manifest_and_metrics_include_first_last_recv_utc(tmp_project: Path) -> 
         st.tuples(
             st.integers(min_value=1, max_value=500),
             st.sampled_from(["NSE:EQ:INFY", "NSE:EQ:TCS", "NSE:EQ:HDFCBANK"]),
-            st.floats(min_value=10.0, max_value=5000.0),
+            st.floats(min_value=10.0, max_value=5000.0, allow_nan=False),
         ),
         min_size=2,
         max_size=30,

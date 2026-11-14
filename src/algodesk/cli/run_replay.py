@@ -139,6 +139,18 @@ def run_cmd(
                         typer.echo(f"  CRITICAL: {r.message} (Fix: {r.fix})")
                 raise typer.Exit(code=1)
 
+            # Resolve universe and print resolved universe size
+            sec_prov = _resolve_secrets_provider(rt, run=run_name)
+            prep_runner = SessionRunner(
+                rt,
+                run_config=eff.run,
+                observe=False,
+                dry_run=True,
+                secrets=sec_prov,
+                quiet=True,
+            )
+            resolved_univ = prep_runner._resolve_universe()
+            typer.echo(f"Resolved universe size: {len(resolved_univ)}")
             typer.echo("Doctor pre-start check: 0 critical")
             typer.echo(f"Preparation complete for run '{run_name}': all OK, doctor 0 critical")
             return
@@ -406,13 +418,37 @@ def results_list_cmd(ctx: typer.Context) -> None:
             if m_path.is_file():
                 try:
                     data = json.loads(m_path.read_text())
-                    dt, mode = str(data.get("date", dt)), str(data.get("mode", mode))
-                    trades = str(data.get("trades", 0))
-                    net_pnl = f"{float(data.get('net_pnl', 0.0)):.2f}"
-                    if data.get("first_tick_ist") and data.get("first_tick_ist") != "N/A":
-                        start_ist = str(data.get("first_tick_ist"))
-                    elif data.get("first_tick_ts"):
-                        start_ist = format_ist(data.get("first_tick_ts"))
+                    run_type = str(data.get("run_type", ""))
+                    # For screen runs: DATE = as_of, trades and net_pnl shown as "-"
+                    if run_type == "screen":
+                        dt = str(data.get("as_of", data.get("date", dt)))
+                        mode = "screen"
+                        trades = "-"
+                        net_pnl = "-"
+                        # START_IST from start_ist field (written by screen_writer)
+                        if data.get("start_ist"):
+                            start_ist = str(data["start_ist"])
+                        else:
+                            # Fall back to run_id timestamp
+                            import re as _re
+
+                            m_match = _re.search(r"(\d{8}_\d{6})", r_id)
+                            if m_match:
+                                try:
+                                    ts_utc = datetime.strptime(
+                                        m_match.group(1), "%Y%m%d_%H%M%S"
+                                    ).replace(tzinfo=UTC)
+                                    start_ist = format_ist(ts_utc)
+                                except Exception:
+                                    pass
+                    else:
+                        dt, mode = str(data.get("date", dt)), str(data.get("mode", mode))
+                        trades = str(data.get("trades", 0))
+                        net_pnl = f"{float(data.get('net_pnl', 0.0)):.2f}"
+                        if data.get("first_tick_ist") and data.get("first_tick_ist") != "N/A":
+                            start_ist = str(data.get("first_tick_ist"))
+                        elif data.get("first_tick_ts"):
+                            start_ist = format_ist(data.get("first_tick_ts"))
                 except Exception:
                     pass
 
@@ -421,12 +457,16 @@ def results_list_cmd(ctx: typer.Context) -> None:
                     for line in s_path.read_text().splitlines():
                         if "Verdict:" in line:
                             verdict = line.split("Verdict:")[-1].strip().split(".")[0]
-                        elif "Date:" in line:
+                        elif "Date:" in line and mode != "screen":
                             dt = line.split("Date:")[-1].strip()
-                        elif "Mode:" in line:
+                        elif "Mode:" in line and mode != "screen":
                             mode = line.split("Mode:")[-1].strip()
                 except Exception:
                     pass
+
+            if mode == "screen":
+                trades = "-"
+                net_pnl = "-"
 
             if start_ist == "N/A":
                 import re

@@ -20,6 +20,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import typer
 
@@ -1142,10 +1143,104 @@ class SessionRunner:
             manifest = DataManifest(manifest_db)
             groups_dir = self.runtime.root / "config" / "groups"
             symbols = list(resolve_selector(f"@{u_cfg.group}", manifest, groups_dir=groups_dir))
+        elif u_cfg.screen:
+            screen_name = u_cfg.screen
+            from algodesk.api.errors import ConfigError
+
+            fake_res = getattr(self.runtime, "_fake_screen_result", None)
+            as_of_session = None
+            if fake_res is not None:
+                res = fake_res
+                as_of_session = getattr(res, "as_of", None)
+            else:
+                from algodesk.data.groups import load_groups
+                from algodesk.ops.screens import build_screen_runner
+                from algodesk.screens.models import load_toml_screen
+
+                screen_file = self.runtime.root / "config" / "screens" / f"{screen_name}.toml"
+                screen_obj: Any = None
+                screen_hash: str | None = None
+                if screen_file.is_file():
+                    import hashlib
+
+                    screen_obj = load_toml_screen(screen_file)
+                    screen_hash = hashlib.sha256(screen_file.read_bytes()).hexdigest()
+                else:
+                    try:
+                        p_ctx = build_context(Mode.RESEARCH, run_id="engine_screen_resolve")
+                        screen_obj = self.runtime.plugins.create(
+                            PluginKind.SCREEN, screen_name, config={}, ctx=p_ctx
+                        )
+                    except Exception:
+                        screen_obj = None
+
+                if screen_obj is None:
+                    raise ConfigError(
+                        what=f"Screen '{screen_name}' specified in universe.screen not found",
+                        where="engine.runner._resolve_universe",
+                        fix=f"Verify config/screens/{screen_name}.toml or screen plugin exists",
+                    )
+
+                groups_dir = self.runtime.root / "config" / "groups"
+                groups_map = load_groups(groups_dir)
+                u_name = getattr(screen_obj, "universe", None) or "nifty50"
+                if u_name in groups_map:
+                    screen_syms = list(groups_map[u_name])
+                elif "demo5" in groups_map:
+                    screen_syms = list(groups_map["demo5"])
+                else:
+                    screen_syms = ["RELIANCE", "TCS", "INFY"]
+
+                screen_runner = build_screen_runner(self.runtime)
+                as_of_session = screen_runner.resolve_as_of(None)
+                res = screen_runner.run(
+                    screen=screen_obj,
+                    symbols=screen_syms,
+                    as_of=as_of_session,
+                    screen_file_hash=screen_hash,
+                )
+
+            # Check screen.max_age_days
+            age_cutoff_days: int | None = None
+            if self.runtime.params is not None:
+                try:
+                    val = self.runtime.params.get("screen.max_age_days")
+                    if val is not None:
+                        age_cutoff_days = int(val)
+                except Exception:
+                    pass
+            if age_cutoff_days is None:
+                age_cutoff_days = 7
+
+            if as_of_session is not None:
+                now_ist = self.clock.now().astimezone(ZoneInfo("Asia/Kolkata")).date()
+                age_days = (now_ist - as_of_session).days
+                if age_days > age_cutoff_days:
+                    raise ConfigError(
+                        what=(
+                            f"Screen result as-of {as_of_session} is {age_days} days old, "
+                            f"exceeding screen.max_age_days ({age_cutoff_days} days)"
+                        ),
+                        where="engine.runner._resolve_universe",
+                        fix=(
+                            "Run screen for a more recent trading session "
+                            "or increase screen.max_age_days"
+                        ),
+                    )
+
+            if getattr(res, "verdict", "PASS") == "FAIL":
+                fail_r = getattr(res, "fail_reason", "unknown")
+                raise ConfigError(
+                    what=f"Screen '{screen_name}' execution failed: {fail_r}",
+                    where="engine.runner._resolve_universe",
+                    fix="Resolve screen data gaps or increase screen.max_skipped_pct",
+                )
+
+            symbols = [r.symbol for r in res.rows if r.passed]
 
         from algodesk.data.aliases import resolve_alias
 
-        res: dict[InstrumentId, Instrument] = {}
+        inst_map: dict[InstrumentId, Instrument] = {}
         for s in symbols:
             canonical_id = resolve_alias(s)
             p = parse_id(canonical_id)
@@ -1163,19 +1258,21 @@ class SessionRunner:
                 isin=None,
                 broker_keys={},
             )
-            res[canonical_id] = inst
+            inst_map[canonical_id] = inst
             if str(canonical_id) != str(s):
-                res[InstrumentId(s)] = inst
+                inst_map[InstrumentId(s)] = inst
 
         import hashlib
 
-        sorted_keys = sorted(str(k) for k in res.keys())
+        sorted_keys = sorted(str(k) for k in inst_map.keys())
         content_hash = hashlib.sha256("\n".join(sorted_keys).encode("utf-8")).hexdigest()[:16]
-        if hasattr(self, "journal") and self.journal is not None:
+        j_writer = getattr(self, "journal", None) or getattr(self.runtime, "journal", None)
+        if j_writer is not None:
             try:
-                self.journal.append(
+                j_writer.append(
                     "universe.frozen",
                     {
+                        "screen": getattr(u_cfg, "screen", None),
                         "group": getattr(u_cfg, "group", None),
                         "hash": content_hash,
                         "instruments": sorted_keys,
@@ -1184,7 +1281,7 @@ class SessionRunner:
             except Exception:
                 pass
 
-        return res
+        return inst_map
 
     async def _drain_pending_bar_tasks(self, c: dict[str, Any]) -> None:
         while self._pending_bar_tasks:

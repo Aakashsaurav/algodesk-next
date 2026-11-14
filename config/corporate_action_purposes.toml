@@ -1,0 +1,37 @@
+# Corporate action purpose classification rules.
+# Maps purpose text patterns (case-insensitive substring match) to action class.
+#
+# Classes: ignore, split, bonus, rights, dividend, manual
+#
+# "ignore" actions are stored with class=ignored and shown by `data actions list`
+# but are never applied to price adjustments and never block accumulate.
+#
+# PM PROPOSAL — NOT VERIFIED AGAINST NSE DOCUMENTATION.
+# These patterns are initial estimates based on observed NSE purpose texts.
+# Owner review required before marking as verified.
+
+[[purpose]]
+pattern = "buy back"
+class = "ignore"
+note = "Buyback: share repurchase, no price adjustment needed. PM proposal, not verified."
+
+[[purpose]]
+pattern = "buyback"
+class = "ignore"
+note = "Buyback: share repurchase, no price adjustment needed. PM proposal, not verified."
+
+[[purpose]]
+pattern = "buy-back"
+class = "ignore"
+note = "Buyback: share repurchase, no price adjustment needed. PM proposal, not verified."
+
+[[purpose]]
+pattern = "annual general meeting"
+class = "ignore"
+note = "AGM: informational event, no price adjustment. PM proposal, not verified."
+
+[[purpose]]
+pattern = "extraordinary general meeting"
+class = "ignore"
+note = "EGM: informational event, no price adjustment. PM proposal, not verified."
+

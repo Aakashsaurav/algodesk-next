@@ -1,0 +1,13 @@
+# Test screen: SMA(50) > SMA(200) on 1d timeframe
+# adjust = "splits": prices are split-adjusted; dividends not applied (storage basis).
+# When stored basis == requested basis no corporate actions are read.
+
+name = "sma_trend_test"
+description = "Test screen: SMA(50) > SMA(200) on 1d timeframe"
+timeframe = "1d"
+adjust = "splits"
+
+[[require]]
+left = { ind = "sma", n = 50 }
+op = ">"
+right = { ind = "sma", n = 200 }

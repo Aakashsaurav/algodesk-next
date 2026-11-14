@@ -105,6 +105,61 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
 GUARDED_FOLDERS: tuple[str, ...] = ("data", "results", ".algodesk")
 _BEFORE_TEST_SESSION_SNAPSHOT: set[str] | None = None
+_BEFORE_TEST_SESSION_HASHES: dict[str, str] | None = None
+
+
+def snapshot_guarded_hashes(root: Path) -> dict[str, str]:
+    """Capture SHA-256 hashes of critical database and configuration files."""
+    import hashlib
+
+    hashes: dict[str, str] = {}
+    specs = [
+        ("data/state", "*.db"),
+        ("config/groups", "*.toml"),
+        ("config/screens", "*.toml"),
+    ]
+    for sub, pat in specs:
+        folder = root / sub
+        if folder.is_dir():
+            for p in sorted(folder.glob(pat)):
+                name = p.name
+                if (
+                    name.endswith(".db-shm")
+                    or name.endswith(".db-wal")
+                    or name.endswith(".lock")
+                    or name.startswith("journal_replay")
+                    or name == ".DS_Store"
+                ):
+                    continue
+                try:
+                    rel = f"{sub}/{p.name}"
+                    hashes[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+                except OSError:
+                    pass
+    return hashes
+
+
+def verify_guarded_hashes(before: dict[str, str], after: dict[str, str]) -> None:
+    """Compare before and after SHA-256 hashes and raise if files were modified."""
+    modified: list[str] = []
+    for path, b_sha in sorted(before.items()):
+        if path not in after:
+            modified.append(f"Guarded file removed: {path}")
+        elif after[path] != b_sha:
+            modified.append(
+                f"Guarded file modified: {path} (sha256 {b_sha[:8]} -> {after[path][:8]})"
+            )
+    for path in sorted(after.keys()):
+        if path not in before:
+            modified.append(f"Guarded file added: {path}")
+
+    if modified:
+        msg = [
+            "Hermetic test violation: guarded database or configuration "
+            "modified during test execution!",
+            *modified,
+        ]
+        raise RuntimeError("\n".join(msg))
 
 
 def snapshot_guarded_paths(root: Path) -> set[str]:
@@ -132,18 +187,20 @@ def verify_repo_state_snapshot(before: set[str], after: set[str]) -> None:
     added = after - before
     removed = before - after
     # Active concurrent paper/live session processes write live tick parts in data/ticks
-    # and write run bundles in results/
+    # and write run bundles in results/; xdist workers create journal_replay_gw*.db in data/state
     added = {
         f
         for f in added
         if not (f.startswith("data/ticks/") and "/date=" in f and f.endswith(".parquet"))
         and not f.startswith("results/demo_paper_")
+        and not f.startswith("data/state/journal_replay")
     }
     removed = {
         f
         for f in removed
         if not (f.startswith("data/ticks/") and "/date=" in f and f.endswith(".parquet"))
         and not f.startswith("results/demo_paper_")
+        and not f.startswith("data/state/journal_replay")
     }
     if added or removed:
         msg: list[str] = [
@@ -210,23 +267,27 @@ def tmp_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Snapshot repository state before tests begin (controller only)."""
-    global _BEFORE_TEST_SESSION_SNAPSHOT
+    global _BEFORE_TEST_SESSION_SNAPSHOT, _BEFORE_TEST_SESSION_HASHES
     if hasattr(session.config, "workerinput"):
         return
     real_root = Path(__file__).resolve().parent.parent
     _BEFORE_TEST_SESSION_SNAPSHOT = snapshot_guarded_paths(real_root)
+    _BEFORE_TEST_SESSION_HASHES = snapshot_guarded_hashes(real_root)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Verify repository state is unchanged after tests complete (controller only)."""
-    global _BEFORE_TEST_SESSION_SNAPSHOT
+    global _BEFORE_TEST_SESSION_SNAPSHOT, _BEFORE_TEST_SESSION_HASHES
     if hasattr(session.config, "workerinput"):
         return
     if _BEFORE_TEST_SESSION_SNAPSHOT is None:
         return
     real_root = Path(__file__).resolve().parent.parent
     after_snapshot = snapshot_guarded_paths(real_root)
+    after_hashes = snapshot_guarded_hashes(real_root)
     try:
         verify_repo_state_snapshot(_BEFORE_TEST_SESSION_SNAPSHOT, after_snapshot)
+        if _BEFORE_TEST_SESSION_HASHES is not None:
+            verify_guarded_hashes(_BEFORE_TEST_SESSION_HASHES, after_hashes)
     except RuntimeError as exc:
         pytest.exit(f"Session Guard Failed: {exc}", returncode=1)

@@ -1,0 +1,26 @@
+# Screen engine parameters
+
+[[param]]
+name = "screen.max_skipped_pct"
+type = "float"
+default = 10.0
+min = 0.0
+max = 100.0
+unit = "%"
+scope = "global"
+tighten = "down"
+description = "Maximum allowed percentage of skipped symbols before a screen run verdict fails"
+owner = "screens"
+
+[[param]]
+name = "screen.max_age_days"
+type = "int"
+default = 7
+min = 0
+max = 365
+unit = "days"
+scope = "global"
+tighten = "down"
+description = "Maximum allowed age in days for a screen result when used as a run universe"
+owner = "screens"
+

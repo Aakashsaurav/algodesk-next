@@ -31,6 +31,7 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 | `journal` | Append-only hash-chained event log (SQLite) | `Journal`, `JournalSettings`, `verify_journal` |
 | `logs` | JSON logging with secret scrubbing | `setup_logging`, `get_logger` |
 | `data` | Bar & tick store, day coverage, validation, quarantine, resampler, catalog, groups, rate limiter, gap planner, parallel fetcher, data service | `BarStore`, `BarValidator`, `RateLimiter`, `GapPlanner`, `Fetcher`, `DataService`, `CoverageIndex`, `QuarantineManager`, `SessionBarStore`, `resample`, `DataManifest`, `DataCatalog` |
+| `screens` | Market screening engine: TOML rules, feature extraction, cross-sectional ranking, reproducible run bundles | `ScreenRunner`, `TomlScreenModel`, `load_toml_screen`, `build_feature_view`, `compute_percentile_ranks`, `compute_result_hash` |
 | `engine` | Deterministic event bus, clocks, scheduler, bars, runner, and strategy runtime | `EventBus`, `WallClock`, `SimClock`, `Scheduler`, `BarBuilder`, `SessionManager`, `SessionRunner`, `StrategyRuntime`, `IndicatorManager`, `NotifyBridge` |
 | `oms` | Order lifecycle, state machine, write-ahead journaling | `OrderManager` |
 | `portfolio` | Realized/unrealized accounting, mark-to-market, snapshots | `PortfolioLedger` |
@@ -52,7 +53,7 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 
 | Path | Content |
 |---|---|
-| `config/` | `platform.toml`, `profiles/`, `runs/`, `params/*.toml` defaults, `groups/*.toml`, lint and scan rules |
+| `config/` | `platform.toml`, `profiles/`, `runs/`, `params/*.toml` defaults, `groups/*.toml`, `screens/*.toml`, lint and scan rules |
 | `data/state/params.db`, `data/state/journal.db` | Parameter overrides and history; journal (git-ignored) |
 | `data/state/killswitch.json` | Persistent emergency trading kill-switch state (git-ignored) |
 | `data/state/data_manifest.db` | Market data manifest SQLite DB (schema v2: datasets, parts, coverage_days, quarantine) |

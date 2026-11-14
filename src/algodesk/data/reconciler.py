@@ -198,6 +198,13 @@ class CorporateActionsReconciler:
                 )
                 return self._select_action(acts, status=st, conflict_reason=reason)
 
+            if t == "ignored" or first.status == "ignored":
+                return self._select_action(
+                    acts,
+                    status="ignored",
+                    conflict_reason=first.reason or "Ignored non-price action",
+                )
+
             if t == "other" or first.status == "manual_required":
                 return self._select_action(
                     acts,
@@ -324,12 +331,18 @@ class CorporateActionsReconciler:
         matching_ovs = [ov for ov in all_ovs if ov.symbol == sym and ov.exchange == exch]
         ov_dates = {ov.ex_date for ov in matching_ovs}
         remaining = [a for a in actions if a.symbol.upper() == sym and a.ex_date not in ov_dates]
-        date_conflicted = self._detect_date_conflicts(remaining)
+        ignored_acts = [
+            a for a in remaining if a.type.lower() == "ignored" or a.status.lower() == "ignored"
+        ]
+        price_acts = [
+            a for a in remaining if a.type.lower() != "ignored" and a.status.lower() != "ignored"
+        ]
+        date_conflicted = self._detect_date_conflicts(price_acts)
 
-        split_bonus_by_date = self.get_split_bonus_factors(remaining)
+        split_bonus_by_date = self.get_split_bonus_factors(price_acts)
 
         by_date: dict[date, list[ActionRecord]] = defaultdict(list)
-        for a in remaining:
+        for a in price_acts:
             by_date[a.ex_date].append(a)
 
         reconciled = [override_to_action(ov) for ov in matching_ovs]
@@ -340,9 +353,10 @@ class CorporateActionsReconciler:
                 )
             else:
                 later_factor = self.cumulative_factor_after(split_bonus_by_date, ex_d)
-                rec = self._reconcile_same_date(acts, later_factor, remaining)
+                rec = self._reconcile_same_date(acts, later_factor, price_acts)
             reconciled.append(rec)
 
+        reconciled.extend(ignored_acts)
         return sorted(reconciled, key=lambda a: (a.ex_date, a.type))
 
     def _detect_date_conflicts(self, acts: Sequence[ActionRecord]) -> set[date]:

@@ -37,6 +37,7 @@ class AccumulationPlanItem:
     rows_added: int = 0
     refetched_days: int = 0
     waiting_sessions: list[date] = field(default_factory=list)
+    request_count: int = 0
 
 
 @dataclass
@@ -55,6 +56,8 @@ class AccumulationReport:
     dry_run: bool = False
     instrument_rows: dict[tuple[str, str], int] = field(default_factory=dict)
     waiting_items: list[AccumulationPlanItem] = field(default_factory=list)
+    request_count: int = 0
+    failures: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _check_same_day_history(source: str, params: Any = None) -> bool:
@@ -82,6 +85,7 @@ def resolve_completed_sessions(
     source: str | None = None,
     params: Any = None,
     same_day_history: bool | None = None,
+    calendar_days: int | None = None,
 ) -> list[date]:
     """Find the latest complete trading sessions."""
     ist_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
@@ -105,20 +109,37 @@ def resolve_completed_sessions(
             cur = today - timedelta(days=1)
 
     sessions: list[date] = []
-    cutoff = cur - timedelta(days=120)
-    while cur >= cutoff and len(sessions) < count:
-        is_trading = False
-        if calendar is not None:
-            try:
-                is_trading = bool(calendar.is_trading_day(cur))
-            except Exception:
+    if calendar_days is not None:
+        start_cutoff = today - timedelta(days=calendar_days)
+        while cur >= start_cutoff:
+            is_trading = False
+            if calendar is not None:
+                try:
+                    is_trading = bool(calendar.is_trading_day(cur))
+                except Exception:
+                    is_trading = cur.weekday() < 5
+            else:
                 is_trading = cur.weekday() < 5
-        else:
-            is_trading = cur.weekday() < 5
 
-        if is_trading:
-            sessions.append(cur)
-        cur -= timedelta(days=1)
+            if is_trading:
+                sessions.append(cur)
+            cur -= timedelta(days=1)
+    else:
+        max_lookback = max(120, count * 3)
+        cutoff = cur - timedelta(days=max_lookback)
+        while cur >= cutoff and len(sessions) < count:
+            is_trading = False
+            if calendar is not None:
+                try:
+                    is_trading = bool(calendar.is_trading_day(cur))
+                except Exception:
+                    is_trading = cur.weekday() < 5
+            else:
+                is_trading = cur.weekday() < 5
+
+            if is_trading:
+                sessions.append(cur)
+            cur -= timedelta(days=1)
 
     sessions.reverse()
     return sessions
@@ -276,19 +297,34 @@ def plan_accumulation(
     calendar: Any = None,
     now_dt: datetime | None = None,
     refresh: bool = False,
+    timeframe: str | None = None,
+    calendar_days: bool = False,
 ) -> tuple[list[str], list[AccumulationPlanItem]]:
-    """Build accumulation plan for group instruments across 1m and 1d using GapPlanner."""
+    """Build accumulation plan for group instruments using GapPlanner."""
     root, data_dir = _resolve_paths(runtime)
     instruments = _resolve_instruments_for_group(group, root / "config" / "groups")
     same_day = _check_same_day_history(source, getattr(runtime, "params", None))
-    sessions = resolve_completed_sessions(
-        calendar,
-        count=days,
-        now_dt=now_dt,
-        source=source,
-        params=getattr(runtime, "params", None),
-        same_day_history=same_day,
-    )
+
+    is_cal_mode = calendar_days or (timeframe == "1d" and days >= 30) or days > 30
+    if is_cal_mode:
+        sessions = resolve_completed_sessions(
+            calendar,
+            now_dt=now_dt,
+            source=source,
+            params=getattr(runtime, "params", None),
+            same_day_history=same_day,
+            calendar_days=days,
+        )
+    else:
+        sessions = resolve_completed_sessions(
+            calendar,
+            count=days,
+            now_dt=now_dt,
+            source=source,
+            params=getattr(runtime, "params", None),
+            same_day_history=same_day,
+        )
+
     if not sessions:
         raise DataError(
             what=f"No completed trading sessions found in last {days} days",
@@ -318,9 +354,10 @@ def plan_accumulation(
     manifest, opened = _resolve_manifest(data_dir, runtime)
     src_manifest = _resolve_source_manifest(runtime, source)
     items: list[AccumulationPlanItem] = []
+    target_tfs = [timeframe] if timeframe else ["1m", "1d"]
     try:
         for inst in instruments:
-            for tf in ("1m", "1d"):
+            for tf in target_tfs:
                 it = _plan_item_for_series(
                     inst,
                     tf,
@@ -337,6 +374,14 @@ def plan_accumulation(
                 )
                 if today_waiting:
                     it.waiting_sessions = [today]
+
+                if it.fetchable_sessions:
+                    chunk_span = src_manifest.max_span.get(tf, 30 if tf == "1m" else 3650)
+                    span_days = (max(it.fetchable_sessions) - min(it.fetchable_sessions)).days + 1
+                    it.request_count = max(1, (span_days + chunk_span - 1) // chunk_span)
+                else:
+                    it.request_count = 0
+
                 items.append(it)
     finally:
         if opened and manifest is not None:
@@ -350,10 +395,10 @@ def _fetch_item_bars(
     source: str,
     ds: Any,
     refresh: bool = False,
-) -> tuple[int, bool]:
-    """Fetch bars for a single plan item, returning (rows_added, success)."""
+) -> tuple[int, bool, str | None]:
+    """Fetch bars for a single plan item, returning (rows_added, success, error_msg)."""
     if not item.fetchable_sessions:
-        return 0, True
+        return 0, True, None
     start_date = min(item.fetchable_sessions)
     end_date = max(item.fetchable_sessions)
     utc = UTC
@@ -374,20 +419,31 @@ def _fetch_item_bars(
                 start=start_dt,
                 end=end_dt,
                 download="raw",
+                adjust="none",
                 fill_only=False,
                 refresh=refresh,
             )
         except TypeError:
-            d_slice = ds.get(
-                series=key,
-                start=start_dt,
-                end=end_dt,
-                download="raw",
-                fill_only=False,
-            )
-        return (len(d_slice.bars) if d_slice and d_slice.bars else 0), True
-    except Exception:
-        return 0, False
+            try:
+                d_slice = ds.get(
+                    series=key,
+                    start=start_dt,
+                    end=end_dt,
+                    download="raw",
+                    fill_only=False,
+                    refresh=refresh,
+                )
+            except TypeError:
+                d_slice = ds.get(
+                    series=key,
+                    start=start_dt,
+                    end=end_dt,
+                    download="raw",
+                    fill_only=False,
+                )
+        return (len(d_slice.bars) if d_slice and d_slice.bars else 0), True, None
+    except Exception as exc:
+        return 0, False, str(exc)
 
 
 def _run_fetches(
@@ -395,14 +451,23 @@ def _run_fetches(
     source: str,
     ds: Any,
     refresh: bool = False,
-) -> tuple[int, int]:
+) -> tuple[int, int, list[dict[str, Any]]]:
     rows_added, missing_after = 0, 0
+    failures: list[dict[str, Any]] = []
     for it in plan_items:
-        added, ok = _fetch_item_bars(it, source, ds, refresh=refresh)
+        added, ok, err = _fetch_item_bars(it, source, ds, refresh=refresh)
+        it.rows_added = added
         rows_added += added
         if not ok:
             missing_after += len(it.fetchable_sessions)
-    return rows_added, missing_after
+            failures.append(
+                {
+                    "instrument": it.instrument,
+                    "timeframe": it.timeframe,
+                    "error": err or "Fetch failed",
+                }
+            )
+    return rows_added, missing_after, failures
 
 
 def _are_all_fetchable_days_final_empty(
@@ -451,6 +516,8 @@ def execute_accumulation(
     calendar: Any = None,
     now_dt: datetime | None = None,
     refresh: bool = False,
+    timeframe: str | None = None,
+    calendar_days: bool = False,
 ) -> AccumulationReport:
     """Execute data accumulation for group, fetching missing bars and journaling."""
     instruments, plan_items = plan_accumulation(
@@ -461,9 +528,12 @@ def execute_accumulation(
         calendar=calendar,
         now_dt=now_dt,
         refresh=refresh,
+        timeframe=timeframe,
+        calendar_days=calendar_days,
     )
     total_lost = sum(len(it.lost_sessions) for it in plan_items)
     waiting_items = [it for it in plan_items if getattr(it, "waiting_sessions", None)]
+    total_requests = sum(it.request_count for it in plan_items)
     report = AccumulationReport(
         group=group,
         source=source,
@@ -473,6 +543,7 @@ def execute_accumulation(
         days_lost_beyond_window=total_lost,
         dry_run=dry_run,
         waiting_items=waiting_items,
+        request_count=total_requests,
     )
     total_fetchable = sum(len(it.fetchable_sessions) for it in plan_items)
     if dry_run or total_fetchable == 0:
@@ -492,13 +563,22 @@ def execute_accumulation(
     rows_added, missing_after = 0, 0
     total_refetched = 0
     instrument_rows: dict[tuple[str, str], int] = {}
+    failures: list[dict[str, Any]] = []
+
     for it in plan_items:
-        added, ok = _fetch_item_bars(it, source, data_service, refresh=refresh)
+        added, ok, err = _fetch_item_bars(it, source, data_service, refresh=refresh)
         it.rows_added = added
         instrument_rows[(it.instrument, it.timeframe)] = added
         rows_added += added
         if not ok:
             missing_after += len(it.fetchable_sessions)
+            failures.append(
+                {
+                    "instrument": it.instrument,
+                    "timeframe": it.timeframe,
+                    "error": err or "Fetch failed",
+                }
+            )
         else:
             total_refetched += it.refetched_days
 
@@ -520,6 +600,7 @@ def execute_accumulation(
     report.days_still_missing = missing_after
     report.days_refetched = total_refetched
     report.instrument_rows = instrument_rows
+    report.failures = failures
     _log_accumulation_event(
         runtime,
         group,

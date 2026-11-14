@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 from algodesk.cli.app import app
@@ -139,7 +141,7 @@ def test_indicators_compute_macd() -> None:
     assert "HISTOGRAM" in res.output
 
 
-def test_indicators_compute_missing_data_actionable_error() -> None:
+def test_indicators_compute_missing_data_actionable_error(tmp_project: Path) -> None:
     res = runner.invoke(
         app,
         [

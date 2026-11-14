@@ -73,6 +73,12 @@ ALLOWED_NON_PARAM_NAMES = {
     "timer.strategy": "Journal event type for strategy timer callback",
     "handoff.md": "Handoff markdown filename",
     "handoff_archive.md": "Handoff archive markdown filename",
+    "algodesk.data": "Core data package name",
+    "algodesk.results.screen_writer": "Screen results writer module",
+    "skipped.csv": "Screen run skipped symbols CSV filename",
+    "table.csv": "Screen run passed symbols CSV filename",
+    "groups.import": "Journal event type for group imports",
+    "groups.import-history": "Journal event type for history group imports",
 }
 
 KNOWN_RUNTIME_PREFIXES = (

@@ -1,0 +1,9 @@
+name = "sma_trend_py"
+kind = "screen"
+version = "0.1.0"
+api_version = 1
+entry = "plugin:SmaTrendPyPlugin"
+
+[capabilities]
+default = true
+

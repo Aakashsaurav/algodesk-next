@@ -651,3 +651,128 @@ def repair_coverage(
             )
 
     return repaired_items
+
+
+@dataclass
+class PruneReport:
+    """Report of pruned coverage, dataset, and fetch log records."""
+
+    pruned_datasets: list[str]
+    deleted_coverage_rows: int
+    deleted_fetch_log_rows: int
+    dry_run: bool
+
+
+def prune_unmappable_coverage(
+    manifest: DataManifest,
+    dry_run: bool = True,
+    journal: Any = None,
+) -> PruneReport:
+    """Delete coverage and dataset rows that have no stored files and an unmappable instrument.
+
+    Identifies orphan datasets (such as test runs with NONEXISTENT_SYMBOL) where no parquet
+    files or parts exist on disk, and purges them from coverage_days, datasets, and fetch_log.
+    """
+    conn = manifest._conn
+    cursor = conn.cursor()
+
+    # Query all datasets and distinct coverage dataset IDs
+    cursor.execute("SELECT dataset_id, instrument FROM datasets")
+    ds_map = {row[0]: row[1] for row in cursor.fetchall()}
+
+    cursor.execute("SELECT DISTINCT dataset_id FROM coverage_days")
+    all_dataset_ids = sorted(list(set(ds_map.keys()) | {row[0] for row in cursor.fetchall()}))
+
+    target_datasets: list[str] = []
+    target_instruments: set[str] = set()
+
+    for ds_id in all_dataset_ids:
+        inst_str = ds_map.get(ds_id, "")
+        if not inst_str:
+            # Extract instrument from dataset_id convention: kind:source:tf:EXCH:SEG:SYM:adj
+            parts = ds_id.split(":")
+            if len(parts) >= 6:
+                inst_str = f"{parts[3]}:{parts[4]}:{parts[5]}"
+            elif len(parts) >= 4:
+                inst_str = parts[3]
+
+        # Check if stored parts or files exist
+        cursor.execute("SELECT count(*) FROM parts WHERE dataset_id = ?", (ds_id,))
+        p_count = cursor.fetchone()[0]
+        cursor.execute("SELECT count(*) FROM files WHERE instrument = ?", (inst_str,))
+        f_count = cursor.fetchone()[0]
+        if p_count > 0 or f_count > 0:
+            continue
+
+        # Check if there are COMPLETE coverage rows
+        cursor.execute(
+            "SELECT count(*) FROM coverage_days WHERE dataset_id = ? AND status = 'COMPLETE'",
+            (ds_id,),
+        )
+        c_count = cursor.fetchone()[0]
+        if c_count > 0:
+            continue
+
+        # Check if instrument is unmappable:
+        # Notes in coverage_days mentioning unknown/cannot map, or NONEXISTENT in identifier
+        upper_inst = str(inst_str).upper()
+        upper_id = str(ds_id).upper()
+        is_unmappable = (
+            "NONEXISTENT" in upper_inst or "NONEXISTENT" in upper_id or "DUMMY" in upper_inst
+        )
+        if not is_unmappable:
+            cursor.execute(
+                "SELECT count(*) FROM coverage_days WHERE dataset_id = ? AND ("
+                "note LIKE '%Cannot map unknown symbol%' OR note LIKE '%unknown symbol%')",
+                (ds_id,),
+            )
+            note_match = cursor.fetchone()[0]
+            if note_match > 0:
+                is_unmappable = True
+
+        if is_unmappable:
+            target_datasets.append(ds_id)
+            if inst_str:
+                target_instruments.add(inst_str)
+
+    # Count affected rows
+    cov_rows_count = 0
+    fetch_log_count = 0
+    for ds_id in target_datasets:
+        cursor.execute("SELECT count(*) FROM coverage_days WHERE dataset_id = ?", (ds_id,))
+        cov_rows_count += cursor.fetchone()[0]
+
+    for inst_str in target_instruments:
+        cursor.execute("SELECT count(*) FROM fetch_log WHERE chunk LIKE ?", (f"{inst_str}%",))
+        fetch_log_count += cursor.fetchone()[0]
+
+    if not dry_run and target_datasets:
+        for ds_id in target_datasets:
+            cursor.execute("DELETE FROM coverage_days WHERE dataset_id = ?", (ds_id,))
+            cursor.execute("DELETE FROM datasets WHERE dataset_id = ?", (ds_id,))
+
+        for inst_str in target_instruments:
+            cursor.execute("DELETE FROM fetch_log WHERE chunk LIKE ?", (f"{inst_str}%",))
+
+        conn.commit()
+
+        if journal is not None:
+            try:
+                journal.append(
+                    kind="data.coverage.prune",
+                    payload={
+                        "pruned_datasets": target_datasets,
+                        "deleted_coverage_rows": cov_rows_count,
+                        "deleted_fetch_log_rows": fetch_log_count,
+                    },
+                    durable=True,
+                )
+            except Exception:
+                pass
+
+    return PruneReport(
+        pruned_datasets=target_datasets,
+        deleted_coverage_rows=cov_rows_count,
+        deleted_fetch_log_rows=fetch_log_count,
+        dry_run=dry_run,
+    )

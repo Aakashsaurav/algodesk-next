@@ -28,7 +28,7 @@ from algodesk.devtools.docs import load_docs_params
 from algodesk.ops.checks import _resolve_min_free_disk_gb
 
 
-def test_budget_param_override_reflected_in_budget_command(tmp_path: Path) -> None:
+def test_budget_param_override_reflected_in_budget_command(tmp_project: Path) -> None:
     runner = CliRunner()
     # In isolated or real workspace, setting param changes budget output
     res = runner.invoke(

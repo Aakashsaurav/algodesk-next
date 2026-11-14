@@ -78,8 +78,8 @@ app.add_typer(
     name="indicators",
 )
 app.add_typer(
-    __import__("algodesk.cli.indicators", fromlist=["indicators_app"]).indicators_app,
-    name="indicators",
+    __import__("algodesk.cli.screen", fromlist=["screen_app"]).screen_app,
+    name="screen",
 )
 
 # Register top-level commands

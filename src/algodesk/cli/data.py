@@ -367,8 +367,10 @@ def _print_accumulation_dry_run(report: Any, group: str, source: str, days: int)
         for it in report.plan_items
     ]
     typer.echo(format_table(headers, rows))
+    req_cnt = getattr(report, "request_count", 0)
+    req_str = f" in {req_cnt} request(s)" if req_cnt > 0 else ""
     typer.echo(
-        f"\nSummary: {report.days_still_missing} session-timeframe(s) to fetch, "
+        f"\nSummary: {report.days_still_missing} session-timeframe(s) to fetch{req_str}, "
         f"{report.days_lost_beyond_window} session(s) lost beyond retention window."
     )
 
@@ -397,6 +399,10 @@ def _print_accumulation_result(report: Any, group: str, source: str) -> None:
         f"  - Days still missing: {report.days_still_missing}\n"
         f"  - Days lost beyond source window: {report.days_lost_beyond_window}"
     )
+    if getattr(report, "failures", None):
+        typer.echo(f"\nFailures ({len(report.failures)}):")
+        for f in report.failures:
+            typer.echo(f"  - {f['instrument']} ({f['timeframe']}): {f['error']}")
 
 
 @data_app.command("accumulate")
@@ -405,11 +411,17 @@ def data_accumulate(
     ctx: typer.Context,
     group: str = typer.Option("demo5", "--group", "-g", help="Instrument group name"),
     source: str = typer.Option("yfinance", "--source", "-s", help="Data source broker plugin"),
-    days: int = typer.Option(7, "--days", "-d", help="Number of complete sessions to accumulate"),
+    days: int = typer.Option(
+        7, "--days", "-d", help="Number of complete sessions or calendar days to accumulate"
+    ),
+    timeframe: str | None = typer.Option(
+        None, "--timeframe", "-t", help="Timeframe to accumulate (e.g. 1d or 1m)"
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Display accumulation plan without fetching"
     ),
     refresh: bool = typer.Option(False, "--refresh", help="Force refetch of complete sessions"),
+    json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Fetch latest complete sessions for an instrument group into the store."""
     from algodesk.data.accumulate import execute_accumulation
@@ -437,7 +449,36 @@ def data_accumulate(
             calendar=cal,
             dry_run=dry_run,
             refresh=refresh,
+            timeframe=timeframe,
+            calendar_days=(timeframe == "1d" and days >= 30) or days > 30,
         )
+
+        if json_out:
+            out = {
+                "group": group,
+                "source": source,
+                "days": days,
+                "timeframe": timeframe,
+                "dry_run": dry_run,
+                "request_count": getattr(report, "request_count", 0),
+                "rows_added": report.rows_added,
+                "days_refetched": report.days_refetched,
+                "days_still_missing": report.days_still_missing,
+                "days_lost_beyond_window": report.days_lost_beyond_window,
+                "plan": [
+                    {
+                        "instrument": it.instrument,
+                        "timeframe": it.timeframe,
+                        "target_sessions": len(it.target_sessions),
+                        "fetchable_sessions": len(it.fetchable_sessions),
+                        "request_count": it.request_count,
+                    }
+                    for it in report.plan_items
+                ],
+                "failures": getattr(report, "failures", []),
+            }
+            typer.echo(json.dumps(out, indent=2))
+            return
 
         waiting_items = getattr(report, "waiting_items", []) or [
             it for it in report.plan_items if getattr(it, "waiting_sessions", None)
@@ -612,6 +653,54 @@ def coverage_repair(
         ]
         typer.echo(f"{mode_str}Repaired {len(repaired)} coverage record(s) from stored parquet:")
         typer.echo(format_table(headers, rows))
+
+
+@coverage_app.command("prune")
+@handle_cli_errors
+def coverage_prune(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Simulate pruning without deleting records"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
+) -> None:
+    """Delete coverage and dataset rows that have no stored files and an unmappable instrument."""
+    from algodesk.data.coverage import prune_unmappable_coverage
+
+    with _open_rt(ctx, ensure=False) as rt:
+        manifest = _get_manifest(rt)
+        report = prune_unmappable_coverage(
+            manifest=manifest,
+            dry_run=dry_run,
+            journal=getattr(rt, "journal", None),
+        )
+
+        if json_out:
+            typer.echo(
+                json.dumps(
+                    {
+                        "pruned_datasets": report.pruned_datasets,
+                        "deleted_coverage_rows": report.deleted_coverage_rows,
+                        "deleted_fetch_log_rows": report.deleted_fetch_log_rows,
+                        "dry_run": report.dry_run,
+                    },
+                    indent=2,
+                )
+            )
+            return
+
+        if not report.pruned_datasets:
+            typer.echo("No unmappable coverage pollution found.")
+            return
+
+        mode_str = "identified for deletion (dry run)" if dry_run else "deleted"
+        typer.echo(
+            f"Coverage prune: {len(report.pruned_datasets)} dataset(s), "
+            f"{report.deleted_coverage_rows} coverage row(s), "
+            f"{report.deleted_fetch_log_rows} fetch log row(s) {mode_str}:"
+        )
+        for ds in report.pruned_datasets:
+            typer.echo(f"  - {ds}")
 
 
 def _format_and_print_compare_table(rep: Any, date_val: str, source: str) -> None:
@@ -1033,14 +1122,79 @@ def groups_list_cmd(
 def groups_show_cmd(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Group name"),
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="Resolve historical universe as of date YYYY-MM-DD"
+    ),
     resolved: bool = typer.Option(
         False, "--resolved", help="Show resolved canonical instruments and content hash"
     ),
     json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Show details and members of an instrument group."""
+    from algodesk.data.groups import resolve_history_group
+
     with _open_rt(ctx, ensure=False) as rt:
         groups_dir = rt.root / "config" / "groups"
+        universe_dir = rt.paths.data / "universe"
+
+        # Check if historical universe requested or if universe parquet exists
+        hist_file = universe_dir / f"{name}.parquet"
+        if as_of is not None or (
+            hist_file.is_file() and name not in list_group_details(groups_dir)
+        ):
+            as_of_val = as_of or date.today().isoformat()
+            hist_res = resolve_history_group(name, as_of=as_of_val, universe_dir=universe_dir)
+            if resolved:
+                import hashlib
+
+                c_members = hist_res["canonical_members"]
+                c_hash = hashlib.sha256("\n".join(c_members).encode("utf-8")).hexdigest()[:16]
+                if json_out:
+                    typer.echo(
+                        json.dumps(
+                            {
+                                "name": name,
+                                "as_of": as_of_val,
+                                "hash": c_hash,
+                                "total_members": hist_res["total_members"],
+                                "mapped_count": hist_res["mapped_count"],
+                                "unmapped_count": hist_res["unmapped_count"],
+                                "coverage_pct": hist_res["coverage_pct"],
+                                "members": c_members,
+                            },
+                            indent=2,
+                        )
+                    )
+                    return
+                m_lines = "\n".join(f"  - {m}" for m in c_members)
+                cov_line = (
+                    f"Coverage: {hist_res['mapped_count']}/{hist_res['total_members']} "
+                    f"({hist_res['coverage_pct']:.1f}%)\n"
+                )
+                typer.echo(
+                    f"Group: {name} (as-of {as_of_val}, Resolved Hash: {c_hash})\n"
+                    f"{cov_line}"
+                    f"Members:\n{m_lines}"
+                )
+                return
+
+            if json_out:
+                typer.echo(json.dumps(hist_res, indent=2))
+                return
+
+            m_lines = "\n".join(f"  - {m}" for m in hist_res["members"])
+            counts_str = (
+                f"Mapped: {hist_res['mapped_count']}, "
+                f"Unmapped: {hist_res['unmapped_count']}, "
+                f"Coverage: {hist_res['coverage_pct']:.1f}%"
+            )
+            typer.echo(
+                f"Group: {name} (as-of {as_of_val})\n"
+                f"Members: {hist_res['total_members']} ({counts_str})\n"
+                f"Members:\n{m_lines}"
+            )
+            return
+
         details = list_group_details(groups_dir)
         if name not in details:
             known = list(details.keys())
@@ -1071,6 +1225,160 @@ def groups_show_cmd(
         desc = f"\nDescription: {info['description']}" if info["description"] else ""
         m_lines = "\n".join(f"  - {m}" for m in info["members"])
         typer.echo(f"Group: {info['name']}{desc}\nMembers:\n{m_lines}")
+
+
+@groups_app.command("import")
+@handle_cli_errors
+def groups_import_cmd(
+    ctx: typer.Context,
+    csv_file: Path = typer.Argument(..., help="Path to NSE current constituent CSV"),
+    name: str = typer.Option(..., "--name", "-n", help="Name of group to create"),
+    accept_unmapped: bool = typer.Option(
+        False, "--accept-unmapped", help="Proceed even if unmapped percent exceeds threshold"
+    ),
+    description: str | None = typer.Option(None, "--description", "-d", help="Group description"),
+    json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
+) -> None:
+    """Import NSE current constituent CSV into a group TOML file with canonical IDs."""
+    from algodesk.data.groups import import_group
+
+    with _open_rt(ctx, ensure=False) as rt:
+        groups_dir = rt.root / "config" / "groups"
+        data_dir = rt.paths.data
+        res = import_group(
+            csv_path=csv_file,
+            group_name=name,
+            groups_dir=groups_dir,
+            accept_unmapped=accept_unmapped,
+            data_dir=data_dir,
+            params=rt.params,
+            journal=getattr(rt, "journal", None),
+            description=description,
+        )
+
+        if json_out:
+            typer.echo(
+                json.dumps(
+                    {
+                        "group": res.group_name,
+                        "source": res.source_file,
+                        "sha256": res.source_sha256,
+                        "total_rows": res.total_rows,
+                        "mapped_count": res.mapped_count,
+                        "unmapped_count": res.unmapped_count,
+                        "unmapped_pct": res.unmapped_pct,
+                        "group_file": str(res.group_file),
+                        "sidecar_file": str(res.sidecar_file),
+                        "unmapped": res.unmapped_members,
+                    },
+                    indent=2,
+                )
+            )
+            return
+
+        typer.echo(
+            f"Imported group '{res.group_name}' from {res.source_file}:\n"
+            f"  - Total: {res.total_rows}\n"
+            f"  - Mapped: {res.mapped_count} ({(100.0 - res.unmapped_pct):.1f}%)\n"
+            f"  - Unmapped: {res.unmapped_count} ({res.unmapped_pct:.1f}%)\n"
+            f"  - Group file: {res.group_file}\n"
+            f"  - Sidecar: {res.sidecar_file}"
+        )
+        if res.unmapped_members:
+            unmapped_list = ", ".join(u["symbol"] for u in res.unmapped_members)
+            typer.echo(f"  - Unmapped symbols: {unmapped_list}")
+
+
+@groups_app.command("import-history")
+@handle_cli_errors
+def groups_import_history_cmd(
+    ctx: typer.Context,
+    csv_file: Path = typer.Argument(..., help="Path to NSE constituent history CSV"),
+    name: str = typer.Option(
+        ..., "--name", "-n", help="Universe group name (e.g. nifty500_history)"
+    ),
+    index: str = typer.Option(..., "--index", "-i", help="Index type in CSV (e.g. Nifty500)"),
+    strict: bool = typer.Option(
+        False, "--strict", help="Fail if list inclusions/exclusions do not match symbols"
+    ),
+    accept_inconsistent: bool = typer.Option(
+        False,
+        "--accept-inconsistent",
+        help="Deprecated no-op: imports are now permissive by default",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
+) -> None:
+    """Import index constituent history into data/universe/<name>.parquet."""
+    from algodesk.data.groups import import_history_group
+
+    if accept_inconsistent:
+        typer.echo(
+            "Notice: --accept-inconsistent is deprecated; "
+            "history imports are now permissive by default (use --strict to fail on mismatches)."
+        )
+
+    with _open_rt(ctx, ensure=False) as rt:
+        universe_dir = rt.paths.data / "universe"
+        groups_dir = rt.root / "config" / "groups"
+        res = import_history_group(
+            csv_path=csv_file,
+            name=name,
+            index_type=index,
+            universe_dir=universe_dir,
+            groups_dir=groups_dir,
+            accept_inconsistent=accept_inconsistent,
+            data_dir=rt.paths.data,
+            params=rt.params,
+            journal=getattr(rt, "journal", None),
+            strict=strict,
+        )
+
+        if json_out:
+            typer.echo(
+                json.dumps(
+                    {
+                        "name": res.name,
+                        "index_type": res.index_type,
+                        "source": res.source_file,
+                        "sha256": res.source_sha256,
+                        "total_rows": res.total_rows,
+                        "intervals_count": res.intervals_count,
+                        "inconsistencies_count": len(res.inconsistencies),
+                        "parquet_file": str(res.parquet_file),
+                        "comparison": res.comparison,
+                    },
+                    indent=2,
+                )
+            )
+            return
+
+        typer.echo(
+            f"Imported history universe '{res.name}' ({res.index_type}) from {res.source_file}:\n"
+            f"  - History rows: {res.total_rows}\n"
+            f"  - Membership intervals: {res.intervals_count}\n"
+            f"  - Parquet file: {res.parquet_file}"
+        )
+        if res.inconsistencies:
+            typer.echo(
+                f"  - List inconsistencies: {len(res.inconsistencies)} "
+                f"(written to {name}.inconsistencies.json)"
+            )
+        if res.comparison:
+            comp = res.comparison
+            cg = comp["current_group"]
+            h_extra = comp["in_history_not_current"]
+            c_extra = comp["in_current_not_history"]
+            typer.echo(f"  - Compared with current group '{cg}':")
+            if h_extra:
+                hist_msg = (
+                    f"    In history ({comp['last_history_date']}) but not current: "
+                    f"{len(h_extra)} ({', '.join(h_extra)})"
+                )
+                typer.echo(hist_msg)
+            if c_extra:
+                typer.echo(f"    In current but not history: {len(c_extra)} ({', '.join(c_extra)})")
+            if not h_extra and not c_extra:
+                typer.echo("    Exact match: 0 differences.")
 
 
 def _check_manifest_file(
@@ -1256,6 +1564,15 @@ def data_verify(
         orphans: list[str] = []
         adopted: list[str] = []
         quarantined_bars_count = 0
+        pruned_datasets_count = 0
+
+        if fix:
+            from algodesk.data.coverage import prune_unmappable_coverage
+
+            pruned_rep = prune_unmappable_coverage(
+                manifest=manifest, dry_run=False, journal=getattr(rt, "journal", None)
+            )
+            pruned_datasets_count = len(pruned_rep.pruned_datasets)
 
         known_tick_paths: set[str] = set()
         known_bar_paths: set[str] = set()
@@ -1581,6 +1898,8 @@ def data_verify(
             msg += f" [Adopted {len(adopted)} orphan(s)]"
         if quarantined_bars_count > 0:
             msg += f" [Quarantined {quarantined_bars_count} offending bar(s)]"
+        if pruned_datasets_count > 0:
+            msg += f" [Pruned {pruned_datasets_count} unmappable dataset(s)]"
         typer.secho(msg, fg=typer.colors.GREEN)
 
 

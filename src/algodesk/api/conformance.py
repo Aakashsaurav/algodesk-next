@@ -5,6 +5,7 @@ No test runner or pytest imports. Returns a list of problem strings.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import math
 import tomllib
@@ -473,6 +474,172 @@ def reference_problems(obj: Any) -> list[str]:
     return problems
 
 
+class _SyntheticSymbolFeatureView:
+    def __init__(self, symbol: str, price: float) -> None:
+        self.symbol = symbol
+        self._price = price
+
+    @property
+    def close(self) -> float | None:
+        return self._price
+
+    @property
+    def open(self) -> float | None:
+        return self._price
+
+    @property
+    def high(self) -> float | None:
+        return self._price * 1.01
+
+    @property
+    def low(self) -> float | None:
+        return self._price * 0.99
+
+    @property
+    def volume(self) -> float | None:
+        return 1000.0
+
+    def get_bar(self, field: str, bars_ago: int = 0) -> float | None:
+        if field == "close":
+            return self._price
+        if field == "open":
+            return self._price
+        if field == "high":
+            return self._price * 1.01
+        if field == "low":
+            return self._price * 0.99
+        if field == "volume":
+            return 1000.0
+        return None
+
+    def get_indicator(
+        self,
+        name: str,
+        output: str | None = None,
+        bars_ago: int = 0,
+        **params: Any,
+    ) -> float | None:
+        return self._price
+
+
+class _SyntheticFeatureView:
+    def __init__(self) -> None:
+        self.symbols = ["AAA", "BBB"]
+        self._views = {
+            "AAA": _SyntheticSymbolFeatureView("AAA", 100.0),
+            "BBB": _SyntheticSymbolFeatureView("BBB", 200.0),
+        }
+
+    def for_symbol(self, symbol: str) -> _SyntheticSymbolFeatureView:
+        return self._views.get(symbol, _SyntheticSymbolFeatureView(symbol, 100.0))
+
+    def get_bar(self, symbol: str, field: str, bars_ago: int = 0) -> float | None:
+        return self.for_symbol(symbol).get_bar(field, bars_ago)
+
+    def get_indicator(
+        self,
+        symbol: str,
+        name: str,
+        output: str | None = None,
+        bars_ago: int = 0,
+        **params: Any,
+    ) -> float | None:
+        return self.for_symbol(symbol).get_indicator(name, output, bars_ago, **params)
+
+    def universe_table(self) -> Mapping[str, Mapping[str, float | None]]:
+        return {s: {"close": self.for_symbol(s).close} for s in self.symbols}
+
+
+def screen_problems(obj: Any) -> list[str]:
+    """Verify Screen protocol conformance."""
+    problems: list[str] = []
+    if not hasattr(obj, "spec"):
+        problems.append("Screen must define 'spec' attribute")
+    else:
+        spec = obj.spec
+        for attr in ("name", "description", "timeframe", "output_columns"):
+            if not hasattr(spec, attr):
+                problems.append(f"Screen.spec missing '{attr}'")
+
+    if not hasattr(obj, "evaluate") or not callable(obj.evaluate):
+        problems.append("Screen must define callable 'evaluate(features)'")
+        return problems
+
+    # Check for forbidden imports in module source (read-only, no data/broker/venue imports)
+    file_path: str | None = None
+    try:
+        file_path = inspect.getfile(type(obj))
+    except Exception:
+        mod = inspect.getmodule(type(obj))
+        file_path = getattr(mod, "__file__", None) if mod else None
+
+    if file_path and Path(file_path).is_file():
+        try:
+            with open(file_path, encoding="utf-8") as f:
+                source = f.read()
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        for forbidden in (
+                            "algodesk.data",
+                            "algodesk.oms",
+                            "broker",
+                            "venue",
+                        ):
+                            if forbidden in alias.name:
+                                problems.append(
+                                    f"Screen plugin imports forbidden module '{alias.name}'"
+                                )
+                elif isinstance(node, ast.ImportFrom):
+                    mod_name = node.module or ""
+                    for forbidden in (
+                        "algodesk.data",
+                        "algodesk.oms",
+                        "broker",
+                        "venue",
+                    ):
+                        if forbidden in mod_name:
+                            problems.append(
+                                f"Screen plugin imports from forbidden module '{mod_name}'"
+                            )
+        except Exception:
+            pass
+
+    # Run synthetic evaluation
+    try:
+        synth = _SyntheticFeatureView()
+        rows1 = obj.evaluate(synth)
+        if not isinstance(rows1, Sequence) or isinstance(rows1, (str, bytes)):
+            problems.append(f"Screen.evaluate() returned {type(rows1).__name__}, expected Sequence")
+            return problems
+
+        for i, row in enumerate(rows1):
+            if not hasattr(row, "symbol") or not hasattr(row, "passed"):
+                problems.append(f"ScreenRow at index {i} missing 'symbol' or 'passed'")
+            if not hasattr(row, "score") or not isinstance(row.score, (int, float)):
+                problems.append(f"ScreenRow at index {i} missing numeric 'score'")
+            if not hasattr(row, "values") or not isinstance(row.values, Mapping):
+                problems.append(f"ScreenRow at index {i} missing Mapping 'values'")
+
+        rows2 = obj.evaluate(synth)
+        if len(rows1) != len(rows2):
+            problems.append("Screen.evaluate() is not deterministic: row count changed")
+        else:
+            for r1, r2 in zip(rows1, rows2, strict=True):
+                if (
+                    getattr(r1, "symbol", None) != getattr(r2, "symbol", None)
+                    or getattr(r1, "passed", None) != getattr(r2, "passed", None)
+                    or getattr(r1, "score", None) != getattr(r2, "score", None)
+                ):
+                    problems.append("Screen.evaluate() is not deterministic: output values changed")
+                    break
+    except Exception as exc:
+        problems.append(f"Screen.evaluate() raised exception during test: {exc}")
+
+    return problems
+
+
 def kind_problems(plugin: Any) -> list[str]:
     """Dispatch plugin conformance verification based on manifest.kind."""
     if not hasattr(plugin, "manifest"):
@@ -490,6 +657,8 @@ def kind_problems(plugin: Any) -> list[str]:
         return venue_problems(plugin)
     if kind_str == "indicator":
         return indicator_problems(plugin)
+    if kind_str == "screen":
+        return screen_problems(plugin)
     if kind_str == "strategy":
         return strategy_problems(plugin)
     if kind_str == "risk_rule":

@@ -449,3 +449,27 @@ tighten = "down"
 description = "Tolerance percentage for price differences in data compare before counting as divergence"
 owner = "data"
 
+[[param]]
+name = "groups.import_max_unmapped_pct"
+type = "float"
+default = 5.0
+min = 0.0
+max = 100.0
+unit = "%"
+scope = "global"
+tighten = "down"
+description = "Maximum allowed percentage of unmapped instruments when importing an instrument group"
+owner = "data"
+
+[[param]]
+name = "groups.history_max_size_jump"
+type = "int"
+default = 100
+min = 1
+max = 1000
+unit = "symbols"
+scope = "global"
+tighten = "down"
+description = "Maximum allowed change in constituent count between consecutive effective dates"
+owner = "data"
+

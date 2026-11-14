@@ -100,6 +100,31 @@ def _write_scaffold_files(target_dir: Path, k: str, name: str, class_name: str) 
     elif k == "risk_rule":
         stubs = "    def check(self, intent: Any, view: Any) -> Any:\n        return None\n"
         extra_imports = "from typing import Any\n"
+    elif k == "screen":
+        stubs = (
+            f"    spec = ScreenSpec(\n"
+            f"        name='{name}',\n"
+            f"        description='{name} screen plugin',\n"
+            f"        timeframe='1d',\n"
+            f"    )\n\n"
+            "    def __init__(\n"
+            "        self,\n"
+            "        manifest: Any = None,\n"
+            "        config: Mapping[str, object] | None = None,\n"
+            "        ctx: Any = None,\n"
+            "    ) -> None:\n"
+            "        super().__init__(manifest, config or {}, ctx)\n\n"
+            "    def evaluate(self, features: FeatureView) -> Sequence[ScreenRow]:\n"
+            "        rows: list[ScreenRow] = []\n"
+            "        for sym in features.symbols:\n"
+            "            rows.append(ScreenRow(symbol=sym, passed=True, score=100.0, values={}))\n"
+            "        return rows\n"
+        )
+        extra_imports = (
+            "from collections.abc import Mapping, Sequence\n"
+            "from typing import Any\n"
+            "from algodesk.api.screens import FeatureView, ScreenRow, ScreenSpec\n"
+        )
     elif k == "reference":
         stubs = (
             "    def corporate_actions(\n"
@@ -120,11 +145,36 @@ def _write_scaffold_files(target_dir: Path, k: str, name: str, class_name: str) 
     )
     (target_dir / "plugin.py").write_text(plugin_code, encoding="utf-8")
 
-    test_code = (
-        f'"""Tests for {name} plugin."""\n\n'
-        f"def test_{name}_placeholder() -> None:\n"
-        f"    assert True\n"
-    )
+    if k == "screen":
+        test_code = (
+            f'"""Tests for {name} screen plugin."""\n\n'
+            f"from algodesk.api.conformance import screen_problems\n"
+            f"from algodesk.api.manifest import parse_manifest\n"
+            f"from pathlib import Path\n"
+            f"import importlib.util\n"
+            f"import tomllib\n\n"
+            f"def test_{name}_conformance() -> None:\n"
+            f"    p_dir = Path(__file__).parent.parent\n"
+            f"    p_toml = p_dir / 'plugin.toml'\n"
+            f"    with open(p_toml, 'rb') as f:\n"
+            f"        data = tomllib.load(f)\n"
+            f"    manifest = parse_manifest(data, str(p_toml))\n"
+            f"    py_file = p_dir / 'plugin.py'\n"
+            f"    spec = importlib.util.spec_from_file_location('plugin', py_file)\n"
+            f"    assert spec is not None and spec.loader is not None\n"
+            f"    mod = importlib.util.module_from_spec(spec)\n"
+            f"    spec.loader.exec_module(mod)\n"
+            f"    cls = getattr(mod, '{class_name}')\n"
+            f"    plugin = cls(manifest=manifest)\n"
+            f"    problems = screen_problems(plugin)\n"
+            f"    assert not problems, f'Conformance problems: {{problems}}'\n"
+        )
+    else:
+        test_code = (
+            f'"""Tests for {name} plugin."""\n\n'
+            f"def test_{name}_placeholder() -> None:\n"
+            f"    assert True\n"
+        )
     (tests_dir / f"test_{name}.py").write_text(test_code, encoding="utf-8")
 
 

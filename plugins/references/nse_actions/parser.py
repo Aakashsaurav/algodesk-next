@@ -6,6 +6,9 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from functools import lru_cache
+from pathlib import Path
+import tomllib
 from typing import Any
 
 from algodesk.api.market import ActionRecord
@@ -230,9 +233,29 @@ def _parse_dividend(subj: str, ex_d: date, sym: str, rec_d: date | None, now: st
     )
 
 
+@lru_cache(maxsize=1)
+def _load_purpose_rules(config_path: str | None = None) -> list[dict[str, Any]]:
+    """Load non-price action purpose patterns from TOML."""
+    paths_to_try = [
+        Path(config_path) if config_path else None,
+        Path("config/corporate_action_purposes.toml"),
+        Path(__file__).resolve().parents[3] / "config" / "corporate_action_purposes.toml",
+    ]
+    for p in paths_to_try:
+        if p and p.is_file():
+            try:
+                with open(p, "rb") as f:
+                    data = tomllib.load(f)
+                return list(data.get("purpose", []))
+            except Exception:
+                pass
+    return []
+
+
 def parse_nse_item(
     item: Mapping[str, Any],
     now_iso: str | None = None,
+    purposes_config_path: str | None = None,
 ) -> Sequence[ActionRecord]:
     """Parse a single NSE corporate action JSON record into ActionRecords."""
     sym = str(item.get("symbol") or "").strip().upper()
@@ -264,17 +287,63 @@ def parse_nse_item(
         records.append(_parse_dividend(subj, ex_d, sym, rec_d, now))
 
     if not records:
-        records.append(
-            _make_action(
-                ex_d,
-                "other",
-                sym,
-                subj,
-                now,
-                status="manual_required",
-                record_date=rec_d,
-                reason="Unrecognised corporate action purpose",
+        # Check purpose rules from corporate_action_purposes.toml
+        matched_rule = None
+        for rule in _load_purpose_rules(purposes_config_path):
+            pat = str(rule.get("pattern", "")).strip().lower()
+            if pat and pat in s_lower:
+                matched_rule = rule
+                break
+
+        if matched_rule is not None:
+            r_class = str(matched_rule.get("class", "manual")).strip().lower()
+            note = str(matched_rule.get("note", "")).strip()
+            if r_class in ("ignore", "ignored"):
+                records.append(
+                    _make_action(
+                        ex_d,
+                        "ignored",
+                        sym,
+                        subj,
+                        now,
+                        status="ignored",
+                        record_date=rec_d,
+                        reason=note or "Ignored non-price action",
+                    )
+                )
+            elif r_class == "split":
+                records.append(_parse_split(subj, ex_d, sym, rec_d, now))
+            elif r_class == "bonus":
+                records.append(_parse_bonus(subj, ex_d, sym, rec_d, now))
+            elif r_class == "rights":
+                records.append(_parse_rights(subj, ex_d, sym, rec_d, now))
+            elif r_class == "dividend":
+                records.append(_parse_dividend(subj, ex_d, sym, rec_d, now))
+            else:
+                records.append(
+                    _make_action(
+                        ex_d,
+                        "other",
+                        sym,
+                        subj,
+                        now,
+                        status="manual_required",
+                        record_date=rec_d,
+                        reason=note or "Unrecognised corporate action purpose",
+                    )
+                )
+        else:
+            records.append(
+                _make_action(
+                    ex_d,
+                    "other",
+                    sym,
+                    subj,
+                    now,
+                    status="manual_required",
+                    record_date=rec_d,
+                    reason="Unrecognised corporate action purpose",
+                )
             )
-        )
 
     return records

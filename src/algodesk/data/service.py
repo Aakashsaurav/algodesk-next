@@ -378,16 +378,28 @@ class DataService:
                 },
             )
 
-        adj_res = _apply_raw_adjustments(
-            bars=raw_bars,
-            key=req_key,
-            store=self._store,
-            from_basis=from_basis,
-            tgt_basis=adj_mode,
-            accept_unverified=accept_unverified,
-            params=self._params,
-            exchange_tz=self._exchange_tz,
+        # Skip adjustment when stored basis matches target, or accumulate/raw/fill/presence path.
+        _skip_adjust = (
+            from_basis == adj_mode
+            or (download == "raw" and adj_mode in ("none", "raw"))
+            or fill_only
+            or presence_only
         )
+        if _skip_adjust:
+            adj_res = AdjustmentResult(
+                tuple(raw_bars), [], "", factor_kinds=[], basis=adj_mode, from_basis=from_basis
+            )
+        else:
+            adj_res = _apply_raw_adjustments(
+                bars=raw_bars,
+                key=req_key,
+                store=self._store,
+                from_basis=from_basis,
+                tgt_basis=adj_mode,
+                accept_unverified=accept_unverified,
+                params=self._params,
+                exchange_tz=self._exchange_tz,
+            )
         prov_dict: dict[str, object] = {
             "dataset_ids": [ds_id],
             "checksums": list(base_slice.checksums),

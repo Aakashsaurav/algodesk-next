@@ -44,6 +44,12 @@ AlgoDesk provides a unified command-line workbench:
 - `algodesk data smoke [--symbols A,B]`: Live smoke verification testing zero network requests on run 2, gaps, manifest integrity, and cross-source diff.
 - `algodesk data verify`: Validate SHA-256 checksums, row counts, and schema conformance across datasets.
 - `algodesk data status`: Report dataset counts, bar/tick partition files, row totals, disk storage, and quarantine stats.
+- `algodesk screen run NAME [--group G] [--as-of D] [--timing]`: Run market screen with honest skip reasons, splits-basis default, and optional throughput timing breakdown.
+- `algodesk screen list`: List configured TOML screens and discovered Python screen plugins.
+- `algodesk screen show NAME`: Display full screen specification and rules.
+- `algodesk groups import PATH --name N`: Ingest current index constituent CSV mapping ISIN to symbol.
+- `algodesk groups import-history PATH --name N --index I [--strict]`: Ingest constituent history timeline with symbols as authority and sidecar inconsistency tracking.
+- `algodesk groups show NAME [--as-of D] [--resolved]`: Query point-in-time index membership and coverage metrics.
 
 #### Exit Codes
 

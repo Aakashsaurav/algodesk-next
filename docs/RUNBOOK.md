@@ -486,6 +486,44 @@ algodesk data import data/vendor/sample.csv --mapping config/importer_mappings/v
 ```
 Ticks are irreplaceable: `--purge` is strictly forbidden on ticks, and deleted files are moved to timestamped `.trash/<timestamp>` folders.
 
+### 6. Screens, index lists, constituent history groups, backfill & screen universe
+Run screens across market groups, import NSE index lists and constituent histories, resolve point-in-time universe membership, backfill historical data, and run screens as dynamic trading universes:
+
+```bash
+# Run screen with explicit adjust basis and execution timing breakdown
+algodesk screen run sma_trend_test --group nifty50 --as-of 2026-11-12 --timing
+
+# Inspect previous screen results
+algodesk results list
+
+# Import current index constituent CSV (maps ISIN -> symbol in NSE:EQ; creates config/groups/<name>.toml)
+algodesk groups import data/vendor/nifty50_current_nse.csv --name nifty50
+algodesk groups import data/vendor/nifty500_current_nse.csv --name nifty500 --accept-unmapped
+
+# Import historical constituent timeline (symbols column is authoritative; mismatches written to sidecar JSON)
+algodesk groups import-history data/vendor/nifty500_history_constituents.csv --name nifty500_history --index Nifty500
+# Fail fatal on any transition inconsistency with --strict:
+algodesk groups import-history data/vendor/nifty500_history_constituents.csv --name nifty500_history --index Nifty500 --strict
+
+# Query point-in-time index membership as-of a specific date (prints mapped, unmapped, and coverage %)
+algodesk groups show nifty500_history --as-of 2024-03-28
+algodesk groups show nifty500_history --as-of 2024-03-28 --resolved
+
+# Backfill daily historical bars for an index group (pure raw fill; never triggers adjustment errors)
+algodesk data accumulate --group nifty50 --source upstox --timeframe 1d --days 500 --dry-run
+algodesk data accumulate --group nifty50 --source upstox --timeframe 1d --days 500
+
+# Prepare run with screen-as-universe (runs screen on last completed session, freezes hash into universe.frozen)
+algodesk run demo_paper --prepare
+
+# Clean orphaned coverage records and unmappable datasets
+algodesk data coverage prune --dry-run
+algodesk data coverage prune
+# Or integrated into data verify:
+algodesk data verify --fix
+```
+Screens default to `adjust = "splits"`: when stored candles match requested basis, no corporate actions are read, preventing false refusals. Screen configurations specify `adjust` explicitly (`splits`, `total`, `none`). Honest skip messages always name the symbol, specific failure reason, and remediation command. `data accumulate` operates strictly in raw mode (`download="raw"`, `adjust="none"`), ensuring missing-bar accumulation never halts on corporate action discrepancies. Non-price actions (buybacks, AGM/EGM) are ignored via `config/corporate_action_purposes.toml`. History imports treat `symbols` as authority for each date, logging mismatches to `<name>.inconsistencies.json`. Run configurations accept `universe.screen = "<name>"`, freezing passed symbols and content hash into the journal at run start.
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |
