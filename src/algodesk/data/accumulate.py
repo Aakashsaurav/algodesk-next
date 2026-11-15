@@ -19,6 +19,7 @@ from algodesk.api.kinds import PluginKind
 from algodesk.api.manifest import PluginManifest
 from algodesk.api.market import CoverageStatus, InstrumentId, SeriesKey
 from algodesk.data.calendar_cache import CachedCalendar
+from algodesk.data.coverage import is_trading_session
 from algodesk.data.groups import get_group, load_groups
 from algodesk.data.layout import dataset_id_for_key
 from algodesk.data.manifest import DataManifest
@@ -90,6 +91,8 @@ def resolve_completed_sessions(
     params: Any = None,
     same_day_history: bool | None = None,
     calendar_days: int | None = None,
+    manifest: Any = None,
+    exchange: str = "NSE",
 ) -> list[date]:
     """Find the latest complete trading sessions."""
     ist_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
@@ -112,36 +115,41 @@ def resolve_completed_sessions(
         if not same_day_history and cur >= today:
             cur = today - timedelta(days=1)
 
+    closures_dict: dict[str, Any] = {}
+    if manifest is not None and hasattr(manifest, "list_market_closures"):
+        max_search = max(120, (calendar_days or count) * 4)
+        c_cutoff = cur - timedelta(days=max_search)
+        for mc in manifest.list_market_closures(
+            exchange=exchange,
+            start_day=c_cutoff.isoformat(),
+            end_day=cur.isoformat(),
+        ):
+            closures_dict[mc.day] = mc
+
     sessions: list[date] = []
     if calendar_days is not None:
         start_cutoff = today - timedelta(days=calendar_days)
         while cur >= start_cutoff:
-            is_trading = False
-            if calendar is not None:
-                try:
-                    is_trading = bool(calendar.is_trading_day(cur))
-                except Exception:
-                    is_trading = cur.weekday() < 5
-            else:
-                is_trading = cur.weekday() < 5
-
-            if is_trading:
+            if is_trading_session(
+                cur,
+                calendar=calendar,
+                manifest=manifest,
+                exchange=exchange,
+                closures=closures_dict,
+            ):
                 sessions.append(cur)
             cur -= timedelta(days=1)
     else:
         max_lookback = max(120, count * 3)
         cutoff = cur - timedelta(days=max_lookback)
         while cur >= cutoff and len(sessions) < count:
-            is_trading = False
-            if calendar is not None:
-                try:
-                    is_trading = bool(calendar.is_trading_day(cur))
-                except Exception:
-                    is_trading = cur.weekday() < 5
-            else:
-                is_trading = cur.weekday() < 5
-
-            if is_trading:
+            if is_trading_session(
+                cur,
+                calendar=calendar,
+                manifest=manifest,
+                exchange=exchange,
+                closures=closures_dict,
+            ):
                 sessions.append(cur)
             cur -= timedelta(days=1)
 

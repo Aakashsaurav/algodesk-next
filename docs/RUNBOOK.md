@@ -552,13 +552,23 @@ Screens default to `adjust = "splits"`: when stored candles match requested basi
 
 3. **Coverage EMPTY finality & reset**:
    `EMPTY` coverage records are final only when the symbol has bars on a later date (pre-listing days) or the empty range spans at most `data.empty_final_max_sessions` sessions (default 5). All-empty ranges and ranges with fetch errors remain non-final (`MISSING`) and are re-evaluated during accumulation.
-   Reset existing stale EMPTY records for symbols with zero stored bars:
+   Reset existing stale EMPTY records for symbols with zero stored bars using bulk evaluation:
    ```bash
+   # Dry-run shows a concise 1-line count summary per reason; use --verbose (-v) for symbol list
    algodesk data coverage reset-empty --source upstox --timeframe 1d --dry-run
+   algodesk data coverage reset-empty --source upstox --timeframe 1d --dry-run --verbose
+
+   # Real reset modifies manifest and writes journal entries
    algodesk data coverage reset-empty --source upstox --timeframe 1d
    ```
 
-4. **Backfill speed, decade chunking & loud empty failure**:
+4. **Screen run skip breakdown & remediation**:
+   `algodesk screen run` prints evaluated skip counts by category (`no_data`, `insufficient_history`, `gap_in_window`, `adjustment_refused`) after the verdict line, along with the first 5 skip messages and their exact remediation commands:
+   ```bash
+   algodesk screen run sma_trend_test --group nifty500 --as-of 2026-11-13
+   ```
+
+5. **Backfill speed, decade chunking & loud empty failure**:
    Daily (`1d`) candles support single-request spans up to 3,650 days (10 years) under Upstox API limits. Multi-symbol group backfills display a per-symbol table of rows added and itemize symbols with zero rows and non-final coverage. If zero-row symbols exceed `data.accumulate_max_empty_pct` (default 2%), `data accumulate` fails loudly with exit code 1, listing failing symbols.
 
 

@@ -28,6 +28,9 @@ Typed (mypy), linted (ruff), tested (pytest with failing-case test), functions a
 
 ## Token discipline
 Do not restate task or files. Output only code changes, commands with real output, and report. Paste only the last 3 lines of pytest output, never progress dots. If budget runs low, stop safely and append via `scripts/handoff.sh add "<line>"`.
+Run full pytest/check.sh at most twice per card; iterate with `bash scripts/t.sh <paths>`.
+Never re-run commands for lines: redirect to `_workbench/<name>.log` and read file.
+Never pipe a long command into head.
 
 ## Efficiency (saves tokens and time)
 - Run commands in the foreground via `scripts/run.sh <command...>`. No background tasks; no polling.

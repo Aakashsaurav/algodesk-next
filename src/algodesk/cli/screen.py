@@ -369,6 +369,16 @@ def screen_run(
                 f"Verdict:     {result.verdict}"
                 + (f" ({result.fail_reason})" if result.fail_reason else "")
             )
+            if result.skipped:
+                reason_counts: dict[str, int] = {}
+                for item in result.skipped:
+                    r_str = item[1].value if hasattr(item[1], "value") else str(item[1])
+                    reason_counts[r_str] = reason_counts.get(r_str, 0) + 1
+                counts_line = ", ".join(f"{r}: {c}" for r, c in sorted(reason_counts.items()))
+                typer.echo(f"Skipped by reason: {counts_line}")
+                for item in result.skipped[:5]:
+                    msg = item[2] if len(item) > 2 else f"{item[0]}: {item[1]}"
+                    typer.echo(f"  - {msg}")
             typer.echo(f"Result Hash: {result.result_hash[:16]}...")
             typer.echo(
                 f"Universe:    {total_symbols} | Passed: {len(passed_rows)} | "

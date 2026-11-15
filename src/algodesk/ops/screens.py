@@ -19,6 +19,7 @@ from algodesk.api.screens import (
     SkipReason,
 )
 from algodesk.data.calendar_cache import CachedCalendar
+from algodesk.data.coverage import resolve_trading_sessions
 from algodesk.data.manifest import DataManifest
 from algodesk.data.service import DataService
 from algodesk.data.store import BarStore
@@ -183,7 +184,11 @@ class PluginIndicatorResolver(IndicatorResolver):
             raise ValueError(f"Could not resolve indicator '{name}': {exc}") from exc
 
 
-def build_data_service(runtime: Runtime, source: str = "upstox") -> DataService:
+def build_data_service(
+    runtime: Runtime,
+    source: str = "upstox",
+    calendar: Any = None,
+) -> DataService:
     """Construct a configured DataService from active runtime."""
     p_ctx = build_context(Mode.RESEARCH, run_id=f"screen_ds_{source}")
     data_dir = getattr(getattr(runtime, "paths", None), "data", Path("data"))
@@ -192,11 +197,21 @@ def build_data_service(runtime: Runtime, source: str = "upstox") -> DataService:
     manifest_db = state_dir / "data_manifest.db"
     manifest = DataManifest(manifest_db)
 
+    cal: Any = calendar
+    if cal is None:
+        try:
+            cal = runtime.plugins.create(
+                PluginKind.CALENDAR, "exchange", config={"exchange": "nse"}, ctx=p_ctx
+            )
+        except Exception:
+            pass
+
     store = BarStore(
         data_dir,
         manifest,
         params=runtime.params,
         journal=getattr(runtime, "journal", None),
+        calendar=cal,
     )
 
     sources_dict: dict[str, DataSource] = {}
@@ -206,14 +221,6 @@ def build_data_service(runtime: Runtime, source: str = "upstox") -> DataService:
             runtime.plugins.create(PluginKind.BROKER, source, config={}, ctx=p_ctx),
         )
         sources_dict[source] = broker
-    except Exception:
-        pass
-
-    cal: Any = None
-    try:
-        cal = runtime.plugins.create(
-            PluginKind.CALENDAR, "exchange", config={"exchange": "nse"}, ctx=p_ctx
-        )
     except Exception:
         pass
 
@@ -240,10 +247,6 @@ def build_screen_runner(
     max_skipped_pct: float | None = None,
 ) -> ScreenRunner:
     """Build a fully wired ScreenRunner injecting adapted protocols."""
-    ds = data_service or build_data_service(runtime)
-    data_adapter = DataServiceScreenAdapter(ds)
-    indicator_resolver = PluginIndicatorResolver(runtime.plugins)
-
     cal = calendar
     if cal is None:
         try:
@@ -252,8 +255,20 @@ def build_screen_runner(
                 PluginKind.CALENDAR, "exchange", config={"exchange": "nse"}, ctx=p_ctx
             )
         except Exception:
-            cal = getattr(ds, "_calendar", None)
+            cal = getattr(data_service, "_calendar", None) if data_service else None
     cal = CachedCalendar.wrap(cal)
+
+    ds = data_service or build_data_service(runtime, calendar=cal)
+    data_adapter = DataServiceScreenAdapter(ds)
+    indicator_resolver = PluginIndicatorResolver(runtime.plugins)
+
+    manifest = getattr(getattr(ds, "_store", None), "manifest", None)
+    if manifest is None:
+        data_dir = getattr(getattr(runtime, "paths", None), "data", Path("data"))
+        m_path = data_dir / "state" / "data_manifest.db"
+        if not m_path.exists() and (data_dir / "manifest.db").exists():
+            m_path = data_dir / "manifest.db"
+        manifest = DataManifest(m_path) if m_path.exists() else None
 
     # Read screen.max_skipped_pct from parameter registry
     skip_pct = 10.0
@@ -274,6 +289,15 @@ def build_screen_runner(
         except Exception:
             pass
 
+    def session_resolver(end_d: Any, count: int) -> list[Any]:
+        return resolve_trading_sessions(
+            end_date=end_d,
+            needed_sessions=count,
+            calendar=cal,
+            manifest=manifest,
+            exchange="NSE",
+        )
+
     return ScreenRunner(
         data_reader=data_adapter,
         indicator_resolver=indicator_resolver,
@@ -281,4 +305,6 @@ def build_screen_runner(
         max_skipped_pct=skip_pct,
         progress_every=progress_every,
         params=getattr(runtime, "params", None),
+        manifest=manifest,
+        session_resolver=session_resolver,
     )

@@ -546,6 +546,7 @@ def coverage_reset_empty(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Simulate re-evaluation without modifying coverage records"
     ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show full symbol breakdown"),
     json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Re-evaluate existing EMPTY coverage records and reset non-final ones to MISSING."""
@@ -609,12 +610,31 @@ def coverage_reset_empty(
             )
             by_symbol.setdefault(sym, []).append((rec, reason))
 
-        headers = ["SYMBOL", "DATASET", "DAYS RESET", "REASON"]
-        rows = [
-            [sym, recs[0][0].dataset_id, str(len(recs)), recs[0][1]]
-            for sym, recs in sorted(by_symbol.items())
-        ]
-        typer.echo(format_table(headers, rows))
+        if dry_run and not verbose:
+            by_reason: dict[str, list[tuple[CoverageDayRecord, str]]] = {}
+            for rec, reason in reset_records:
+                by_reason.setdefault(reason, []).append((rec, reason))
+            for reason, r_list in sorted(by_reason.items(), key=lambda x: -len(x[1])):
+                r_syms = {
+                    (
+                        r.dataset_id.split(":")[-2]
+                        if len(r.dataset_id.split(":")) >= 4
+                        else (
+                            r.dataset_id.split(":")[1]
+                            if len(r.dataset_id.split(":")) >= 2
+                            else r.dataset_id
+                        )
+                    )
+                    for r, _ in r_list
+                }
+                typer.echo(f"- {reason}: {len(r_list)} record(s) across {len(r_syms)} symbol(s)")
+        else:
+            headers = ["SYMBOL", "DATASET", "DAYS RESET", "REASON"]
+            rows = [
+                [sym, recs[0][0].dataset_id, str(len(recs)), recs[0][1]]
+                for sym, recs in sorted(by_symbol.items())
+            ]
+            typer.echo(format_table(headers, rows))
 
         mode_str = "identified for reset (dry run)" if dry_run else "reset to MISSING"
         typer.echo(

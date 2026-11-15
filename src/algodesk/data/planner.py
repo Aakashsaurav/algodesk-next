@@ -12,8 +12,7 @@ from algodesk.api.manifest import PluginManifest
 from algodesk.api.market import CoverageStatus, SeriesKey
 from algodesk.api.protocols import Calendar
 from algodesk.data.calendar_cache import CachedCalendar
-from algodesk.data.closures import has_all_samples_evidence
-from algodesk.data.coverage import CoverageIndex, is_empty_record_final
+from algodesk.data.coverage import CoverageIndex, is_empty_record_final, is_trading_session
 from algodesk.data.layout import dataset_id_for_key
 from algodesk.data.manifest import CoverageDayRecord, DataManifest, MarketClosureRecord
 
@@ -212,37 +211,24 @@ class GapPlanner:
             closure_rec = closures_records.get(day_str)
             closure_kind = closure_rec.kind if closure_rec else None
 
+            is_session = is_trading_session(
+                cur,
+                calendar=cal_wrapped,
+                closures=closures_records,
+                exchange=inst_exch,
+            )
+
             # Special session overrides weekend/calendar closure
             if closure_kind == "special":
                 special_sessions.append(cur)
-            else:
-                is_closed_calendar = False
-                is_closed_inferred = False
-
+            elif not is_session:
+                closed.append(cur)
                 if closure_kind == "inferred":
-                    if has_all_samples_evidence(closure_rec):
-                        is_closed_inferred = True
-                elif closure_kind in ("calendar", "exchange_file"):
-                    is_closed_calendar = True
+                    closed_inferred.append(cur)
                 else:
-                    if cal_wrapped is not None:
-                        try:
-                            if not cal_wrapped.is_trading_day(cur):
-                                is_closed_calendar = True
-                        except CalendarCoverageError:
-                            if cur.weekday() >= 5:
-                                is_closed_calendar = True
-                    elif cur.weekday() >= 5:
-                        is_closed_calendar = True
-
-                if is_closed_calendar or is_closed_inferred:
-                    closed.append(cur)
-                    if is_closed_inferred:
-                        closed_inferred.append(cur)
-                    else:
-                        closed_calendar.append(cur)
-                    cur += one_day
-                    continue
+                    closed_calendar.append(cur)
+                cur += one_day
+                continue
 
             # 2. Check if older than source retention
             if is_older_than_retention(cur, retention_val, as_of_date):

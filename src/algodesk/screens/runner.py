@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from time import perf_counter
 from typing import Any
@@ -154,6 +154,8 @@ class ScreenRunner:
         clock: Clock | None = None,
         progress_every: int | None = None,
         params: Any = None,
+        manifest: Any = None,
+        session_resolver: Callable[[date, int], list[date]] | None = None,
     ) -> None:
         self.data_reader = data_reader
         self.indicator_resolver = indicator_resolver
@@ -162,6 +164,8 @@ class ScreenRunner:
         self.clock = clock
         self.progress_every = int(progress_every) if progress_every is not None else 25
         self.params = params
+        self.manifest = manifest
+        self.session_resolver = session_resolver
 
     def resolve_as_of(self, as_of: date | str | None) -> date:
         """Resolve effective as-of date (last completed session on or before as-of)."""
@@ -349,23 +353,26 @@ class ScreenRunner:
                 pass
         needed_sessions = max(1, max_warmup) + lookback_margin
 
-        # Convert needed_sessions to dates through calendar
-        sessions: list[date] = []
-        cur = as_of_date
-        max_search_days = max(120, needed_sessions * 4)
-        cutoff = cur - timedelta(days=max_search_days)
-        while cur >= cutoff and len(sessions) < needed_sessions:
-            is_trading = False
-            if self.calendar is not None:
-                try:
-                    is_trading = bool(self.calendar.is_trading_day(cur))
-                except Exception:
+        # Convert needed_sessions to dates through session resolver or calendar
+        if self.session_resolver is not None:
+            sessions = self.session_resolver(as_of_date, needed_sessions)
+        else:
+            sessions = []
+            cur = as_of_date
+            max_search_days = max(120, needed_sessions * 4)
+            cutoff = cur - timedelta(days=max_search_days)
+            while cur >= cutoff and len(sessions) < needed_sessions:
+                is_trading = False
+                if self.calendar is not None:
+                    try:
+                        is_trading = bool(self.calendar.is_trading_day(cur))
+                    except Exception:
+                        is_trading = cur.weekday() < 5
+                else:
                     is_trading = cur.weekday() < 5
-            else:
-                is_trading = cur.weekday() < 5
-            if is_trading:
-                sessions.append(cur)
-            cur -= timedelta(days=1)
+                if is_trading:
+                    sessions.append(cur)
+                cur -= timedelta(days=1)
 
         window_start_date = (
             sessions[-1] if sessions else (as_of_date - timedelta(days=needed_sessions * 2))

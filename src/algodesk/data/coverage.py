@@ -2,16 +2,100 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
+from algodesk.api.errors import CalendarCoverageError
 from algodesk.api.market import CoverageStatus, DataGap
 from algodesk.api.protocols import Calendar
 from algodesk.data.calendar_cache import CachedCalendar
 from algodesk.data.closures import has_all_samples_evidence
 from algodesk.data.manifest import CoverageDayRecord, DataManifest, MarketClosureRecord
+
+
+def is_trading_session(
+    day: date,
+    calendar: Any = None,
+    manifest: Any = None,
+    exchange: str = "NSE",
+    closures: Mapping[str, MarketClosureRecord] | None = None,
+) -> bool:
+    """Check if date is an expected trading session.
+
+    Uses calendar + recorded closures (exchange_file, inferred, special).
+    """
+    day_str = day.isoformat()
+    closure_rec: MarketClosureRecord | None = None
+    if closures is not None:
+        closure_rec = closures.get(day_str)
+    elif manifest is not None and hasattr(manifest, "list_market_closures"):
+        matches = manifest.list_market_closures(
+            exchange=exchange, start_day=day_str, end_day=day_str
+        )
+        if matches:
+            closure_rec = matches[0]
+
+    closure_kind = closure_rec.kind if closure_rec else None
+
+    # Special session overrides calendar/weekend closure
+    if closure_kind == "special":
+        return True
+    if closure_kind in ("calendar", "exchange_file"):
+        return False
+    if closure_kind == "inferred":
+        if has_all_samples_evidence(closure_rec):
+            return False
+
+    if calendar is not None:
+        try:
+            return bool(calendar.is_trading_day(day))
+        except CalendarCoverageError:
+            return day.weekday() < 5
+        except Exception:
+            return day.weekday() < 5
+
+    return day.weekday() < 5
+
+
+def resolve_trading_sessions(
+    end_date: date,
+    needed_sessions: int,
+    calendar: Any = None,
+    manifest: Any = None,
+    exchange: str = "NSE",
+    closures: Mapping[str, MarketClosureRecord] | None = None,
+) -> list[date]:
+    """Find the latest N trading sessions on or before end_date."""
+    max_search_days = max(120, needed_sessions * 4)
+    cutoff = end_date - timedelta(days=max_search_days)
+
+    closures_dict: dict[str, MarketClosureRecord] = {}
+    if closures is not None:
+        closures_dict = dict(closures)
+    elif manifest is not None and hasattr(manifest, "list_market_closures"):
+        for mc in manifest.list_market_closures(
+            exchange=exchange,
+            start_day=cutoff.isoformat(),
+            end_day=end_date.isoformat(),
+        ):
+            closures_dict[mc.day] = mc
+
+    sessions: list[date] = []
+    cur = end_date
+    while cur >= cutoff and len(sessions) < needed_sessions:
+        if is_trading_session(
+            cur,
+            calendar=calendar,
+            manifest=manifest,
+            exchange=exchange,
+            closures=closures_dict,
+        ):
+            sessions.append(cur)
+        cur -= timedelta(days=1)
+    return sessions
 
 
 class CoverageIndex:
@@ -136,6 +220,15 @@ class CoverageIndex:
 
         return CoverageStatus.PARTIAL
 
+    def is_trading_session(self, day: date, exchange: str = "NSE") -> bool:
+        """Check if date is an expected trading session (calendar + closures)."""
+        return is_trading_session(
+            day=day,
+            calendar=self._calendar,
+            manifest=self._manifest,
+            exchange=exchange,
+        )
+
     def detect_gaps(
         self,
         dataset_id: str,
@@ -175,34 +268,22 @@ class CoverageIndex:
             closure_rec = closures_records.get(day_str)
             closure_kind = closure_rec.kind if closure_rec else None
 
-            is_closed = False
+            is_session = is_trading_session(
+                day=cur,
+                calendar=self._calendar,
+                closures=closures_records,
+                exchange=exch,
+            )
+
             if closure_kind == "special":
                 special_count += 1
-                is_closed = False
-            elif closure_kind == "inferred":
-                if has_all_samples_evidence(closure_rec):
+            elif not is_session:
+                if closure_kind == "inferred":
                     closed_inf_count += 1
-                    is_closed = True
                 else:
-                    is_closed = False
-            elif closure_kind in ("calendar", "exchange_file"):
-                closed_cal_count += 1
-                is_closed = True
-            else:
-                if self._calendar is not None:
-                    try:
-                        if not self._calendar.is_trading_day(cur):
-                            is_closed = True
-                            closed_cal_count += 1
-                    except Exception:
-                        if cur.weekday() >= 5:
-                            is_closed = True
-                            closed_cal_count += 1
-                elif cur.weekday() >= 5:
-                    is_closed = True
                     closed_cal_count += 1
 
-            if not is_closed:
+            if is_session:
                 rec = cov_records.get(day_str)
                 if rec is None:
                     gaps.append(
@@ -221,13 +302,16 @@ class CoverageIndex:
                         params=self._params,
                     )
                     if final:
-                        gaps.append(
-                            DataGap(
-                                day=cur,
-                                status=CoverageStatus.EMPTY,
-                                reason=rec.note or "Fetched and the source returned nothing",
+                        if "pre-listing" in reason.lower():
+                            pass
+                        else:
+                            gaps.append(
+                                DataGap(
+                                    day=cur,
+                                    status=CoverageStatus.EMPTY,
+                                    reason=rec.note or "Fetched and the source returned nothing",
+                                )
                             )
-                        )
                     else:
                         gaps.append(
                             DataGap(
@@ -405,21 +489,38 @@ def evaluate_empty_record(
     sym = parts[-2] if len(parts) >= 4 else (parts[1] if len(parts) >= 2 else "")
     if manifest is not None and hasattr(manifest, "_conn"):
         try:
-            # Check (a): bars on later date
-            q_later = (
+            # Check (a): bars on later date AND no bars on or before rec.day (pre-listing)
+            q_earlier = (
                 "SELECT 1 FROM coverage_days WHERE dataset_id LIKE ? "
-                "AND day > ? AND (rows > 0 OR status = 'COMPLETE') LIMIT 1"
+                "AND day <= ? AND (rows > 0 OR status = 'COMPLETE') LIMIT 1"
             )
-            cur_later = manifest._conn.execute(q_later, (f"%{sym}%", rec.day))
-            if cur_later.fetchone() is not None:
-                return True, "Final EMPTY: pre-listing days (symbol has bars on later date)"
+            has_earlier = (
+                manifest._conn.execute(q_earlier, (f"%{sym}%", rec.day)).fetchone() is not None
+            )
+            if not has_earlier:
+                q_p_earlier = (
+                    "SELECT 1 FROM parts "
+                    "WHERE dataset_id LIKE ? AND first_ts <= ? AND rows > 0 LIMIT 1"
+                )
+                cur_parts_earlier = manifest._conn.execute(q_p_earlier, (f"%{sym}%", rec.day))
+                has_earlier = cur_parts_earlier.fetchone() is not None
 
-            cur_parts = manifest._conn.execute(
-                "SELECT 1 FROM parts WHERE dataset_id LIKE ? AND last_ts > ? AND rows > 0 LIMIT 1",
-                (f"%{sym}%", rec.day),
-            )
-            if cur_parts.fetchone() is not None:
-                return True, "Final EMPTY: pre-listing days (symbol has bars on later date)"
+            if not has_earlier:
+                q_later = (
+                    "SELECT 1 FROM coverage_days WHERE dataset_id LIKE ? "
+                    "AND day > ? AND (rows > 0 OR status = 'COMPLETE') LIMIT 1"
+                )
+                cur_later = manifest._conn.execute(q_later, (f"%{sym}%", rec.day))
+                if cur_later.fetchone() is not None:
+                    return True, "Final EMPTY: pre-listing days (symbol has bars on later date)"
+
+                q_parts = (
+                    "SELECT 1 FROM parts "
+                    "WHERE dataset_id LIKE ? AND last_ts > ? AND rows > 0 LIMIT 1"
+                )
+                cur_parts = manifest._conn.execute(q_parts, (f"%{sym}%", rec.day))
+                if cur_parts.fetchone() is not None:
+                    return True, "Final EMPTY: pre-listing days (symbol has bars on later date)"
 
             # Check (b): empty range is at most allowed_empty_sessions
             q_last = (
@@ -428,12 +529,36 @@ def evaluate_empty_record(
             )
             cur_last_bar = manifest._conn.execute(q_last, (f"%{sym}%", rec.day))
             last_bar_day = cur_last_bar.fetchone()[0]
-            if last_bar_day:
+
+            q_next = (
+                "SELECT min(day) FROM coverage_days WHERE dataset_id LIKE ? "
+                "AND (rows > 0 OR status = 'COMPLETE') AND day > ?"
+            )
+            cur_next_bar = manifest._conn.execute(q_next, (f"%{sym}%", rec.day))
+            next_bar_day = cur_next_bar.fetchone()[0]
+
+            if last_bar_day and next_bar_day:
+                q_cnt = (
+                    "SELECT count(*) FROM coverage_days WHERE dataset_id = ? "
+                    "AND status IN ('EMPTY', 'PENDING') AND day > ? AND day < ?"
+                )
+                cur_cnt = manifest._conn.execute(
+                    q_cnt, (rec.dataset_id, last_bar_day, next_bar_day)
+                )
+                empty_count = cur_cnt.fetchone()[0] or 0
+            elif last_bar_day:
                 q_cnt = (
                     "SELECT count(*) FROM coverage_days WHERE dataset_id = ? "
                     "AND status IN ('EMPTY', 'PENDING') AND day > ?"
                 )
                 cur_cnt = manifest._conn.execute(q_cnt, (rec.dataset_id, last_bar_day))
+                empty_count = cur_cnt.fetchone()[0] or 0
+            elif next_bar_day:
+                q_cnt = (
+                    "SELECT count(*) FROM coverage_days WHERE dataset_id = ? "
+                    "AND status IN ('EMPTY', 'PENDING') AND day < ?"
+                )
+                cur_cnt = manifest._conn.execute(q_cnt, (rec.dataset_id, next_bar_day))
                 empty_count = cur_cnt.fetchone()[0] or 0
             else:
                 q_cnt = (
@@ -450,6 +575,12 @@ def evaluate_empty_record(
                         f"Final EMPTY: short empty range "
                         f"({empty_count} <= {allowed_empty_sessions} sessions)"
                     ),
+                )
+            if next_bar_day:
+                return (
+                    False,
+                    f"Empty gap ({empty_count} sessions) exceeds "
+                    f"data.empty_final_max_sessions ({allowed_empty_sessions})",
                 )
             return (
                 False,
@@ -491,18 +622,24 @@ def reset_stale_empty_coverage(
     dry_run: bool = False,
     journal: Any = None,
     params: Any = None,
+    progress_callback: Any = None,
 ) -> list[tuple[CoverageDayRecord, str]]:
-    """Re-evaluate existing EMPTY coverage records and reset non-final ones to MISSING."""
+    """Re-evaluate existing EMPTY coverage records and reset non-final ones to MISSING.
+
+    Uses bulk reads (one query per table for the selection) and tracks progress per symbol.
+    """
     if not hasattr(manifest, "_conn"):
         return []
 
+    # 1. coverage_days: All EMPTY or PENDING records matching criteria
     cur = manifest._conn.execute(
-        "SELECT * FROM coverage_days WHERE status IN ('EMPTY', 'PENDING') ORDER BY dataset_id, day"
+        "SELECT dataset_id, day, status, rows, expected_rows, part_path, fetched_at, note "
+        "FROM coverage_days WHERE status IN ('EMPTY', 'PENDING') ORDER BY dataset_id, day"
     )
-    rows = cur.fetchall()
+    all_ep_rows = cur.fetchall()
 
-    to_reset: list[tuple[CoverageDayRecord, str]] = []
-    for r in rows:
+    filtered_records: list[CoverageDayRecord] = []
+    for r in all_ep_rows:
         rec = CoverageDayRecord(**dict(r))
         parts = rec.dataset_id.split(":")
         r_source = parts[1].lower() if len(parts) >= 2 else ""
@@ -512,33 +649,229 @@ def reset_stale_empty_coverage(
             continue
         if timeframe and r_tf != timeframe.strip().lower():
             continue
+        filtered_records.append(rec)
 
-        # Check if instrument has zero stored bars over whole range
-        sym = parts[-2] if len(parts) >= 4 else (parts[1] if len(parts) >= 2 else "")
-        total_stored_bars = 0
+    if not filtered_records:
+        return []
+
+    # 2. coverage_days: summary of COMPLETE / rows > 0 per dataset
+    cur_bars = manifest._conn.execute(
+        "SELECT dataset_id, min(day) as min_day, max(day) as max_day, sum(rows) as total_bars "
+        "FROM coverage_days "
+        "WHERE status = 'COMPLETE' OR rows > 0 "
+        "GROUP BY dataset_id"
+    )
+    symbol_total_bars: dict[str, int] = {}
+    symbol_min_bar_day: dict[str, str] = {}
+    symbol_max_bar_day: dict[str, str] = {}
+    for r in cur_bars.fetchall():
+        ds = r["dataset_id"]
+        p = ds.split(":")
+        s = p[-2] if len(p) >= 4 else (p[1] if len(p) >= 2 else ds)
+        t_bars = r["total_bars"] or 0
+        symbol_total_bars[s] = symbol_total_bars.get(s, 0) + t_bars
+        m_day = r["max_day"] or ""
+        if s not in symbol_max_bar_day or m_day > symbol_max_bar_day[s]:
+            symbol_max_bar_day[s] = m_day
+        min_d = r["min_day"] or ""
+        if s not in symbol_min_bar_day or (min_d and min_d < symbol_min_bar_day[s]):
+            symbol_min_bar_day[s] = min_d
+
+    # 3. coverage_days: All EMPTY/PENDING days per dataset
+    cur_days = manifest._conn.execute(
+        "SELECT dataset_id, day FROM coverage_days WHERE status IN ('EMPTY', 'PENDING')"
+    )
+    dataset_ep_days: dict[str, list[str]] = {}
+    for r in cur_days.fetchall():
+        dataset_ep_days.setdefault(r["dataset_id"], []).append(r["day"])
+
+    # 4. parts: Min first_ts and Max last_ts per dataset from parts
+    q_parts_range = (
+        "SELECT dataset_id, min(first_ts) as min_ts, max(last_ts) as max_ts "
+        "FROM parts WHERE rows > 0 GROUP BY dataset_id"
+    )
+    cur_parts = manifest._conn.execute(q_parts_range)
+    symbol_min_part_ts: dict[str, str] = {}
+    symbol_max_part_ts: dict[str, str] = {}
+    for r in cur_parts.fetchall():
+        ds = r["dataset_id"]
+        p = ds.split(":")
+        s = p[-2] if len(p) >= 4 else (p[1] if len(p) >= 2 else ds)
+        m_ts = r["max_ts"] or ""
+        if s not in symbol_max_part_ts or m_ts > symbol_max_part_ts[s]:
+            symbol_max_part_ts[s] = m_ts
+        min_ts = r["min_ts"] or ""
+        if s not in symbol_min_part_ts or (min_ts and min_ts < symbol_min_part_ts[s]):
+            symbol_min_part_ts[s] = min_ts
+
+    # 5. fetch_log: Non-OK entries
+    cur_fl = manifest._conn.execute(
+        "SELECT finished, outcome, error FROM fetch_log "
+        "WHERE outcome != 'OK' OR (error IS NOT NULL AND trim(error) != '')"
+    )
+    bad_fetch_logs: dict[str, str] = {
+        r["finished"]: r["error"] or r["outcome"] or "fetch error" for r in cur_fl.fetchall()
+    }
+
+    # Parameters
+    allowed_empty_sessions = 5
+    if params is not None:
         try:
-            q_sum = (
-                "SELECT sum(rows) FROM coverage_days WHERE dataset_id LIKE ? "
-                "AND (status = 'COMPLETE' OR rows > 0)"
-            )
-            cur_bars = manifest._conn.execute(q_sum, (f"%{sym}%",))
-            total_stored_bars = cur_bars.fetchone()[0] or 0
+            val = params.get("data.empty_final_max_sessions")
+            if val is not None:
+                allowed_empty_sessions = int(val)
         except Exception:
-            total_stored_bars = 0
+            pass
 
-        if total_stored_bars == 0:
-            is_final = False
-            reason = "Instrument has zero stored bars over the whole range"
-        else:
-            is_final, reason = evaluate_empty_record(
-                rec=rec,
-                calendar=calendar,
-                settle_minutes=settle_minutes,
-                manifest=manifest,
-                params=params,
+    progress_every = 25
+    if params is not None:
+        try:
+            val = params.get("cli.progress_every")
+            if val is not None:
+                progress_every = int(val)
+        except Exception:
+            pass
+
+    cal_wrapped = CachedCalendar.wrap(calendar)
+    s_margin = settle_minutes if settle_minutes is not None else 0
+
+    # Collect unique symbols
+    symbols_order: list[str] = []
+    seen_symbols: set[str] = set()
+    for rec in filtered_records:
+        p = rec.dataset_id.split(":")
+        s = p[-2] if len(p) >= 4 else (p[1] if len(p) >= 2 else rec.dataset_id)
+        if s not in seen_symbols:
+            seen_symbols.add(s)
+            symbols_order.append(s)
+
+    total_symbols = len(symbols_order)
+    processed_symbols: set[str] = set()
+
+    to_reset: list[tuple[CoverageDayRecord, str]] = []
+    for rec in filtered_records:
+        p = rec.dataset_id.split(":")
+        sym = p[-2] if len(p) >= 4 else (p[1] if len(p) >= 2 else rec.dataset_id)
+
+        if sym not in processed_symbols:
+            processed_symbols.add(sym)
+            cur_count = len(processed_symbols)
+            if cur_count % progress_every == 0 or cur_count == total_symbols:
+                if progress_callback:
+                    try:
+                        progress_callback(cur_count, total_symbols)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        import sys
+
+                        print(
+                            f"[coverage reset-empty] {cur_count}/{total_symbols} symbols evaluated",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    except (BrokenPipeError, OSError):
+                        pass
+
+        if rec.status == "PENDING":
+            to_reset.append((rec, "Pending next-day history retry"))
+            continue
+
+        if not rec.fetched_at:
+            to_reset.append((rec, "Fetch timestamp missing"))
+            continue
+
+        # 1. Error / crash in note
+        note_low = (rec.note or "").lower()
+        if any(
+            w in note_low
+            for w in (
+                "fetch failed",
+                "error",
+                "failed",
+                "retries",
+                "errno",
+                "exception",
+                "traceback",
+                "timed out",
+                "timeout",
+                "unreachable",
+                "nodename",
+                "object is not callable",
+                "has no attribute",
+                "crash",
+                "typeerror",
+                "attributeerror",
+                "keyerror",
+                "connection reset",
+                "broken pipe",
             )
-        if not is_final:
-            to_reset.append((rec, reason))
+        ):
+            to_reset.append((rec, f"Non-final EMPTY: fetch error / crash in note ({rec.note})"))
+            continue
+
+        # 2. Check fetch_log
+        if rec.fetched_at in bad_fetch_logs:
+            to_reset.append(
+                (rec, f"Non-final EMPTY: fetch failed ({bad_fetch_logs[rec.fetched_at]})")
+            )
+            continue
+
+        # Settle delay check
+        if cal_wrapped is not None and s_margin > 0:
+            try:
+                fa = datetime.fromisoformat(rec.fetched_at)
+                fa_utc = fa.astimezone(UTC) if fa.tzinfo else fa.replace(tzinfo=UTC)
+                r_day = date.fromisoformat(rec.day)
+                sess = list(cal_wrapped.sessions(r_day))
+                if sess:
+                    settle_dt = sess[-1].close + timedelta(minutes=s_margin)
+                    if fa_utc < settle_dt:
+                        to_reset.append(
+                            (rec, f"Fetched before settle margin ended ({settle_dt.isoformat()})")
+                        )
+                        continue
+            except Exception:
+                pass
+
+        # 3. Instrument has zero stored bars over whole range
+        if symbol_total_bars.get(sym, 0) == 0:
+            to_reset.append((rec, "Instrument has zero stored bars over the whole range"))
+            continue
+
+        # 4. Check if symbol has bars on later date (pre-listing)
+        min_d = symbol_min_bar_day.get(sym)
+        min_part = symbol_min_part_ts.get(sym)
+        earliest_bar_day = min(
+            [d for d in (min_d, min_part[:10] if min_part else None) if d],
+            default=None,
+        )
+        if earliest_bar_day and rec.day < earliest_bar_day:
+            # Final pre-listing
+            continue
+
+        # 5. Check empty range count
+        max_d = symbol_max_bar_day.get(sym)
+        max_part = symbol_max_part_ts.get(sym)
+        latest_bar_day = max(
+            [d for d in (max_d, max_part[:10] if max_part else None) if d],
+            default=None,
+        )
+
+        ep_list = dataset_ep_days.get(rec.dataset_id, [])
+        if latest_bar_day and rec.day > latest_bar_day:
+            empty_count = len([d for d in ep_list if d > latest_bar_day])
+            if empty_count > allowed_empty_sessions:
+                to_reset.append(
+                    (
+                        rec,
+                        f"All-empty range ({empty_count} sessions) exceeds "
+                        f"data.empty_final_max_sessions "
+                        f"({allowed_empty_sessions}) without later bars",
+                    )
+                )
+                continue
 
     if not dry_run and to_reset:
         updated: list[CoverageDayRecord] = [
