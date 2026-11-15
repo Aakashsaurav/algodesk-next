@@ -347,9 +347,19 @@ def evaluate_empty_record(
     if any(
         w in note_low
         for w in (
-            "object is not callable",
-            "traceback",
+            "fetch failed",
+            "error",
+            "failed",
+            "retries",
+            "errno",
             "exception",
+            "traceback",
+            "timed out",
+            "timeout",
+            "unreachable",
+            "nodename",
+            "object is not callable",
+            "has no attribute",
             "crash",
             "typeerror",
             "attributeerror",
@@ -380,6 +390,74 @@ def evaluate_empty_record(
                         return False, f"Fetch log error: {row['error'] or row['outcome']}"
             except Exception:
                 pass
+
+    # ADR-076: EMPTY is final only if (a) the same symbol has bars on a later date (pre-listing)
+    # or (b) the empty range is at most registry data.empty_final_max_sessions (default 5).
+    allowed_empty_sessions = 5
+    if params is not None:
+        try:
+            val = params.get("data.empty_final_max_sessions")
+            if val is not None:
+                allowed_empty_sessions = int(val)
+        except Exception:
+            allowed_empty_sessions = 5
+
+    sym = parts[-2] if len(parts) >= 4 else (parts[1] if len(parts) >= 2 else "")
+    if manifest is not None and hasattr(manifest, "_conn"):
+        try:
+            # Check (a): bars on later date
+            q_later = (
+                "SELECT 1 FROM coverage_days WHERE dataset_id LIKE ? "
+                "AND day > ? AND (rows > 0 OR status = 'COMPLETE') LIMIT 1"
+            )
+            cur_later = manifest._conn.execute(q_later, (f"%{sym}%", rec.day))
+            if cur_later.fetchone() is not None:
+                return True, "Final EMPTY: pre-listing days (symbol has bars on later date)"
+
+            cur_parts = manifest._conn.execute(
+                "SELECT 1 FROM parts WHERE dataset_id LIKE ? AND last_ts > ? AND rows > 0 LIMIT 1",
+                (f"%{sym}%", rec.day),
+            )
+            if cur_parts.fetchone() is not None:
+                return True, "Final EMPTY: pre-listing days (symbol has bars on later date)"
+
+            # Check (b): empty range is at most allowed_empty_sessions
+            q_last = (
+                "SELECT max(day) FROM coverage_days WHERE dataset_id LIKE ? "
+                "AND (rows > 0 OR status = 'COMPLETE') AND day < ?"
+            )
+            cur_last_bar = manifest._conn.execute(q_last, (f"%{sym}%", rec.day))
+            last_bar_day = cur_last_bar.fetchone()[0]
+            if last_bar_day:
+                q_cnt = (
+                    "SELECT count(*) FROM coverage_days WHERE dataset_id = ? "
+                    "AND status IN ('EMPTY', 'PENDING') AND day > ?"
+                )
+                cur_cnt = manifest._conn.execute(q_cnt, (rec.dataset_id, last_bar_day))
+                empty_count = cur_cnt.fetchone()[0] or 0
+            else:
+                q_cnt = (
+                    "SELECT count(*) FROM coverage_days WHERE dataset_id = ? "
+                    "AND status IN ('EMPTY', 'PENDING')"
+                )
+                cur_cnt = manifest._conn.execute(q_cnt, (rec.dataset_id,))
+                empty_count = cur_cnt.fetchone()[0] or 0
+
+            if empty_count <= allowed_empty_sessions:
+                return (
+                    True,
+                    (
+                        f"Final EMPTY: short empty range "
+                        f"({empty_count} <= {allowed_empty_sessions} sessions)"
+                    ),
+                )
+            return (
+                False,
+                f"All-empty range ({empty_count} sessions) exceeds "
+                f"data.empty_final_max_sessions ({allowed_empty_sessions}) without later bars",
+            )
+        except Exception:
+            pass
 
     return True, "Final EMPTY chunk"
 
@@ -435,13 +513,30 @@ def reset_stale_empty_coverage(
         if timeframe and r_tf != timeframe.strip().lower():
             continue
 
-        is_final, reason = evaluate_empty_record(
-            rec=rec,
-            calendar=calendar,
-            settle_minutes=settle_minutes,
-            manifest=manifest,
-            params=params,
-        )
+        # Check if instrument has zero stored bars over whole range
+        sym = parts[-2] if len(parts) >= 4 else (parts[1] if len(parts) >= 2 else "")
+        total_stored_bars = 0
+        try:
+            q_sum = (
+                "SELECT sum(rows) FROM coverage_days WHERE dataset_id LIKE ? "
+                "AND (status = 'COMPLETE' OR rows > 0)"
+            )
+            cur_bars = manifest._conn.execute(q_sum, (f"%{sym}%",))
+            total_stored_bars = cur_bars.fetchone()[0] or 0
+        except Exception:
+            total_stored_bars = 0
+
+        if total_stored_bars == 0:
+            is_final = False
+            reason = "Instrument has zero stored bars over the whole range"
+        else:
+            is_final, reason = evaluate_empty_record(
+                rec=rec,
+                calendar=calendar,
+                settle_minutes=settle_minutes,
+                manifest=manifest,
+                params=params,
+            )
         if not is_final:
             to_reset.append((rec, reason))
 
@@ -461,6 +556,12 @@ def reset_stale_empty_coverage(
         ]
         manifest.record_coverage_days(updated)
 
+        by_symbol: dict[str, int] = {}
+        for rec, _ in to_reset:
+            s_parts = rec.dataset_id.split(":")
+            sym_name = s_parts[-2] if len(s_parts) >= 4 else rec.dataset_id
+            by_symbol[sym_name] = by_symbol.get(sym_name, 0) + 1
+
         if journal is not None:
             journal.append(
                 kind="data.coverage_reset_empty",
@@ -468,6 +569,8 @@ def reset_stale_empty_coverage(
                     "source": source or "all",
                     "timeframe": timeframe or "all",
                     "reset_count": len(to_reset),
+                    "symbol_count": len(by_symbol),
+                    "symbols": by_symbol,
                     "records": [
                         {
                             "dataset_id": rec.dataset_id,

@@ -59,6 +59,9 @@ class AccumulationReport:
     waiting_items: list[AccumulationPlanItem] = field(default_factory=list)
     request_count: int = 0
     failures: list[dict[str, Any]] = field(default_factory=list)
+    zero_row_symbols: list[str] = field(default_factory=list)
+    zero_row_pct: float = 0.0
+    max_empty_pct: float | None = None
 
 
 def _check_same_day_history(source: str, params: Any = None) -> bool:
@@ -655,6 +658,7 @@ def execute_accumulation(
     total_refetched = 0
     instrument_rows: dict[tuple[str, str], int] = {}
     failures: list[dict[str, Any]] = []
+    zero_row_symbols: list[str] = []
 
     progress_every = 25
     if hasattr(runtime, "params") and runtime.params:
@@ -671,6 +675,9 @@ def execute_accumulation(
         it.rows_added = added
         instrument_rows[(it.instrument, it.timeframe)] = added
         rows_added += added
+        if added == 0 and it.fetchable_sessions:
+            if not _are_all_fetchable_days_final_empty([it], source, runtime, calendar, now_dt):
+                zero_row_symbols.append(it.instrument)
         if not ok:
             missing_after += len(it.fetchable_sessions)
             failures.append(
@@ -694,6 +701,27 @@ def execute_accumulation(
                 flush=True,
             )
 
+    allowed_empty_pct = 2.0
+    if hasattr(runtime, "params") and runtime.params is not None:
+        try:
+            val = runtime.params.get("data.accumulate_max_empty_pct")
+            if val is not None:
+                allowed_empty_pct = float(val)
+        except Exception:
+            allowed_empty_pct = 2.0
+
+    total_syms = len(plan_items)
+    empty_pct = (len(zero_row_symbols) / total_syms * 100.0) if total_syms > 0 else 0.0
+
+    report.rows_added = rows_added
+    report.days_still_missing = missing_after
+    report.days_refetched = total_refetched
+    report.instrument_rows = instrument_rows
+    report.failures = failures
+    report.zero_row_symbols = zero_row_symbols
+    report.zero_row_pct = round(empty_pct, 2)
+    report.max_empty_pct = allowed_empty_pct
+
     if total_fetchable > 0 and rows_added == 0 and missing_after == 0:
         if not _are_all_fetchable_days_final_empty(plan_items, source, runtime, calendar, now_dt):
             raise DataError(
@@ -708,11 +736,6 @@ def execute_accumulation(
                 ),
             )
 
-    report.rows_added = rows_added
-    report.days_still_missing = missing_after
-    report.days_refetched = total_refetched
-    report.instrument_rows = instrument_rows
-    report.failures = failures
     _log_accumulation_event(
         runtime,
         group,

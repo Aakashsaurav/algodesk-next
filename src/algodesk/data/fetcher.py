@@ -293,6 +293,19 @@ class Fetcher:
                                 "parts": [p.path for p in parts],
                             },
                         )
+                        if not bars and len(chunk.days) > 5:
+                            self._journal.append(
+                                kind="data.fetch_empty_suspect",
+                                payload={
+                                    "chunk": chunk.chunk_id,
+                                    "source": source_name,
+                                    "days": len(chunk.days),
+                                    "status": res_status,
+                                    "reason": (
+                                        f"Empty fetch ({len(chunk.days)} days) exceeds threshold"
+                                    ),
+                                },
+                            )
 
                 return FetchResult(chunk=chunk, status=res_status, rows=len(bars))
 
@@ -467,6 +480,17 @@ class Fetcher:
                         "rows": 0,
                         "status": final_status,
                         "error": last_error,
+                    },
+                )
+                self._journal.append(
+                    kind="data.fetch_empty_suspect",
+                    payload={
+                        "chunk": chunk.chunk_id,
+                        "source": source_name,
+                        "days": len(chunk.days),
+                        "status": final_status,
+                        "error": last_error,
+                        "reason": f"Fetch failed: {last_error}",
                     },
                 )
 

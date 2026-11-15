@@ -61,10 +61,11 @@ def test_write_screen_results_artifacts(tmp_path: Path) -> None:
     table_path = run_dir / "table.csv"
     assert table_path.is_file()
     table_lines = table_path.read_text(encoding="utf-8").strip().splitlines()
-    assert len(table_lines) == 3  # Header + 2 passed rows
-    # SYM2 (score 95) should be first, then SYM1 (score 90)
-    assert "SYM2" in table_lines[1]
-    assert "SYM1" in table_lines[2]
+    assert len(table_lines) == 4  # Header + 2 passed rows + 1 unpassed row
+    # SYM2 (score 95) should be first, then SYM1 (score 90), then SYM3 (unpassed)
+    assert "SYM2" in table_lines[1] and "YES" in table_lines[1]
+    assert "SYM1" in table_lines[2] and "YES" in table_lines[2]
+    assert "SYM3" in table_lines[3] and "NO" in table_lines[3]
 
     skipped_path = run_dir / "skipped.csv"
     assert skipped_path.is_file()

@@ -115,10 +115,27 @@ def _extract_required_indicators(screen: Any) -> list[dict[str, Any]]:
     return required_inds
 
 
-def _compute_max_warmup(required_inds: Sequence[Mapping[str, Any]]) -> int:
+def _compute_max_warmup(
+    required_inds: Sequence[Mapping[str, Any]],
+    resolver: IndicatorResolver | None = None,
+) -> int:
     max_warmup = 0
     for ind_info in required_inds:
         p_dict = ind_info.get("params", {}) or {}
+        if callable(p_dict):
+            p_dict = p_dict()
+        if isinstance(p_dict, dict) and "params" in p_dict and isinstance(p_dict["params"], dict):
+            p_dict = {**p_dict, **p_dict["params"]}
+        ind_name = ind_info.get("ind")
+        if resolver is not None and ind_name:
+            try:
+                ind = resolver.get_indicator(ind_name, **p_dict)
+                if hasattr(ind, "warmup"):
+                    max_warmup = max(max_warmup, int(ind.warmup))
+                elif hasattr(ind, "spec") and hasattr(ind.spec, "warmup"):
+                    max_warmup = max(max_warmup, int(ind.spec.warmup))
+            except Exception:
+                pass
         for p_key in ("period", "timeperiod", "length", "slow", "signal", "window"):
             if p_key in p_dict and isinstance(p_dict[p_key], (int, float)):
                 max_warmup = max(max_warmup, int(p_dict[p_key]))
@@ -136,6 +153,7 @@ class ScreenRunner:
         max_skipped_pct: float | None = None,
         clock: Clock | None = None,
         progress_every: int | None = None,
+        params: Any = None,
     ) -> None:
         self.data_reader = data_reader
         self.indicator_resolver = indicator_resolver
@@ -143,6 +161,7 @@ class ScreenRunner:
         self.max_skipped_pct = float(max_skipped_pct) if max_skipped_pct is not None else float(10)
         self.clock = clock
         self.progress_every = int(progress_every) if progress_every is not None else 25
+        self.params = params
 
     def resolve_as_of(self, as_of: date | str | None) -> date:
         """Resolve effective as-of date (last completed session on or before as-of)."""
@@ -317,18 +336,48 @@ class ScreenRunner:
 
         universe_hash = hashlib.sha256(",".join(sorted(sym_list)).encode("utf-8")).hexdigest()
 
+        required_inds = _extract_required_indicators(screen)
+        max_warmup = _compute_max_warmup(required_inds, self.indicator_resolver)
+
+        lookback_margin = 20
+        if self.params is not None:
+            try:
+                val = self.params.get("screen.lookback_margin_sessions")
+                if val is not None:
+                    lookback_margin = int(val)
+            except Exception:
+                pass
+        needed_sessions = max(1, max_warmup) + lookback_margin
+
+        # Convert needed_sessions to dates through calendar
+        sessions: list[date] = []
+        cur = as_of_date
+        max_search_days = max(120, needed_sessions * 4)
+        cutoff = cur - timedelta(days=max_search_days)
+        while cur >= cutoff and len(sessions) < needed_sessions:
+            is_trading = False
+            if self.calendar is not None:
+                try:
+                    is_trading = bool(self.calendar.is_trading_day(cur))
+                except Exception:
+                    is_trading = cur.weekday() < 5
+            else:
+                is_trading = cur.weekday() < 5
+            if is_trading:
+                sessions.append(cur)
+            cur -= timedelta(days=1)
+
+        window_start_date = (
+            sessions[-1] if sessions else (as_of_date - timedelta(days=needed_sessions * 2))
+        )
+
         # Date boundaries for data fetch (reads end at as-of session close in UTC: no look-ahead)
         end_dt = datetime.combine(as_of_date, time(23, 59, 59), tzinfo=IST).astimezone(UTC)
-        start_dt = datetime.combine(
-            as_of_date - timedelta(days=730), time(0, 0), tzinfo=IST
-        ).astimezone(UTC)
+        start_dt = datetime.combine(window_start_date, time(0, 0), tzinfo=IST).astimezone(UTC)
 
         bars_by_symbol: dict[str, tuple[Bar, ...]] = {}
         provenance_by_symbol: dict[str, Mapping[str, Any]] = {}
         skipped: list[tuple[str, SkipReason, str]] = []
-
-        required_inds = _extract_required_indicators(screen)
-        max_warmup = _compute_max_warmup(required_inds)
 
         t0_reads = perf_counter()
         for idx, sym in enumerate(sym_list, 1):

@@ -103,13 +103,13 @@ prices use today's corporate action adjustments.
 
 
 def _write_table_csv(path: Path, result: ScreenResult) -> None:
-    # Filter passed rows and sort by score descending
-    passed_rows = [r for r in result.rows if r.passed]
-    passed_rows.sort(key=lambda r: (r.score, r.symbol), reverse=True)
+    # Sort: passed rows first by score descending, then unpassed rows
+    all_rows = list(result.rows)
+    all_rows.sort(key=lambda r: (1 if r.passed else 0, r.score, r.symbol), reverse=True)
 
-    # Collect all value keys across passed rows
+    # Collect all value keys across all rows
     all_keys: list[str] = []
-    for r in passed_rows:
+    for r in all_rows:
         for k in r.values.keys():
             if k not in all_keys:
                 all_keys.append(k)
@@ -118,10 +118,10 @@ def _write_table_csv(path: Path, result: ScreenResult) -> None:
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for r in passed_rows:
+        for r in all_rows:
             row_dict: dict[str, Any] = {
                 "symbol": r.symbol,
-                "passed": r.passed,
+                "passed": "YES" if r.passed else "NO",
                 "score": round(r.score, 4),
             }
             for k in all_keys:

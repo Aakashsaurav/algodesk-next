@@ -127,15 +127,19 @@ class DataServiceScreenAdapter(ScreenDataReader):
                 ),
             )
 
-        # Check for gaps within the needed bars window
+        # Check for gaps within the needed window
         earliest_bar_date = slice_res.bars[0].start_ts.date()
         end_date = end.date()
-        internal_gaps = [g for g in slice_res.gaps if earliest_bar_date <= g.day <= end_date]
-        if internal_gaps:
+        start_date = start.date()
+        window_gaps = [
+            g for g in slice_res.gaps if max(start_date, earliest_bar_date) <= g.day <= end_date
+        ]
+        if window_gaps:
+            first_gap = min(g.day for g in window_gaps)
             return ScreenRefusal(
-                reason=SkipReason.NO_DATA,
+                reason=SkipReason.GAP_IN_WINDOW,
                 detail=(
-                    f"Gaps detected inside cache window for {sym_str} ({len(internal_gaps)} gaps). "
+                    f"Gap in window on {first_gap.isoformat()}. "
                     f"Fix with: algodesk data accumulate --group G --timeframe 1d"
                 ),
             )
@@ -276,4 +280,5 @@ def build_screen_runner(
         calendar=cal,
         max_skipped_pct=skip_pct,
         progress_every=progress_every,
+        params=getattr(runtime, "params", None),
     )

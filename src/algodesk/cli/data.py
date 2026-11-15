@@ -399,6 +399,12 @@ def _print_accumulation_result(report: Any, group: str, source: str) -> None:
         f"  - Days still missing: {report.days_still_missing}\n"
         f"  - Days lost beyond source window: {report.days_lost_beyond_window}"
     )
+    if getattr(report, "zero_row_symbols", None):
+        tot_syms = len(report.plan_items)
+        c_str = f"({len(report.zero_row_symbols)} / {tot_syms}, {report.zero_row_pct:.1f}%):"
+        typer.echo(f"  - Symbols with zero rows and non-final coverage {c_str}")
+        for s in report.zero_row_symbols:
+            typer.echo(f"    * {s}")
     if getattr(report, "failures", None):
         typer.echo(f"\nFailures ({len(report.failures)}):")
         for f in report.failures:
@@ -440,18 +446,24 @@ def data_accumulate(
         except Exception:
             pass
 
-        report = execute_accumulation(
-            group=group,
-            source=source,
-            days=days,
-            runtime=rt,
-            data_service=_build_data_service(rt, source) if not dry_run else None,
-            calendar=cal,
-            dry_run=dry_run,
-            refresh=refresh,
-            timeframe=timeframe,
-            calendar_days=(timeframe == "1d" and days >= 30) or days > 30,
-        )
+        try:
+            report = execute_accumulation(
+                group=group,
+                source=source,
+                days=days,
+                runtime=rt,
+                data_service=_build_data_service(rt, source) if not dry_run else None,
+                calendar=cal,
+                dry_run=dry_run,
+                refresh=refresh,
+                timeframe=timeframe,
+                calendar_days=(timeframe == "1d" and days >= 30) or days > 30,
+            )
+        except DataError as exc:
+            rep = getattr(exc, "report", None)
+            if rep is not None:
+                _print_accumulation_result(rep, group, source)
+            raise
 
         if json_out:
             out = {
@@ -502,6 +514,23 @@ def data_accumulate(
             return
 
         _print_accumulation_result(report, group, source)
+        max_pct = getattr(report, "max_empty_pct", None)
+        zero_pct = getattr(report, "zero_row_pct", 0.0)
+        if not dry_run and max_pct is not None and zero_pct is not None and zero_pct > max_pct:
+            sym_list_str = ", ".join(getattr(report, "zero_row_symbols", []))
+            tot_p = len(report.plan_items)
+            raise DataError(
+                what=(
+                    f"Accumulation failed: {len(report.zero_row_symbols)}/{tot_p} symbols "
+                    f"({zero_pct:.1f}%) returned zero rows, exceeding "
+                    f"data.accumulate_max_empty_pct ({max_pct:.1f}%): {sym_list_str}"
+                ),
+                where="data.accumulate",
+                fix=(
+                    "Check network connectivity or source data coverage, "
+                    "or run 'algodesk data coverage reset-empty'"
+                ),
+            )
 
 
 @coverage_app.command("reset-empty")
@@ -572,15 +601,26 @@ def coverage_reset_empty(
             typer.echo("No stale EMPTY coverage records found.")
             return
 
-        headers = ["DATASET", "DAY", "FETCHED AT", "REASON"]
+        by_symbol: dict[str, list[tuple[CoverageDayRecord, str]]] = {}
+        for rec, reason in reset_records:
+            parts = rec.dataset_id.split(":")
+            sym = (
+                parts[-2] if len(parts) >= 4 else (parts[1] if len(parts) >= 2 else rec.dataset_id)
+            )
+            by_symbol.setdefault(sym, []).append((rec, reason))
+
+        headers = ["SYMBOL", "DATASET", "DAYS RESET", "REASON"]
         rows = [
-            [rec.dataset_id, rec.day, rec.fetched_at or "none", reason]
-            for rec, reason in reset_records
+            [sym, recs[0][0].dataset_id, str(len(recs)), recs[0][1]]
+            for sym, recs in sorted(by_symbol.items())
         ]
         typer.echo(format_table(headers, rows))
 
         mode_str = "identified for reset (dry run)" if dry_run else "reset to MISSING"
-        typer.echo(f"\nTotal: {len(reset_records)} stale EMPTY record(s) {mode_str}.")
+        typer.echo(
+            f"\nTotal: {len(by_symbol)} symbol(s), "
+            f"{len(reset_records)} stale EMPTY record(s) {mode_str}."
+        )
 
 
 @coverage_app.command("repair")

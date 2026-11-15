@@ -444,7 +444,7 @@ def test_step6_empty_days_are_final_past_retry_cap(tmp_path: Path) -> None:
             expected_rows=0,
             part_path="",
             fetched_at="2024-05-02T16:00:00Z",
-            note="Fetch failed after 3 retries",
+            note="Expected session returned no bars from source",
         )
     )
 
@@ -481,7 +481,7 @@ def test_step6_refresh_forces_refetch_of_empty_days(tmp_path: Path) -> None:
             expected_rows=0,
             part_path="",
             fetched_at="2024-05-02T16:00:00Z",
-            note="Fetch failed after 3 retries",
+            note="Expected session returned no bars from source",
         )
     )
 

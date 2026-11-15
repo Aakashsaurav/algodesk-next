@@ -473,3 +473,27 @@ tighten = "down"
 description = "Maximum allowed change in constituent count between consecutive effective dates"
 owner = "data"
 
+[[param]]
+name = "data.empty_final_max_sessions"
+type = "int"
+default = 5
+min = 1
+max = 100
+unit = "sessions"
+scope = "global"
+tighten = "down"
+description = "Maximum consecutive empty sessions allowed to be treated as final EMPTY"
+owner = "data"
+
+[[param]]
+name = "data.accumulate_max_empty_pct"
+type = "float"
+default = 2.0
+min = 0.0
+max = 100.0
+unit = "%"
+scope = "global"
+tighten = "down"
+description = "Maximum allowed percentage of symbols returning zero rows during accumulation before failing with exit code 1"
+owner = "data"
+

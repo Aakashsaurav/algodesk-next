@@ -24,3 +24,15 @@ tighten = "down"
 description = "Maximum allowed age in days for a screen result when used as a run universe"
 owner = "screens"
 
+[[param]]
+name = "screen.lookback_margin_sessions"
+type = "int"
+default = 20
+min = 0
+max = 250
+unit = "sessions"
+scope = "global"
+tighten = "down"
+description = "Margin sessions added to indicator warm-up to define the screen read window"
+owner = "screens"
+

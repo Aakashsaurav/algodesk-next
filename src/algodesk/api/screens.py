@@ -16,6 +16,7 @@ class SkipReason(StrEnum):
 
     NO_DATA = "no_data"
     INSUFFICIENT_HISTORY = "insufficient_history"
+    GAP_IN_WINDOW = "gap_in_window"
     ADJUSTMENT_REFUSED = "adjustment_refused"
     CALENDAR_GAP = "calendar_gap"
     INDICATOR_ERROR = "indicator_error"

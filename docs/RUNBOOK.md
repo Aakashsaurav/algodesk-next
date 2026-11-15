@@ -538,15 +538,28 @@ Screens default to `adjust = "splits"`: when stored candles match requested basi
    ```
    While screen and CLI runners gracefully catch `BrokenPipeError` and guarantee result bundle persistence under `results/run_<run_id>/`, piping into `head` closes stdout early and truncates runtime summaries. Redirecting ensures full diagnostic history.
 
-2. **Cache-only screen execution**:
-   Screens operate strictly offline on local cached Parquet data; they never touch the network or call broker APIs. If a symbol lacks local data or has fewer completed trading sessions than required by indicator warm-up periods, the runner skips it honestly with `no_data` or `insufficient_history` and emits the remediation command:
+2. **Cache-only screen execution & dynamic warm-up window**:
+   Screens operate strictly offline on local cached Parquet data; they never touch the network or call broker APIs. The read window is computed dynamically from the largest indicator warm-up required by the screen plus `screen.lookback_margin_sessions` (default 20), walking backward across completed calendar trading sessions.
+   If a symbol lacks local data, has fewer completed trading sessions than required by indicator warm-up periods, or has a gap inside the window, the runner skips it honestly with explicit reasons:
+   - `no_data`: symbol has zero stored bars.
+   - `insufficient_history`: symbol has bars but fewer than required warm-up.
+   - `gap_in_window`: missing sessions detected within the read window (names the first missing date).
+   Remediation instructions name the exact command:
    ```bash
    algodesk data accumulate --group <group> --timeframe 1d
    ```
-   Newly listed symbols with short listing histories will legitimately skip as `insufficient_history`.
+   `results/<run_id>/table.csv` records all evaluated symbols with an explicit `passed` column (`YES` or `NO`) and evaluated feature values.
 
-3. **Backfill speed & decade chunking**:
-   Daily (`1d`) candles support single-request spans up to 3,650 days (10 years) under Upstox API limits. A 500-day daily backfill requires exactly 1 HTTP request per symbol rather than multiple small slices. Combined with default parameters `source.upstox.rate_limit_per_minute = 300.0` and `data.fetch_max_workers = 4`, multi-symbol group backfills execute at maximum throughput while safely respecting 1-second, 1-minute, and 30-minute rate limiting windows.
+3. **Coverage EMPTY finality & reset**:
+   `EMPTY` coverage records are final only when the symbol has bars on a later date (pre-listing days) or the empty range spans at most `data.empty_final_max_sessions` sessions (default 5). All-empty ranges and ranges with fetch errors remain non-final (`MISSING`) and are re-evaluated during accumulation.
+   Reset existing stale EMPTY records for symbols with zero stored bars:
+   ```bash
+   algodesk data coverage reset-empty --source upstox --timeframe 1d --dry-run
+   algodesk data coverage reset-empty --source upstox --timeframe 1d
+   ```
+
+4. **Backfill speed, decade chunking & loud empty failure**:
+   Daily (`1d`) candles support single-request spans up to 3,650 days (10 years) under Upstox API limits. Multi-symbol group backfills display a per-symbol table of rows added and itemize symbols with zero rows and non-final coverage. If zero-row symbols exceed `data.accumulate_max_empty_pct` (default 2%), `data accumulate` fails loudly with exit code 1, listing failing symbols.
 
 
 ## If something fails
