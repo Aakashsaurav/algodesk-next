@@ -38,6 +38,7 @@ ALLOWED_NON_PARAM_NAMES = {
     "daily.parquet": "Daily partitioned bars parquet filename",
     "data.quarantine": "Journal event type for market data quarantine",
     "data.accumulate": "Journal event type for data accumulation",
+    "data.coverage.repair": "Journal event type for coverage repair",
     "data.accumulation_lag": "Doctor diagnostic check ID for data accumulation lag",
     "data.closures.clear": "Journal event type for market closure clearing",
     "day.parquet": "Compacted day parquet filename",

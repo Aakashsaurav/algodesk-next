@@ -83,6 +83,10 @@ def _format_skip_detail(sym: str, reason: SkipReason, detail: str, group: str | 
         if f"{clean_sym}: {r_val}:" in detail:
             return detail
         return f"{clean_sym}: {r_val}: {detail}"
+    if "coverage and bars disagree" in detail or "coverage repair" in detail:
+        if f"{clean_sym}: {r_val}:" in detail:
+            return detail
+        return f"{clean_sym}: {r_val}: {detail}"
     if reason == SkipReason.ADJUSTMENT_REFUSED:
         fix = f"Fix with: algodesk data actions override add --symbol {clean_sym} ..."
     else:

@@ -260,6 +260,39 @@ class DataManifest:
         if self._conn.in_transaction:
             self._conn.execute("ROLLBACK")
 
+    def commit_part_and_coverage(
+        self,
+        part: PartRecord | None,
+        coverage_records: Sequence[CoverageDayRecord],
+    ) -> None:
+        """Insert or replace a part and associated coverage records under a single transaction."""
+        with self._lock:
+            try:
+                self._begin_immediate()
+                if part is not None:
+                    self._conn.execute(
+                        """
+                        INSERT OR REPLACE INTO parts
+                        (path, dataset_id, rows, bytes, first_ts, last_ts,
+                         sha256, source, source_version, fetched_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        astuple(part),
+                    )
+                if coverage_records:
+                    self._conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO coverage_days
+                        (dataset_id, day, status, rows, expected_rows, part_path, fetched_at, note)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [astuple(r) for r in coverage_records],
+                    )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+
     def record_file(self, record: FileRecord) -> None:
         """Insert or replace file metadata row under explicit BEGIN IMMEDIATE."""
         try:
@@ -485,21 +518,22 @@ class DataManifest:
 
     def record_part(self, record: PartRecord) -> None:
         """Insert or replace part file metadata row under transaction."""
-        try:
-            self._begin_immediate()
-            self._conn.execute(
-                """
-                INSERT OR REPLACE INTO parts
-                (path, dataset_id, rows, bytes, first_ts, last_ts,
-                 sha256, source, source_version, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                astuple(record),
-            )
-            self._commit()
-        except Exception:
-            self._rollback()
-            raise
+        with self._lock:
+            try:
+                self._begin_immediate()
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO parts
+                    (path, dataset_id, rows, bytes, first_ts, last_ts,
+                     sha256, source, source_version, fetched_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    astuple(record),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
 
     def get_parts(self, dataset_id: str | None = None) -> list[PartRecord]:
         """Query parts with optional dataset_id filter."""
@@ -509,8 +543,29 @@ class DataManifest:
             query += " AND dataset_id = ?"
             params.append(dataset_id)
         query += " ORDER BY path"
-        cur = self._conn.execute(query, params)
-        return [PartRecord(**dict(r)) for r in cur.fetchall()]
+        with self._lock:
+            cur = self._conn.execute(query, params)
+            rows = cur.fetchall()
+        return [PartRecord(**dict(r)) for r in rows]
+
+    def get_parts_bulk(self, dataset_ids: Sequence[str]) -> dict[str, list[PartRecord]]:
+        """Query parts for multiple datasets in batched SQL IN queries."""
+        if not dataset_ids:
+            return {}
+        res: dict[str, list[PartRecord]] = {ds_id: [] for ds_id in dataset_ids}
+        chunk_size = 500
+        for i in range(0, len(dataset_ids), chunk_size):
+            chunk = list(dataset_ids[i : i + chunk_size])
+            placeholders = ",".join("?" for _ in chunk)
+            query = f"SELECT * FROM parts WHERE dataset_id IN ({placeholders}) ORDER BY path"
+            with self._lock:
+                cur = self._conn.execute(query, list(chunk))
+                rows = cur.fetchall()
+            for r in rows:
+                rec = PartRecord(**dict(r))
+                if rec.dataset_id in res:
+                    res[rec.dataset_id].append(rec)
+        return res
 
     def get_part_by_path(self, path: str) -> PartRecord | None:
         """Get single part record by file path."""
@@ -556,21 +611,21 @@ class DataManifest:
         """Insert or replace coverage records in a single transaction."""
         if not records:
             return
-        try:
-            self._begin_immediate()
-            for r in records:
-                self._conn.execute(
+        with self._lock:
+            try:
+                self._begin_immediate()
+                self._conn.executemany(
                     """
                     INSERT OR REPLACE INTO coverage_days
                     (dataset_id, day, status, rows, expected_rows, part_path, fetched_at, note)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    astuple(r),
+                    [astuple(r) for r in records],
                 )
-            self._commit()
-        except Exception:
-            self._rollback()
-            raise
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
 
     def get_coverage_days(
         self,
@@ -588,8 +643,10 @@ class DataManifest:
             query += " AND day <= ?"
             params.append(end_day)
         query += " ORDER BY day"
-        cur = self._conn.execute(query, params)
-        return [CoverageDayRecord(**dict(r)) for r in cur.fetchall()]
+        with self._lock:
+            cur = self._conn.execute(query, params)
+            rows = cur.fetchall()
+        return [CoverageDayRecord(**dict(r)) for r in rows]
 
     def get_coverage_days_bulk(
         self,
@@ -614,8 +671,10 @@ class DataManifest:
                 query += " AND day <= ?"
                 params.append(end_day)
             query += " ORDER BY dataset_id, day"
-            cur = self._conn.execute(query, params)
-            for r in cur.fetchall():
+            with self._lock:
+                cur = self._conn.execute(query, params)
+                rows = cur.fetchall()
+            for r in rows:
                 rec = CoverageDayRecord(**dict(r))
                 if rec.dataset_id in res:
                     res[rec.dataset_id].append(rec)

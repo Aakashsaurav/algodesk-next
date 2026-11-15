@@ -258,6 +258,7 @@ class GapPlanner:
                         settle_minutes=settle_m,
                         manifest=manifest,
                         params=cov_params,
+                        preloaded_coverage=existing_cov,
                     ):
                         empty.append(cur)
                     else:

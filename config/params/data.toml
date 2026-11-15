@@ -143,7 +143,7 @@ owner = "data"
 [[param]]
 name = "data.fetch_max_workers"
 type = "int"
-default = 4
+default = 1
 min = 1
 max = 32
 unit = "workers"

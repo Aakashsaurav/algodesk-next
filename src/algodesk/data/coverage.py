@@ -359,6 +359,7 @@ def evaluate_empty_record(
     manifest: DataManifest | None = None,
     now_dt: datetime | None = None,
     params: Any = None,
+    preloaded_coverage: Mapping[str, CoverageDayRecord] | None = None,
 ) -> tuple[bool, str]:
     """Evaluate whether an EMPTY coverage record is final or stale/invalid.
 
@@ -486,6 +487,59 @@ def evaluate_empty_record(
         except Exception:
             allowed_empty_sessions = 5
 
+    if preloaded_coverage is not None:
+        complete_days = [
+            r.day
+            for r in preloaded_coverage.values()
+            if (r.rows > 0 or r.status == CoverageStatus.COMPLETE)
+        ]
+        has_earlier = any(d <= rec.day for d in complete_days)
+        if not has_earlier:
+            has_later = any(d > rec.day for d in complete_days)
+            if has_later:
+                return True, "Final EMPTY: pre-listing days (symbol has bars on later date)"
+
+        earlier_days = [d for d in complete_days if d < rec.day]
+        later_days = [d for d in complete_days if d > rec.day]
+        last_bar_day = max(earlier_days) if earlier_days else None
+        next_bar_day = min(later_days) if later_days else None
+
+        if last_bar_day and next_bar_day:
+            empty_count = sum(
+                1
+                for r in preloaded_coverage.values()
+                if r.status in (CoverageStatus.EMPTY, "PENDING")
+                and last_bar_day < r.day < next_bar_day
+            )
+        elif last_bar_day:
+            empty_count = sum(
+                1
+                for r in preloaded_coverage.values()
+                if r.status in (CoverageStatus.EMPTY, "PENDING") and r.day > last_bar_day
+            )
+        elif next_bar_day:
+            empty_count = sum(
+                1
+                for r in preloaded_coverage.values()
+                if r.status in (CoverageStatus.EMPTY, "PENDING") and r.day < next_bar_day
+            )
+        else:
+            empty_count = sum(
+                1
+                for r in preloaded_coverage.values()
+                if r.status in (CoverageStatus.EMPTY, "PENDING")
+            )
+
+        if empty_count <= allowed_empty_sessions:
+            return (
+                True,
+                f"Final EMPTY: range length {empty_count} <= allowed {allowed_empty_sessions}",
+            )
+        return (
+            False,
+            f"Non-final EMPTY: range length {empty_count} > allowed {allowed_empty_sessions}",
+        )
+
     sym = parts[-2] if len(parts) >= 4 else (parts[1] if len(parts) >= 2 else "")
     if manifest is not None and hasattr(manifest, "_conn"):
         try:
@@ -600,6 +654,7 @@ def is_empty_record_final(
     manifest: DataManifest | None = None,
     now_dt: datetime | None = None,
     params: Any = None,
+    preloaded_coverage: Mapping[str, CoverageDayRecord] | None = None,
 ) -> bool:
     """Return True if the EMPTY record is validly final, False if stale/invalid."""
     is_final, _ = evaluate_empty_record(
@@ -609,6 +664,7 @@ def is_empty_record_final(
         manifest=manifest,
         now_dt=now_dt,
         params=params,
+        preloaded_coverage=preloaded_coverage,
     )
     return is_final
 
@@ -973,13 +1029,10 @@ def repair_coverage(
 
         existing_cov = {r.day: r for r in manifest.get_coverage_days(ds.dataset_id)}
         ds_parts = manifest.get_parts(ds.dataset_id)
-        if not ds_parts:
-            continue
-
         day_counts: dict[str, int] = {}
         day_paths: dict[str, str] = {}
 
-        for p in ds_parts:
+        for p in ds_parts or ():
             p_full = data_dir / p.path if not Path(p.path).is_absolute() else Path(p.path)
             if not p_full.exists():
                 continue
@@ -1080,8 +1133,42 @@ def repair_coverage(
                     )
                 )
 
+        # Also reset COMPLETE days that have NO stored bar in parquet to MISSING
+        for cov_day, old_rec in sorted(existing_cov.items()):
+            if str(old_rec.status) == CoverageStatus.COMPLETE or str(old_rec.status) == "COMPLETE":
+                if cov_day not in day_counts or day_counts[cov_day] <= 0:
+                    rep_item = CoverageRepairItem(
+                        dataset_id=ds.dataset_id,
+                        day=cov_day,
+                        old_status=str(old_rec.status),
+                        new_status=CoverageStatus.MISSING,
+                        old_rows=old_rec.rows,
+                        new_rows=0,
+                        part_path="",
+                        note="Reset to MISSING: no stored bars in parquet",
+                    )
+                    repaired_items.append(rep_item)
+                    to_update_records.append(
+                        CoverageDayRecord(
+                            dataset_id=ds.dataset_id,
+                            day=cov_day,
+                            status=CoverageStatus.MISSING,
+                            rows=0,
+                            expected_rows=old_rec.expected_rows,
+                            part_path="",
+                            fetched_at=now_ist.astimezone(UTC).isoformat(),
+                            note="Reset to MISSING: no stored bars in parquet",
+                        )
+                    )
+
     if not dry_run and to_update_records:
         manifest.record_coverage_days(to_update_records)
+        by_symbol: dict[str, int] = {}
+        for item in repaired_items:
+            s_parts = item.dataset_id.split(":")
+            sym_name = s_parts[-2] if len(s_parts) >= 4 else item.dataset_id
+            by_symbol[sym_name] = by_symbol.get(sym_name, 0) + 1
+
         if journal is not None:
             journal.append(
                 kind="data.coverage.repair",
@@ -1089,6 +1176,8 @@ def repair_coverage(
                     "source": source or "all",
                     "timeframe": timeframe or "all",
                     "repair_count": len(repaired_items),
+                    "symbol_counts": by_symbol,
+                    "symbols": by_symbol,
                     "items": [asdict(item) for item in repaired_items],
                 },
                 durable=True,

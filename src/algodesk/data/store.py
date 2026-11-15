@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
@@ -127,6 +128,7 @@ class BarStore:
         "_data_dir",
         "_exchange_tz",
         "_journal",
+        "_lock",
         "_manifest",
         "_manifests",
         "_params",
@@ -144,6 +146,7 @@ class BarStore:
         settle_minutes: int | None = None,
         manifests: Mapping[str, PluginManifest] | None = None,
     ) -> None:
+        self._lock = threading.Lock()
         self._data_dir = Path(data_dir)
         self._manifest = manifest
         self._params = params
@@ -195,225 +198,242 @@ class BarStore:
         if not bars:
             return []
 
-        if key.timeframe not in _BASE_TIMEFRAMES:
-            tf_list = ", ".join(_BASE_TIMEFRAMES)
-            raise DataError(
-                what=(
-                    f"Unsupported bar timeframe '{key.timeframe}'. "
-                    f"Stored bar timeframes are limited to base timeframes ({tf_list})"
-                ),
-                where="BarStore.commit",
-                fix=f"Store base timeframe ({tf_list}) or use resample() for derived intervals",
+        with self._lock:
+            if key.timeframe not in _BASE_TIMEFRAMES:
+                tf_list = ", ".join(_BASE_TIMEFRAMES)
+                raise DataError(
+                    what=(
+                        f"Unsupported bar timeframe '{key.timeframe}'. "
+                        f"Stored bar timeframes are limited to base timeframes ({tf_list})"
+                    ),
+                    where="BarStore.commit",
+                    fix=f"Store base timeframe ({tf_list}) or use resample() for derived intervals",
+                )
+
+            src_manifest = self._manifests.get(key.source) if self._manifests else None
+            validate_source_timeframe(
+                key.source, key.timeframe, manifest=src_manifest, where="BarStore.commit"
             )
 
-        src_manifest = self._manifests.get(key.source) if self._manifests else None
-        validate_source_timeframe(
-            key.source, key.timeframe, manifest=src_manifest, where="BarStore.commit"
-        )
+            val_obj = validator
+            if val_obj is None:
+                from algodesk.data.validator import BarValidator
 
-        val_obj = validator
-        if val_obj is None:
-            from algodesk.data.validator import BarValidator
+                val_obj = BarValidator(
+                    data_dir=self._data_dir,
+                    manifest=self._manifest,
+                    calendar=self._calendar,
+                    params=self._params,
+                )
+            if hasattr(val_obj, "validate_chunk"):
+                v_rep = val_obj.validate_chunk(bars, key)
+                if hasattr(v_rep, "clean_bars") and v_rep.clean_bars is not None:
+                    bars = v_rep.clean_bars
+            if not bars:
+                return []
 
-            val_obj = BarValidator(
-                data_dir=self._data_dir,
-                manifest=self._manifest,
-                calendar=self._calendar,
-                params=self._params,
+            ds_id = self.dataset_id(key)
+            now_iso = datetime.now(UTC).isoformat()
+
+            # Ensure dataset metadata exists in manifest with authoritative adjustment_basis
+            if key.source == "upstox":
+                basis = "splits"
+            elif key.source == "yfinance":
+                basis = "total" if key.adjustment == "adjusted" else "splits"
+            elif key.source == "nse_bhavcopy":
+                basis = "none"
+            else:
+                basis = "splits" if key.adjustment == "raw" else "total"
+
+            self._manifest.record_dataset(
+                DatasetRecord(
+                    dataset_id=ds_id,
+                    instrument=str(key.instrument),
+                    kind=key.kind,
+                    timeframe=key.timeframe,
+                    adjustment=key.adjustment,
+                    source=key.source,
+                    schema_version=1,
+                    created_at=now_iso,
+                    actions_epoch=None,
+                    adjustment_basis=basis,
+                )
             )
-        if hasattr(val_obj, "validate_chunk"):
-            v_rep = val_obj.validate_chunk(bars, key)
-            if hasattr(v_rep, "clean_bars") and v_rep.clean_bars is not None:
-                bars = v_rep.clean_bars
-        if not bars:
-            return []
 
-        ds_id = self.dataset_id(key)
-        now_iso = datetime.now(UTC).isoformat()
+            # Inspect incoming bars by trading date in exchange timezone
+            day_to_bars: dict[date, list[Bar]] = {}
+            for b in bars:
+                d = b.start_ts.astimezone(self._exchange_tz).date()
+                day_to_bars.setdefault(d, []).append(b)
 
-        # Ensure dataset metadata exists in manifest with authoritative adjustment_basis
-        if key.source == "upstox":
-            basis = "splits"
-        elif key.source == "yfinance":
-            basis = "total" if key.adjustment == "adjusted" else "splits"
-        elif key.source == "nse_bhavcopy":
-            basis = "none"
-        else:
-            basis = "splits" if key.adjustment == "raw" else "total"
+            # Check existing coverage for these days
+            existing_cov = {
+                r.day: r
+                for r in self._manifest.get_coverage_days(
+                    ds_id,
+                    start_day=min(day_to_bars.keys()).isoformat(),
+                    end_day=max(day_to_bars.keys()).isoformat(),
+                )
+            }
 
-        self._manifest.record_dataset(
-            DatasetRecord(
-                dataset_id=ds_id,
-                instrument=str(key.instrument),
-                kind=key.kind,
-                timeframe=key.timeframe,
-                adjustment=key.adjustment,
-                source=key.source,
-                schema_version=1,
-                created_at=now_iso,
-                actions_epoch=None,
-                adjustment_basis=basis,
-            )
-        )
+            # Filter out bars for COMPLETE days if refresh=False and file exists
+            days_to_commit: set[date] = set()
+            for day in day_to_bars:
+                day_str = day.isoformat()
+                cov_rec = existing_cov.get(day_str)
+                if (
+                    cov_rec is not None
+                    and cov_rec.status == CoverageStatus.COMPLETE
+                    and not refresh
+                ):
+                    target_f = bar_file_path(self._data_dir, key, day_to_bars[day][0].start_ts)
+                    if target_f.exists():
+                        continue
 
-        # Inspect incoming bars by trading date in exchange timezone
-        day_to_bars: dict[date, list[Bar]] = {}
-        for b in bars:
-            d = b.start_ts.astimezone(self._exchange_tz).date()
-            day_to_bars.setdefault(d, []).append(b)
+                days_to_commit.add(day)
+                if cov_rec is not None and cov_rec.status == CoverageStatus.COMPLETE and refresh:
+                    if self._journal is not None:
+                        self._journal.append(
+                            kind="data.refresh",
+                            payload={
+                                "dataset_id": ds_id,
+                                "instrument": str(key.instrument),
+                                "day": day_str,
+                                "source": key.source,
+                            },
+                        )
 
-        # Check existing coverage for these days
-        existing_cov = {
-            r.day: r
-            for r in self._manifest.get_coverage_days(
-                ds_id,
-                start_day=min(day_to_bars.keys()).isoformat(),
-                end_day=max(day_to_bars.keys()).isoformat(),
-            )
-        }
+            # If no days need writing (e.g. all days are already COMPLETE and refresh=False),
+            # return the existing part records for the files corresponding to the input bars.
+            if not days_to_commit:
+                existing_parts: list[PartRecord] = []
+                seen_paths: set[str] = set()
+                for b in bars:
+                    target_file = bar_file_path(self._data_dir, key, b.start_ts)
+                    try:
+                        rel_path = str(target_file.relative_to(self._data_dir))
+                    except ValueError:
+                        rel_path = str(target_file)
+                    if rel_path not in seen_paths:
+                        seen_paths.add(rel_path)
+                        part = self._manifest.get_part_by_path(rel_path)
+                        if part is not None:
+                            existing_parts.append(part)
+                return existing_parts
 
-        # Filter out bars for COMPLETE days if refresh=False
-        days_to_commit: set[date] = set()
-        for day in day_to_bars:
-            day_str = day.isoformat()
-            cov_rec = existing_cov.get(day_str)
-            if cov_rec is not None and cov_rec.status == CoverageStatus.COMPLETE and not refresh:
-                continue
+            # Group bars to commit by destination file path
+            bars_by_file: dict[Path, list[Bar]] = {}
+            for day in days_to_commit:
+                for b in day_to_bars[day]:
+                    p = bar_file_path(self._data_dir, key, b.start_ts)
+                    bars_by_file.setdefault(p, []).append(b)
 
-            days_to_commit.add(day)
-            if cov_rec is not None and cov_rec.status == CoverageStatus.COMPLETE and refresh:
-                if self._journal is not None:
-                    self._journal.append(
-                        kind="data.refresh",
-                        payload={
-                            "dataset_id": ds_id,
-                            "instrument": str(key.instrument),
-                            "day": day_str,
-                            "source": key.source,
-                        },
+            part_records: list[PartRecord] = []
+            coverage_updates: list[CoverageDayRecord] = []
+            file_part_map: dict[Path, PartRecord] = {}
+
+            for target_file, new_bars in bars_by_file.items():
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+
+                # Read existing bars from file if it exists
+                existing_bars: list[Bar] = []
+                if target_file.exists():
+                    existing_bars = read_bars_parquet(
+                        target_file,
+                        key.instrument,
+                        key.timeframe,
                     )
 
-        # If no days need writing (e.g. all days are already COMPLETE and refresh=False),
-        # return the existing part records for the files corresponding to the input bars.
-        if not days_to_commit:
-            existing_parts: list[PartRecord] = []
-            seen_paths: set[str] = set()
-            for b in bars:
-                target_file = bar_file_path(self._data_dir, key, b.start_ts)
+                # Merge existing bars and new bars
+                merged_dict: dict[datetime, Bar] = {b.start_ts: b for b in existing_bars}
+                for b in new_bars:
+                    merged_dict[b.start_ts] = b
+
+                merged_bars = sorted(merged_dict.values(), key=lambda b: b.start_ts)
+
+                # Write to temporary file in same folder, fsync, and atomic rename
+                tmp_file = target_file.with_name(f".{target_file.name}.tmp_{uuid4().hex}")
+                write_bars_parquet(tmp_file, merged_bars, exchange_tz=self._exchange_tz)
+
+                # Fsync to ensure durability before atomic rename
+                with open(tmp_file, "rb") as f_tmp:
+                    f_tmp.flush()
+                    os.fsync(f_tmp.fileno())
+
+                # Atomic rename replaces target_file
+                tmp_file.replace(target_file)
+
+                # Compute metadata
+                sha256 = _compute_sha256(target_file)
+                file_bytes = target_file.stat().st_size
+                first_ts = merged_bars[0].start_ts.isoformat()
+                last_ts = merged_bars[-1].start_ts.isoformat()
                 try:
                     rel_path = str(target_file.relative_to(self._data_dir))
                 except ValueError:
                     rel_path = str(target_file)
-                if rel_path not in seen_paths:
-                    seen_paths.add(rel_path)
-                    part = self._manifest.get_part_by_path(rel_path)
-                    if part is not None:
-                        existing_parts.append(part)
-            return existing_parts
 
-        # Group bars to commit by destination file path
-        bars_by_file: dict[Path, list[Bar]] = {}
-        for day in days_to_commit:
-            for b in day_to_bars[day]:
-                p = bar_file_path(self._data_dir, key, b.start_ts)
-                bars_by_file.setdefault(p, []).append(b)
-
-        part_records: list[PartRecord] = []
-        coverage_updates: list[CoverageDayRecord] = []
-
-        for target_file, new_bars in bars_by_file.items():
-            target_file.parent.mkdir(parents=True, exist_ok=True)
-
-            # Read existing bars from file if it exists
-            existing_bars: list[Bar] = []
-            if target_file.exists():
-                existing_bars = read_bars_parquet(
-                    target_file,
-                    key.instrument,
-                    key.timeframe,
-                )
-
-            # Merge existing bars and new bars
-            merged_dict: dict[datetime, Bar] = {b.start_ts: b for b in existing_bars}
-            for b in new_bars:
-                merged_dict[b.start_ts] = b
-
-            merged_bars = sorted(merged_dict.values(), key=lambda b: b.start_ts)
-
-            # Write to temporary file in same folder, fsync, and atomic rename
-            tmp_file = target_file.with_name(f".{target_file.name}.tmp_{uuid4().hex}")
-            write_bars_parquet(tmp_file, merged_bars, exchange_tz=self._exchange_tz)
-
-            # Fsync to ensure durability before atomic rename
-            with open(tmp_file, "rb") as f_tmp:
-                f_tmp.flush()
-                os.fsync(f_tmp.fileno())
-
-            # Atomic rename replaces target_file
-            tmp_file.replace(target_file)
-
-            # Compute metadata
-            sha256 = _compute_sha256(target_file)
-            file_bytes = target_file.stat().st_size
-            first_ts = merged_bars[0].start_ts.isoformat()
-            last_ts = merged_bars[-1].start_ts.isoformat()
-            try:
-                rel_path = str(target_file.relative_to(self._data_dir))
-            except ValueError:
-                rel_path = str(target_file)
-
-            part_rec = PartRecord(
-                rel_path,
-                ds_id,
-                len(merged_bars),
-                file_bytes,
-                first_ts,
-                last_ts,
-                sha256,
-                key.source,
-                source_version,
-                now_iso,
-            )
-            self._manifest.record_part(part_rec)
-            part_records.append(part_rec)
-
-            if self._journal is not None:
-                self._journal.append(
-                    kind="data.commit",
-                    payload={
-                        "dataset_id": ds_id,
-                        "path": rel_path,
-                        "rows": len(merged_bars),
-                        "sha256": sha256,
-                        "refresh": refresh,
-                    },
-                )
-
-        # Update coverage_days for all affected days
-        for day in days_to_commit:
-            d_bars = day_to_bars[day]
-            st = self._coverage_index.evaluate_day_status(
-                dataset_id=ds_id,
-                day=day,
-                has_bars=len(d_bars) > 0,
-            )
-            part_path = part_records[0].path if part_records else ""
-            coverage_updates.append(
-                CoverageDayRecord(
+                part_rec = PartRecord(
+                    rel_path,
                     ds_id,
-                    day.isoformat(),
-                    st,
-                    len(d_bars),
-                    len(d_bars),
-                    part_path,
+                    len(merged_bars),
+                    file_bytes,
+                    first_ts,
+                    last_ts,
+                    sha256,
+                    key.source,
+                    source_version,
                     now_iso,
                 )
-            )
+                file_part_map[target_file] = part_rec
+                part_records.append(part_rec)
 
-        if coverage_updates:
-            self._manifest.record_coverage_days(coverage_updates)
+                if self._journal is not None:
+                    self._journal.append(
+                        kind="data.commit",
+                        payload={
+                            "dataset_id": ds_id,
+                            "path": rel_path,
+                            "rows": len(merged_bars),
+                            "sha256": sha256,
+                            "refresh": refresh,
+                        },
+                    )
 
-        return part_records
+            # Update coverage_days for all affected days
+            for day in days_to_commit:
+                d_bars = day_to_bars[day]
+                target_f = bar_file_path(self._data_dir, key, d_bars[0].start_ts)
+                st = self._coverage_index.evaluate_day_status(
+                    dataset_id=ds_id,
+                    day=day,
+                    has_bars=len(d_bars) > 0,
+                )
+                p_rec = file_part_map.get(target_f)
+                part_path = p_rec.path if p_rec else (part_records[0].path if part_records else "")
+                coverage_updates.append(
+                    CoverageDayRecord(
+                        ds_id,
+                        day.isoformat(),
+                        st,
+                        len(d_bars),
+                        len(d_bars),
+                        part_path,
+                        now_iso,
+                    )
+                )
+
+            # Atomically commit part records and coverage updates under single transaction
+            if part_records or coverage_updates:
+                if len(part_records) <= 1:
+                    p_rec = part_records[0] if part_records else None
+                    self._manifest.commit_part_and_coverage(p_rec, coverage_updates)
+                else:
+                    for p_rec in part_records:
+                        c_for_part = [c for c in coverage_updates if c.part_path == p_rec.path]
+                        self._manifest.commit_part_and_coverage(p_rec, c_for_part)
+
+            return part_records
 
     def read(
         self,

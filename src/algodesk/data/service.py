@@ -377,6 +377,18 @@ class DataService:
             if raw_slice.bars:
                 base_key = raw_key
                 base_slice = raw_slice
+        elif not base_slice.bars and download == "raw":
+            adj_key = SeriesKey(
+                instrument=base_key.instrument,
+                kind=base_key.kind,
+                timeframe=base_key.timeframe,
+                adjustment="adjusted",
+                source=base_key.source,
+            )
+            adj_slice = self._store.read(adj_key, start, end, columns=columns)
+            if adj_slice.bars:
+                base_key = adj_key
+                base_slice = adj_slice
 
         for cs in base_slice.checksums:
             self._recorded_checksums.add(cs)

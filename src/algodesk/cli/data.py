@@ -17,6 +17,7 @@ import typer
 from algodesk.api import ActionRecord, Bar, InstrumentId, SeriesKey
 from algodesk.api.errors import ConfigError, DataError
 from algodesk.api.kinds import Mode, PluginKind
+from algodesk.api.market import CoverageStatus
 from algodesk.api.protocols import DataSource
 from algodesk.cli.closures import closures_app
 from algodesk.cli.common import _open_rt, format_table, handle_cli_errors
@@ -1623,6 +1624,8 @@ def data_verify(
         rule_violations: list[str] = []
         orphans: list[str] = []
         adopted: list[str] = []
+        coverage_without_bars: list[str] = []
+        bars_without_coverage: list[str] = []
         quarantined_bars_count = 0
         pruned_datasets_count = 0
 
@@ -1678,6 +1681,8 @@ def data_verify(
             datasets = {d.dataset_id: d for d in manifest.list_datasets()}
             now_iso = datetime.now(UTC).isoformat()
             quarantined_bars_count = 0
+            bar_days_by_dataset: dict[str, set[str]] = {}
+            exch_tz = ZoneInfo("Asia/Kolkata")
             plugins_manifests = (
                 {
                     info.name: info.manifest
@@ -1703,6 +1708,15 @@ def data_verify(
                     if ds is not None:
                         try:
                             bars = read_bars_parquet(p, InstrumentId(ds.instrument), ds.timeframe)
+                            for b in bars:
+                                d_str = (
+                                    b.start_ts.astimezone(exch_tz).strftime("%Y-%m-%d")
+                                    if b.start_ts.tzinfo
+                                    else b.start_ts.replace(tzinfo=UTC)
+                                    .astimezone(exch_tz)
+                                    .strftime("%Y-%m-%d")
+                                )
+                                bar_days_by_dataset.setdefault(part.dataset_id, set()).add(d_str)
                             key = SeriesKey(
                                 instrument=InstrumentId(ds.instrument),
                                 kind="bars",
@@ -1792,6 +1806,10 @@ def data_verify(
                                     write_bars_parquet(p, clean_bars)
                                     new_sha = _compute_sha256(p)
                                     new_size = p.stat().st_size
+                                    bar_days_by_dataset[part.dataset_id] = {
+                                        b.start_ts.astimezone(exch_tz).strftime("%Y-%m-%d")
+                                        for b in clean_bars
+                                    }
                                     manifest.record_part(
                                         PartRecord(
                                             part.path,
@@ -1809,6 +1827,7 @@ def data_verify(
                                 else:
                                     p.unlink(missing_ok=True)
                                     known_bar_paths.discard(part.path)
+                                    bar_days_by_dataset[part.dataset_id] = set()
                                     try:
                                         known_bar_paths.discard(
                                             str(Path(part.path).relative_to(data_dir))
@@ -1849,6 +1868,38 @@ def data_verify(
                         except Exception as exc:
                             rule_violations.append(f"{part.path}: read error ({exc})")
             _find_dir_orphans(data_dir / "bars", data_dir, known_bar_paths, orphans)
+
+            # Check coverage vs stored bars agreement
+            all_bar_datasets = manifest.list_datasets(kind="bars")
+            ds_ids = [d.dataset_id for d in all_bar_datasets]
+            all_cov_by_ds: dict[str, list[CoverageDayRecord]] = {}
+            if hasattr(manifest, "get_coverage_days_bulk"):
+                all_cov_by_ds = manifest.get_coverage_days_bulk(ds_ids)
+            else:
+                for did in ds_ids:
+                    all_cov_by_ds[did] = manifest.get_coverage_days(did)
+
+            for ds in all_bar_datasets:
+                cov_recs = all_cov_by_ds.get(ds.dataset_id, [])
+                if not cov_recs:
+                    continue
+                cov_status_map = {r.day: str(r.status) for r in cov_recs}
+                stored_days = bar_days_by_dataset.get(ds.dataset_id, set())
+
+                for c_day, c_st in sorted(cov_status_map.items()):
+                    if c_st == CoverageStatus.COMPLETE or c_st == "COMPLETE":
+                        if c_day not in stored_days:
+                            coverage_without_bars.append(f"{ds.dataset_id}:{c_day}")
+
+                for s_day in sorted(stored_days):
+                    cov_st = cov_status_map.get(s_day)
+                    if cov_st is None or cov_st in (
+                        CoverageStatus.MISSING,
+                        CoverageStatus.EMPTY,
+                        "MISSING",
+                        "EMPTY",
+                    ):
+                        bars_without_coverage.append(f"{ds.dataset_id}:{s_day}")
 
         if check_ticks:
             _find_dir_orphans(data_dir / "ticks", data_dir, known_tick_paths, orphans)
@@ -1922,7 +1973,14 @@ def data_verify(
                     remaining_orphans.append(o_rel)
             orphans = remaining_orphans
 
-        is_ok = not missing_files and not checksum_errors and not rule_violations and not orphans
+        is_ok = (
+            not missing_files
+            and not checksum_errors
+            and not rule_violations
+            and not orphans
+            and not coverage_without_bars
+            and not bars_without_coverage
+        )
 
         if json_out:
             res_dict = {
@@ -1934,6 +1992,8 @@ def data_verify(
                 "orphans": orphans,
                 "adopted": adopted,
                 "quarantined_bars": quarantined_bars_count,
+                "coverage_without_bars": coverage_without_bars,
+                "bars_without_coverage": bars_without_coverage,
             }
             typer.echo(json.dumps(res_dict, indent=2))
             if not is_ok:
@@ -1947,6 +2007,8 @@ def data_verify(
                 ("Checksum mismatches", checksum_errors),
                 ("Rule violations", rule_violations),
                 ("Orphans", orphans),
+                ("Coverage without bars", coverage_without_bars),
+                ("Bars without coverage", bars_without_coverage),
             ]:
                 if items:
                     sfx = " (use --adopt to register)" if lbl == "Orphans" else ""

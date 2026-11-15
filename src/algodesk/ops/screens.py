@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 from algodesk.api.errors import NotSupported
 from algodesk.api.kinds import Mode, PluginKind
@@ -44,11 +45,10 @@ class DataServiceScreenAdapter(ScreenDataReader):
         )
 
     # Map logical adjust basis to SeriesKey.adjustment values (only "raw"/"adjusted" allowed).
-    # "splits" data is stored as "adjusted" (source-adjusted) in the BarStore.
-    # "none" data is stored as "raw" (unadjusted) in the BarStore.
+    # For Indian markets (Upstox, Bhavcopy), candles in "splits" basis are stored in "raw".
     _ADJUST_TO_DOWNLOAD: dict[str, str] = {
         "total": "adjusted",
-        "splits": "adjusted",
+        "splits": "raw",
         "none": "raw",
         "raw": "raw",
         "adjusted": "adjusted",
@@ -119,7 +119,41 @@ class DataServiceScreenAdapter(ScreenDataReader):
             return ScreenRefusal(reason=SkipReason.NO_DATA, detail=detail)
 
         sym_str = str(instrument).split(":")[-1]
+        store = getattr(self._ds, "_store", None)
+        manifest = getattr(store, "manifest", None) if store else None
+        target_ds_id = (
+            store.dataset_id(key)
+            if store
+            else f"bars:{key.source}:{key.timeframe}:{key.instrument}:{key.adjustment}"
+        )
+        raw_id = f"bars:{key.source}:{key.timeframe}:{key.instrument}:raw"
+
         if not slice_res.bars:
+            has_cov = False
+            if manifest is not None:
+                recs = manifest.get_coverage_days(
+                    target_ds_id,
+                    start_day=start.date().isoformat(),
+                    end_day=end.date().isoformat(),
+                )
+                if not recs and key.adjustment != "raw":
+                    recs = manifest.get_coverage_days(
+                        raw_id,
+                        start_day=start.date().isoformat(),
+                        end_day=end.date().isoformat(),
+                    )
+                if any(str(r.status) == "COMPLETE" for r in recs):
+                    has_cov = True
+
+            if has_cov:
+                return ScreenRefusal(
+                    reason=SkipReason.NO_DATA,
+                    detail=(
+                        f"No cached bars found for {sym_str} between "
+                        f"{start.date()} and {end.date()}. "
+                        "coverage and bars disagree: run algodesk data coverage repair"
+                    ),
+                )
             return ScreenRefusal(
                 reason=SkipReason.NO_DATA,
                 detail=(
@@ -129,14 +163,69 @@ class DataServiceScreenAdapter(ScreenDataReader):
             )
 
         # Check for gaps within the needed window
+        exch_tz = getattr(self._ds, "_exchange_tz", ZoneInfo("Asia/Kolkata"))
+        bar_days = {
+            (
+                b.start_ts.astimezone(exch_tz).date()
+                if b.start_ts.tzinfo
+                else b.start_ts.replace(tzinfo=UTC).astimezone(exch_tz).date()
+            )
+            for b in slice_res.bars
+        }
         earliest_bar_date = slice_res.bars[0].start_ts.date()
         end_date = end.date()
         start_date = start.date()
+        as_of_date = end.astimezone(exch_tz).date()
         window_gaps = [
             g for g in slice_res.gaps if max(start_date, earliest_bar_date) <= g.day <= end_date
         ]
+
+        store = getattr(self._ds, "_store", None)
+        manifest = getattr(store, "manifest", None) if store else None
+
+        # If coverage says covered for a day (e.g. as_of or window gap) but no bar exists:
+        if manifest is not None:
+            candidates = list(dict.fromkeys([as_of_date] + [g.day for g in window_gaps]))
+            for check_d in candidates:
+                if check_d < earliest_bar_date or check_d > end_date:
+                    continue
+                if check_d not in bar_days:
+                    day_str = check_d.isoformat()
+                    recs = manifest.get_coverage_days(
+                        target_ds_id, start_day=day_str, end_day=day_str
+                    )
+                    if not recs and key.adjustment != "raw":
+                        recs = manifest.get_coverage_days(
+                            raw_id, start_day=day_str, end_day=day_str
+                        )
+                    if any(str(r.status) == "COMPLETE" for r in recs):
+                        return ScreenRefusal(
+                            reason=SkipReason.GAP_IN_WINDOW,
+                            detail=(
+                                f"Gap in window on {day_str}. "
+                                "coverage and bars disagree: run algodesk data coverage repair"
+                            ),
+                        )
+
         if window_gaps:
             first_gap = min(g.day for g in window_gaps)
+            has_cov = False
+            if manifest is not None:
+                day_str = first_gap.isoformat()
+                recs = manifest.get_coverage_days(target_ds_id, start_day=day_str, end_day=day_str)
+                if not recs and key.adjustment != "raw":
+                    recs = manifest.get_coverage_days(raw_id, start_day=day_str, end_day=day_str)
+                if any(str(r.status) == "COMPLETE" for r in recs):
+                    has_cov = True
+
+            if has_cov:
+                return ScreenRefusal(
+                    reason=SkipReason.GAP_IN_WINDOW,
+                    detail=(
+                        f"Gap in window on {first_gap.isoformat()}. "
+                        "coverage and bars disagree: run algodesk data coverage repair"
+                    ),
+                )
             return ScreenRefusal(
                 reason=SkipReason.GAP_IN_WINDOW,
                 detail=(
