@@ -102,7 +102,8 @@ class SMACrossStrategy(PluginBase):
         pos = ctx.position(bar.instrument) if ctx.position is not None else None
         current_qty = pos.qty if pos is not None else 0
 
-        product_enum = Product.CNC if self._cfg.product.lower() == "cnc" else Product.MIS
+        is_daily = self._cfg.timeframe == "1d"
+        product_enum = Product.CNC if (is_daily or self._cfg.product.lower() == "cnc") else Product.MIS
 
         # 1. Exit check: Fast crosses below slow
         if prev_fast >= prev_slow and fast_val < slow_val and current_qty > 0:
@@ -118,8 +119,8 @@ class SMACrossStrategy(PluginBase):
                 ),
             )
 
-        # 2. Stop-loss check
-        if self._cfg.stop_pct is not None and current_qty > 0:
+        # 2. Stop-loss check (skipped for 1d daily crossover-only)
+        if not is_daily and self._cfg.stop_pct is not None and current_qty > 0:
             entry_p = self._entry_prices.get(bar.instrument)
             if entry_p is not None and bar.close <= entry_p * (1.0 - self._cfg.stop_pct):
                 self._entry_prices.pop(bar.instrument, None)
@@ -136,7 +137,7 @@ class SMACrossStrategy(PluginBase):
 
         # 3. Entry check: Fast crosses above slow (long-only, no current position)
         if prev_fast <= prev_slow and fast_val > slow_val and current_qty == 0:
-            if self._cfg.exit_time:
+            if self._cfg.exit_time and not is_daily:
                 try:
                     eh, em = map(int, self._cfg.exit_time.split(":"))
                     ist_zone = ZoneInfo("Asia/Kolkata")
@@ -194,7 +195,9 @@ class SMACrossStrategy(PluginBase):
         return ()
 
     def on_timer(self, ctx: StrategyContext, name: str) -> Sequence[Intent]:
-        """Exit all open positions on intraday square-off timer."""
+        """Exit all open positions on intraday square-off timer (ignored for daily)."""
+        if self._cfg.timeframe == "1d":
+            return ()
         exit_triggers = {"exit", "exit_time", "square_off", self._cfg.exit_time}
         if name not in exit_triggers:
             return ()

@@ -1,0 +1,67 @@
+# Parameters for backtest execution mode, fill model, and batch journaling
+
+[[param]]
+name = "backtest.delay_bars"
+type = "int"
+default = 1
+min = 1
+max = 100
+scope = "global"
+tighten = "down"
+description = "Minimum bar delay before orders decided on bar t can fill"
+owner = "engine"
+
+[[param]]
+name = "backtest.participation_pct"
+type = "int"
+default = 10
+min = 1
+max = 100
+scope = "global"
+tighten = "none"
+description = "Volume participation percentage determining synthetic depth per quote level"
+owner = "engine"
+
+[[param]]
+name = "backtest.slippage_bps"
+type = "int"
+default = 5
+min = 0
+max = 500
+scope = "global"
+tighten = "none"
+description = "Slippage in basis points added to market order fills"
+owner = "engine"
+
+[[param]]
+name = "backtest.journal_batch_size"
+type = "int"
+default = 1000
+min = 1
+max = 100000
+scope = "global"
+tighten = "none"
+description = "Number of events batched per SQLite transaction commit in backtest mode"
+owner = "journal"
+
+[[param]]
+name = "backtest.price_tick"
+type = "float"
+default = 0.01
+min = 0.0001
+max = 100.0
+scope = "global"
+tighten = "none"
+description = "Documented simplification tick size for old adjusted prices in backtest"
+owner = "venue"
+
+[[param]]
+name = "backtest.max_idle_seconds"
+type = "float"
+default = 60.0
+min = 0.001
+max = 3600.0
+scope = "global"
+tighten = "down"
+description = "Maximum wall-clock idle seconds without processing a bar before backtest watchdog trips"
+owner = "engine"

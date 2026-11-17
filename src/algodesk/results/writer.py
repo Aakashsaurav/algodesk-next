@@ -97,6 +97,14 @@ class ResultsWriter:
             open_note = f"Unresolved open positions at stop: {pos_summary}. "
             open_clause = f"Open at stop: {pos_summary}. "
 
+        if str(mode).lower() == "backtest":
+            disclaimer = (
+                f"Note: {open_note}Assumptions: fill model (bar synth with slippage), "
+                "basis (splits), dividends not credited, no survivorship handling yet.\n"
+            )
+        else:
+            disclaimer = f"Note: {open_note}Simulated paper fills assume zero impact.\n"
+
         content = (
             f"# Run Summary: {self.run_id}\n\n"
             "## Summary\n"
@@ -105,7 +113,7 @@ class ResultsWriter:
             f"across {closed_rt} closed round trips ({trade_count} trades) with "
             f"{win_rate:.1f}% win rate and max DD of "
             f"{max_dd:.2f}%. Verdict: {verdict}. {fail_clause}{open_clause}"
-            f"Note: {open_note}Simulated paper fills assume zero impact.\n"
+            f"{disclaimer}"
         )
         self._write_text_file("SUMMARY.md", content)
 

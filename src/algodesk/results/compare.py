@@ -278,6 +278,14 @@ def _format_version_differences(dir_a: Path, dir_b: Path) -> list[str]:
     if cv_a and cv_b and cv_a != cv_b:
         diffs.append(f"code_version: {cv_a} != {cv_b}")
 
+    mode_a = man_a.get("mode") or ("backtest" if "backtest" in dir_a.name else None)
+    mode_b = man_b.get("mode") or ("backtest" if "backtest" in dir_b.name else None)
+    if mode_a == "backtest" and mode_b == "backtest":
+        rh_a = man_a.get("result_hash")
+        rh_b = man_b.get("result_hash")
+        if rh_a and rh_b and rh_a != rh_b:
+            diffs.append(f"result_hash: {rh_a} != {rh_b}")
+
     pv_a = man_a.get("plugin_versions") or {}
     pv_b = man_b.get("plugin_versions") or {}
 

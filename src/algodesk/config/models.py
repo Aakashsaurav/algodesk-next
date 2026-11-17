@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -139,6 +140,42 @@ class StrategyConfig(PluginRef):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class BacktestConfig(BaseModel):
+    """Configuration for backtest execution mode."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    start: date | str
+    end: date | str
+    fidelity: Literal["bar"] = "bar"
+    timeframe: str = "1d"
+    study: str | None = None
+    oos_from: date | str | None = None
+
+    @field_validator("fidelity")
+    @classmethod
+    def _validate_fidelity(cls, v: str) -> str:
+        if v != "bar":
+            raise ValueError(f"Only fidelity 'bar' is supported, got {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _validate_dates(self) -> BacktestConfig:
+        s = self.start if isinstance(self.start, date) else date.fromisoformat(str(self.start))
+        e = self.end if isinstance(self.end, date) else date.fromisoformat(str(self.end))
+        if s > e:
+            raise ValueError(f"start date {s} must be <= end date {e}")
+        if self.oos_from is not None:
+            oos = (
+                self.oos_from
+                if isinstance(self.oos_from, date)
+                else date.fromisoformat(str(self.oos_from))
+            )
+            if not (s <= oos <= e):
+                raise ValueError(f"oos_from {oos} must be between start {s} and end {e}")
+        return self
+
+
 class RunConfig(BaseModel):
     """Complete run configuration assembled from layered TOML files."""
 
@@ -155,6 +192,13 @@ class RunConfig(BaseModel):
     universe: UniverseConfig
     strategies: list[StrategyConfig]
     notifiers: list[PluginRef] = Field(default_factory=list)
+    backtest: BacktestConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_backtest_mode(self) -> RunConfig:
+        if self.run.mode == Mode.BACKTEST and self.backtest is None:
+            raise ValueError("Backtest mode requires [backtest] configuration")
+        return self
 
     @model_validator(mode="before")
     @classmethod

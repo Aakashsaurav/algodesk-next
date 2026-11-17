@@ -37,8 +37,8 @@ Plugins implement domain protocols defined in `algodesk.api.protocols` (re-expor
 | `indicators/builtin` | `indicator` | `sma`, `ema`, `rsi`, `atr`, `vwap`, `bollinger`, `macd`, `rolling_hl`, `volume_avg`, `roc` | Built-in mathematical indicators supporting batch calculation and streaming updates with golden vectors. |
 | `screens/sma_trend_py` | `screen` | `default` | Reference Python screen evaluating SMA(50) > SMA(200) across daily completed bars. |
 | `risk_rules/builtin` | `risk_rule` | `pre_trade`, `limits`, `capital_checks` | Pre-trade risk rule plugin evaluating 9 safety controls (cash, exposure, orders/min, daily loss) from registry. |
-| `venues/sim` | `venue` | `market_orders`, `limit_orders`, `depth_matching`, `failure_injection` | Simulated execution venue with latency, seeded jitter, depth walking, trade-through limit fills, and failure drills. |
-| `strategies/sma_cross` | `strategy` | `signals`, `lifecycle`, `intraday_exit` | Demo dual moving-average crossover strategy exercising bar processing, warmup, signals, and exit timers. |
+| `venues/sim` | `venue` | `market_orders`, `limit_orders`, `stop_orders`, `stop_market_orders`, `depth_matching`, `failure_injection` | Simulated execution venue with latency, seeded jitter, depth walking, trade-through limit fills, stop orders, slippage, and ambiguous bar tracking. |
+| `strategies/sma_cross` | `strategy` | `signals`, `lifecycle`, `intraday_exit`, `daily_1d` | Demo dual moving-average crossover strategy exercising bar processing, warmup, signals, exit timers, and daily 1d execution with Product CNC. |
 | `notifiers/telegram` | `notifier` | `alerts`, `heartbeats`, `rate_limiting` | Asynchronous Telegram operational notifier with leaky-bucket rate limiting, circuit breaking, and retry jitter. |
 
 ## Manifest (`plugin.toml`)

@@ -44,10 +44,19 @@ class _SimOrder:
     filled_qty: int = 0
     gross_fills: list[GrossFill] = field(default_factory=list)
     reason: str = ""
+    is_stop: bool = False
+    triggered: bool = False
 
 
 class SimVenue:
     """Simulated execution venue with depth matching and failure injection."""
+
+    supported_order_types: set[OrderType] = {
+        OrderType.MARKET,
+        OrderType.LIMIT,
+        OrderType.STOP,
+        OrderType.STOP_MARKET,
+    }
 
     def __init__(self, params: Mapping[str, Any] | None = None) -> None:
         p = dict(params or {})
@@ -59,6 +68,8 @@ class SimVenue:
         self.timeout_rate = float(p.get("sim.timeout_rate", 0.0))
         self.partial_fill_rate = float(p.get("sim.partial_fill_rate", 0.0))
         self.seed = int(p.get("sim.seed", 0))
+        self.slippage_bps = float(p.get("backtest.slippage_bps", p.get("sim.slippage_bps", 0.0)))
+        self.ambiguous_bars_count: int = 0
 
         self._rng = random.Random(self.seed)
         self._instruments: dict[InstrumentId, Instrument] = {}
@@ -120,6 +131,9 @@ class SimVenue:
         self._event_queue.put_nowait(event)
 
     def _validate_order(self, spec: OrderSpec, client_ref: str) -> str | None:
+        if spec.type not in getattr(self, "supported_order_types", {OrderType.MARKET, OrderType.LIMIT}):
+            return f"unsupported order type {spec.type.value}"
+
         if spec.instrument not in self._configured_ids and spec.instrument not in self._instruments:
             return "unknown instrument"
 
@@ -128,13 +142,21 @@ class SimVenue:
         if spec.qty <= 0 or (spec.qty % lot != 0):
             return "quantity not a multiple of lot size"
 
-        if spec.type == OrderType.LIMIT:
+        tick = inst.tick_size if inst else Decimal("0.05")
+
+        if spec.type in (OrderType.LIMIT, OrderType.STOP):
             if spec.price is None:
                 return "limit price required"
-            tick = inst.tick_size if inst else Decimal("0.05")
             rem = spec.price % tick
             if rem != Decimal("0") and rem != tick:
                 return "price off the tick grid"
+
+        if spec.type in (OrderType.STOP, OrderType.STOP_MARKET):
+            if spec.trigger_price is None:
+                return "trigger price required"
+            rem = spec.trigger_price % tick
+            if rem != Decimal("0") and rem != tick:
+                return "trigger price off the tick grid"
 
         if spec.side == Side.SELL and not self.allow_short:
             curr_pos = self._positions.get((spec.instrument, spec.product), 0)
@@ -154,7 +176,7 @@ class SimVenue:
         return None
 
     def _check_marketable_at_submission(self, spec: OrderSpec) -> bool:
-        if spec.type != OrderType.LIMIT or spec.price is None:
+        if spec.type not in (OrderType.LIMIT, OrderType.STOP) or spec.price is None:
             return False
         quote = self._latest_quotes.get(spec.instrument)
         if quote is None:
@@ -197,6 +219,7 @@ class SimVenue:
 
         self._order_counter += 1
         venue_ref = f"SIM-{self._order_counter}"
+        is_stop = spec.type in (OrderType.STOP, OrderType.STOP_MARKET)
         sim_order = _SimOrder(
             client_ref=client_ref,
             venue_ref=venue_ref,
@@ -205,6 +228,8 @@ class SimVenue:
             arrival=arrival,
             state=OrderState.ACKNOWLEDGED,
             is_marketable=is_marketable,
+            is_stop=is_stop,
+            triggered=False,
         )
         self._orders[client_ref] = sim_order
         self._resting_orders.append(client_ref)
@@ -300,6 +325,61 @@ class SimVenue:
             self._match_market_order(order, quote)
         elif order.spec.type == OrderType.LIMIT:
             self._match_limit_order(order, quote)
+        elif order.spec.type in (OrderType.STOP, OrderType.STOP_MARKET):
+            self._match_stop_order(order, quote)
+
+    def _match_stop_order(self, order: _SimOrder, quote: Quote) -> None:
+        if not order.triggered:
+            assert order.spec.trigger_price is not None
+            is_buy = order.spec.side == Side.BUY
+            quote_price = Decimal(str(quote.ltp))
+            if is_buy:
+                crossed = quote_price >= order.spec.trigger_price
+                if not crossed and quote.asks:
+                    crossed = Decimal(str(quote.asks[0].price)) >= order.spec.trigger_price
+            else:
+                crossed = quote_price <= order.spec.trigger_price
+                if not crossed and quote.bids:
+                    crossed = Decimal(str(quote.bids[0].price)) <= order.spec.trigger_price
+
+            if not crossed:
+                return
+            order.triggered = True
+
+        if order.spec.type == OrderType.STOP_MARKET:
+            self._match_market_order(order, quote)
+        elif order.spec.type == OrderType.STOP:
+            order.is_marketable = self._check_marketable_at_submission(order.spec)
+            order.marketable_checked = False
+            self._match_limit_order(order, quote)
+
+    def record_bar(self, bar: Any) -> None:
+        """Track ambiguous bars: resting stop and limit both reachable in bar."""
+        inst = getattr(bar, "instrument", None)
+        if inst is None:
+            return
+        inst_orders = [
+            self._orders[ref]
+            for ref in self._resting_orders
+            if ref in self._orders and self._orders[ref].spec.instrument == inst
+        ]
+        has_stop = False
+        has_limit = False
+        low = Decimal(str(getattr(bar, "low", 0)))
+        high = Decimal(str(getattr(bar, "high", 0)))
+
+        for o in inst_orders:
+            if o.spec.type in (OrderType.STOP, OrderType.STOP_MARKET):
+                trig = o.spec.trigger_price
+                if trig is not None and low <= trig <= high:
+                    has_stop = True
+            elif o.spec.type == OrderType.LIMIT:
+                lp = o.spec.price
+                if lp is not None and low <= lp <= high:
+                    has_limit = True
+
+        if has_stop and has_limit:
+            self.ambiguous_bars_count += 1
 
     def _match_market_order(self, order: _SimOrder, quote: Quote) -> None:
         is_buy = order.spec.side == Side.BUY
@@ -320,6 +400,14 @@ class SimVenue:
                 fill_qty = max(1, fill_qty // 2)
 
             price = to_price(level.price, tick)
+            if self.slippage_bps > 0:
+                slip_factor = Decimal(str(self.slippage_bps)) / Decimal("10000")
+                if is_buy:
+                    slipped = price * (Decimal("1") + slip_factor)
+                else:
+                    slipped = price * (Decimal("1") - slip_factor)
+                price = to_price(float(slipped), tick)
+
             self._apply_fill(order, fill_qty, price, quote.recv_ts)
             remaining -= fill_qty
 
@@ -349,8 +437,10 @@ class SimVenue:
         remaining = order.spec.qty - order.filled_qty
 
         # 1. Marketable matching across levels within limit price
+        matched_on_arrival = False
         if order.is_marketable and not order.marketable_checked:
             order.marketable_checked = True
+            matched_on_arrival = True
             for level in levels:
                 if remaining <= 0 or level.qty <= 0:
                     break
@@ -392,6 +482,9 @@ class SimVenue:
                     reason="ioc_unfilled",
                 )
             )
+            return
+
+        if matched_on_arrival:
             return
 
         # 3. Non-marketable DAY order rests; check trade-through

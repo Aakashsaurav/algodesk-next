@@ -1,0 +1,39 @@
+# config/runs/sma_1d_bt.toml — Backtest run configuration on demo5
+# Runs daily (1d) SMA cross on 5 demo instruments
+
+allocated_capital = 500000
+
+[run]
+name = "sma_1d_bt"
+mode = "backtest"
+
+[backtest]
+start = "2024-11-10"
+end = "2026-11-13"
+fidelity = "bar"
+timeframe = "1d"
+
+[data_source]
+plugin = "upstox"
+
+[execution_venue]
+plugin = "sim"
+seed = 7
+
+[fees]
+schedule = "zerodha_nse"
+
+[[calendars]]
+plugin = "exchange"
+exchange = "nse"
+
+[secrets]
+plugin = "keychain"
+
+[universe]
+group = "demo5"
+
+[[strategies]]
+plugin = "sma_cross"
+risk_profile = "conservative"
+params = { timeframe = "1d", fast = 5, slow = 20, qty = 1, product = "CNC" }

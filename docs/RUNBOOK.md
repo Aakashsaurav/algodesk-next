@@ -364,6 +364,64 @@ Test Telegram notifications:
 algodesk telegram test
 ```
 
+### 14. Engine backtesting (`algodesk backtest run`)
+
+Execute reproducible historical backtests through the same core engine (`SessionRunner`) using cached historical bars.
+
+#### Step 1: Readiness and cached data
+Backtesting operates strictly offline (`cache_only=True`) and never initiates network downloads or connects to live brokers:
+```bash
+# Verify bars are cached for the target universe and timeframe (e.g. demo5, 1d)
+algodesk data catalog --group demo5 --timeframe 1d
+```
+If bars are missing, accumulate data first:
+```bash
+algodesk data accumulate --group demo5 --timeframe 1d
+```
+
+#### Step 2: Backtest execution plan (--dry-run)
+Inspect configuration, parameter snapshot, trading window, and doctor checks without executing:
+```bash
+algodesk backtest run sma_1d_bt --dry-run
+```
+Outputs execution plan:
+```text
+=== Backtest Dry-Run Execution Plan ===
+Run Name:          sma_1d_bt
+Mode:              backtest
+Fidelity:          bar
+Timeframe:         1d
+Window:            2024-11-10 to 2026-11-13
+Allocated Capital: ₹500,000.00
+Doctor checks:     0 critical
+Plan verified successfully. No network connections opened; no live orders placed.
+```
+
+#### Step 3: Run execution
+Run the backtest session:
+```bash
+algodesk backtest run sma_1d_bt
+```
+Key backtest operational invariants:
+- **Zero look-ahead fill model**: Each bar is converted into four synthetic quotes (O, L, H, C for up bars; O, H, L, C for down bars) with depth = `backtest.participation_pct` × volume. Orders decided on bar $t$ fill only on bar $t + \text{delay\_bars}$ (default `backtest.delay_bars = 1`, minimum 1).
+- **STOP and STOP_MARKET orders**: Simulated resting stop orders trigger when a synthetic quote crosses `trigger_price`. A stop crossed by the opening quote fills at the open price.
+- **Slippage & transaction costs**: Market fills include `backtest.slippage_bps` (default 5 bps). Real statutory taxes, exchange fees, and broker charges are calculated by `FeeEngine` exactly as in paper/live.
+- **Batched journaling**: Events write to an isolated per-run journal database (`journal_bt_<run_id>.db`) using batched commits (`backtest.journal_batch_size`), preserving hash-chain integrity while achieving high throughput.
+- **Deterministic end of data**: When the historical bar feed exhausts, SimClock advances to the end timestamp of the final trading session. The end-of-session lifecycle runs once: active resting orders are cancelled, portfolio marks are finalized from last quotes, unresolved positions are reported, and results are written with stop reason `end of data` and verdict `PASS`.
+- **Idle watchdog (`backtest.max_idle_seconds`)**: If data starvation or deadlocks cause real wall-clock idle time between bar dispatches to exceed `backtest.max_idle_seconds` (default 60.0s), the backtest fails fast with `BacktestWatchdogError`, writes results with stop reason `watchdog` and verdict `FAIL`, and exits CLI with code 1.
+- **Progress & Ctrl-C interruption**: Console streams progress to `stderr` every `cli.progress_every` sessions reporting elapsed seconds. Pressing `Ctrl-C` gracefully halts execution, drains venue queues, and writes the results bundle with stop reason `interrupt` and verdict `STOPPED`.
+
+#### Step 4: Inspect results & verify determinism
+```bash
+# List and inspect results bundle
+algodesk results list
+algodesk results show <run_id>
+
+# Compare two consecutive runs with identical seed (expected equal: True)
+algodesk results compare <run_id_1> <run_id_2>
+```
+
+
 ## Corporate actions, audit & data gaps
 
 ### Corporate actions refresh & OAuth requirements

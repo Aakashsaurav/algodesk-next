@@ -7,6 +7,7 @@ order management, simulated venue matching, portfolio ledgering, and results rep
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import typer
@@ -42,6 +43,7 @@ from algodesk.api import (
     Product,
     Quote,
     SafetyViolation,
+    Screen,
     Tick,
     parse_id,
 )
@@ -79,6 +81,10 @@ from algodesk.risk.monitor import RiskMonitor
 from algodesk.risk.view import RiskViewContext
 
 logger = logging.getLogger("algodesk.engine.runner")
+
+
+class BacktestWatchdogError(AlgoDeskError):
+    """Raised when backtest watchdog detects no bar processed within max_idle_seconds."""
 
 
 def _parse_ist_str_to_utc(ist_str: str) -> datetime:
@@ -306,6 +312,7 @@ class SessionRunner:
         self._last_bar_trigger_mono: dict[Any, float] = {}
         self._last_bar_close_mono: dict[Any, float] = {}
         self._last_bar_end_ts: dict[Any, datetime] = {}
+        self._latest_bar_end_ts: datetime | None = None
         self._first_tick_ts: datetime | None = None
         self._last_tick_ts: datetime | None = None
         self._first_tick_recv_ts: datetime | None = None
@@ -570,6 +577,23 @@ class SessionRunner:
         return results_path
 
     def _init_clock(self) -> Clock:
+        if self.mode == Mode.BACKTEST and not self._is_replay:
+            start_date: Any = None
+            if self.run_config and getattr(self.run_config, "backtest", None):
+                s = getattr(self.run_config.backtest, "start", None)
+                if isinstance(s, date):
+                    start_date = s
+                elif isinstance(s, str):
+                    try:
+                        start_date = date.fromisoformat(s)
+                    except ValueError:
+                        start_date = None
+            initial = (
+                datetime(start_date.year, start_date.month, start_date.day, 3, 45, tzinfo=UTC)
+                if start_date
+                else datetime(2026, 1, 1, 3, 45, tzinfo=UTC)
+            )
+            return SimClock(initial_time=initial)
         if self._is_replay:
             if self.tick_window is not None:
                 return SimClock(initial_time=self.tick_window[0])
@@ -586,8 +610,20 @@ class SessionRunner:
 
         worker = os.environ.get("PYTEST_XDIST_WORKER")
         worker_suffix = f"_{worker}" if worker else ""
+        is_backtest = self.mode == Mode.BACKTEST and not self._is_replay
+        p = self.runtime.params
+        batch_mode = False
+        batch_size = 1000
+        if is_backtest:
+            batch_mode = True
+            batch_size = int(p.get("backtest.journal_batch_size") or 1000) if p else 1000
+
         if self._journal_db is not None:
             db_path = self._journal_db
+        elif is_backtest:
+            db_path = (
+                self.runtime.state.journal_db.parent / f"journal_bt_{self.run_id}{worker_suffix}.db"
+            )
         elif self._is_replay:
             db_path = self.runtime.state.journal_db.parent / f"journal_replay{worker_suffix}.db"
         elif worker:
@@ -595,7 +631,6 @@ class SessionRunner:
         else:
             db_path = self.runtime.state.journal_db
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        p = self.runtime.params
         flush_interval = int(p.get("journal.flush_interval_ms")) if p else 50
         max_buffer = int(p.get("journal.max_buffer_events")) if p else 1000
         bp_timeout = int(p.get("journal.backpressure_timeout_ms")) if p else 5000
@@ -603,6 +638,8 @@ class SessionRunner:
             flush_interval_ms=flush_interval,
             max_buffer_events=max_buffer,
             backpressure_timeout_ms=bp_timeout,
+            batch_mode=batch_mode,
+            batch_size=batch_size,
         )
         return Journal(
             db_path=db_path,
@@ -1155,10 +1192,10 @@ class SessionRunner:
             else:
                 from algodesk.data.groups import load_groups
                 from algodesk.ops.screens import build_screen_runner
-                from algodesk.screens.models import load_toml_screen
+                from algodesk.screens.models import TomlScreenModel, load_toml_screen
 
                 screen_file = self.runtime.root / "config" / "screens" / f"{screen_name}.toml"
-                screen_obj: Any = None
+                screen_obj: TomlScreenModel | Screen | None = None
                 screen_hash: str | None = None
                 if screen_file.is_file():
                     import hashlib
@@ -1168,9 +1205,10 @@ class SessionRunner:
                 else:
                     try:
                         p_ctx = build_context(Mode.RESEARCH, run_id="engine_screen_resolve")
-                        screen_obj = self.runtime.plugins.create(
+                        plugin_inst = self.runtime.plugins.create(
                             PluginKind.SCREEN, screen_name, config={}, ctx=p_ctx
                         )
+                        screen_obj = cast(Screen, plugin_inst)
                     except Exception:
                         screen_obj = None
 
@@ -1475,6 +1513,11 @@ class SessionRunner:
 
             # 2. Market event handling
             if isinstance(ev, Quote):
+                if hasattr(clock, "set_time"):
+                    try:
+                        clock.set_time(ev.recv_ts)
+                    except ValueError:
+                        pass
                 if self._first_tick_ts is None:
                     self._first_tick_ts = ev.exch_ts
                 self._last_tick_ts = ev.exch_ts
@@ -1486,10 +1529,31 @@ class SessionRunner:
                 self._latest_tick_recv_time[ev.instrument] = clock.now()
                 c["venue"].on_quote(ev)
                 self._latest_quotes[ev.instrument] = ev
+                await self._drain_venue_events(c)
                 if getattr(ev, "exch_ts", None) and getattr(ev, "recv_ts", None):
                     fd = max(0.0, (ev.recv_ts - ev.exch_ts).total_seconds() * 1000.0)
                     self._feed_delays.append(fd)
                     self._feed_delays_by_inst.setdefault(str(ev.instrument), []).append(fd)
+            elif isinstance(ev, Bar):
+                self._latest_bar_end_ts = ev.end_ts
+                self._last_bar_end_ts[ev.instrument] = ev.end_ts
+                if hasattr(clock, "set_time"):
+                    try:
+                        clock.set_time(ev.end_ts)
+                    except ValueError:
+                        pass
+                if hasattr(c["venue"], "record_bar"):
+                    c["venue"].record_bar(ev)
+                self._bars_closed += 1
+                tf = str(getattr(ev, "timeframe", "1d"))
+                self._bars_by_tf[tf] = self._bars_by_tf.get(tf, 0) + 1
+                c["buf"].append(ev)
+                c["ind_mgr"].on_bar(ev)
+                await c["strat_rt"].dispatch_bar(ev)
+                await self._drain_pending_bar_tasks(c)
+                await self._drain_venue_events(c)
+                if self.mode == Mode.BACKTEST and not self._is_replay:
+                    self._snapshot_portfolio_direct(c, clock, journal)
             elif isinstance(ev, Tick):
                 if self._first_tick_ts is None:
                     self._first_tick_ts = ev.exch_ts
@@ -1570,7 +1634,127 @@ class SessionRunner:
                     self._recorded_seq_idx += 1
                     await self._apply_recorded_events(due_seq, c, clock, journal)
 
-        if self._is_replay:
+        if self.mode == Mode.BACKTEST and not self._is_replay:
+            session_mgr: SessionManager = c["session_mgr"]
+            universe_insts = list(c.get("instruments", {}).values())
+            if not universe_insts:
+                symbols = getattr(getattr(self.run_config, "universe", None), "symbols", None) or []
+                universe_markets = {session_mgr.market_key(s) for s in symbols}
+            else:
+                universe_markets = {session_mgr.market_key(inst.id) for inst in universe_insts}
+
+            idle_seconds = (
+                float(self.runtime.params.get("backtest.max_idle_seconds"))
+                if self.runtime.params
+                and self.runtime.params.get("backtest.max_idle_seconds") is not None
+                else 60.0
+            )
+
+            progress_step = (
+                int(self.runtime.params.get("cli.progress_every"))
+                if self.runtime.params and self.runtime.params.get("cli.progress_every") is not None
+                else 25
+            )
+
+            last_bar_wall_time = time.monotonic()
+            t0_wall = time.monotonic()
+            sessions_seen: set[date] = set()
+
+            async for ev_item in stream:
+                if self._stop_event.is_set():
+                    break
+                if c.get("killswitch") is not None and c["killswitch"].is_active():
+                    self.stop(reason="kill switch")
+                    break
+
+                now_wall = time.monotonic()
+                if now_wall - last_bar_wall_time > idle_seconds:
+                    self.stop(reason="watchdog")
+                    msg = (
+                        f"Backtest watchdog tripped: no bar processed for "
+                        f"{now_wall - last_bar_wall_time:.1f}s (max idle: {idle_seconds}s)"
+                    )
+                    logger.error(msg)
+                    raise BacktestWatchdogError(
+                        what=msg,
+                        where="SessionRunner._execute_session",
+                        fix=(
+                            f"Increase backtest.max_idle_seconds (current: {idle_seconds}s) "
+                            "or optimize data cache and strategy"
+                        ),
+                    )
+
+                ev = ev_item[0] if isinstance(ev_item, tuple) else ev_item
+                if isinstance(ev, Bar):
+                    last_bar_wall_time = time.monotonic()
+                    d_session = ev.start_ts.astimezone(IST).date()
+                    if d_session not in sessions_seen:
+                        sessions_seen.add(d_session)
+                        sess_count = len(sessions_seen)
+                        if not self.quiet and progress_step > 0 and sess_count % progress_step == 0:
+                            el_sec = time.monotonic() - t0_wall
+                            msg = (
+                                f"[backtest] {sess_count} sessions processed "
+                                f"({el_sec:.1f}s elapsed)"
+                            )
+                            print(msg, file=sys.stderr, flush=True)
+
+                await _dispatch_market_event(ev_item)
+
+            if not self._stop_event.is_set():
+                if hasattr(self, "_latest_bar_end_ts") and self._latest_bar_end_ts is not None:
+                    if hasattr(clock, "set_time"):
+                        try:
+                            clock.set_time(self._latest_bar_end_ts)
+                        except ValueError:
+                            pass
+                    c["scheduler"].advance_to(self._latest_bar_end_ts)
+                    c["scheduler"].fire_due()
+
+                for mk in universe_markets:
+                    if session_mgr.state(mk) not in (
+                        MarketState.CLOSING,
+                        MarketState.REPORTING,
+                        MarketState.STOPPED,
+                    ):
+                        session_mgr.transition(mk, MarketState.CLOSING, "end of data")
+                        journal.append(
+                            "market.closing",
+                            {
+                                "market": mk,
+                                "seq": self._tick_seq,
+                                "ts": clock.now().isoformat(),
+                            },
+                        )
+
+                oms = c.get("oms")
+                if oms is not None:
+                    active_cancel_states = (
+                        OrderState.CREATED,
+                        OrderState.SUBMITTED,
+                        OrderState.ACKNOWLEDGED,
+                        OrderState.PARTIALLY_FILLED,
+                    )
+                    for ref, ord_obj in list(oms.orders.items()):
+                        if hasattr(ord_obj, "state") and ord_obj.state in active_cancel_states:
+                            try:
+                                await oms.cancel(ref)
+                            except Exception:
+                                pass
+                await self._drain_venue_events(c)
+
+                ledger = c.get("ledger")
+                if ledger is not None:
+                    for q in self._latest_quotes.values():
+                        ledger.mark(q)
+
+                for mk in universe_markets:
+                    if session_mgr.state(mk) != MarketState.STOPPED:
+                        session_mgr.transition(mk, MarketState.REPORTING, "session reporting")
+                        session_mgr.transition(mk, MarketState.STOPPED, "market stopped")
+
+                self.stop(reason="end of data")
+        elif self._is_replay:
             async for ev_item in stream:
                 if self._stop_event.is_set():
                     break
@@ -1705,15 +1889,43 @@ class SessionRunner:
                 self._active_feed_stream = None
 
         # Drain pending bar tasks and venue events after stream ends
-        await asyncio.sleep(0)
+        if self.mode != Mode.BACKTEST:
+            await asyncio.sleep(0)
         await self._drain_venue_events(c)
+
+    def _snapshot_portfolio_direct(self, c: dict[str, Any], clock: Clock, journal: Journal) -> None:
+        ledger = c.get("ledger")
+        if ledger is None:
+            return
+        snap = ledger.snapshot()
+        eq_val = float(snap.equity)
+        pt_dict = {
+            "ts": clock.now().isoformat(),
+            "ts_ist": format_ist(clock.now()),
+            "equity": eq_val,
+            "cash": float(snap.cash),
+            "unrealized": float(ledger.unrealized),
+            "realized": float(ledger.realized),
+            "drawdown": compute_max_drawdown([p["equity"] for p in self._equity_curve] + [eq_val]),
+        }
+        self._equity_curve.append(pt_dict)
+        journal.append(
+            "portfolio.snapshot",
+            {
+                "equity": pt_dict["equity"],
+                "cash": pt_dict["cash"],
+                "unrealized": pt_dict["unrealized"],
+                "realized": pt_dict["realized"],
+                "seq": self._tick_seq,
+                "ts": clock.now().isoformat(),
+            },
+        )
 
     def _setup_timers(self, c: dict[str, Any], clock: Clock, journal: Journal) -> None:
         assert self.run_config is not None
         scheduler: Scheduler = c["scheduler"]
         notify: NotifyBridge = c["notify"]
         strat_rt: StrategyRuntime = c["strat_rt"]
-        ledger: PortfolioLedger = c["ledger"]
         session_mgr: SessionManager = c["session_mgr"]
 
         universe_insts = list(c.get("instruments", {}).values())
@@ -1736,43 +1948,20 @@ class SessionRunner:
         hb_sec = int(hb_val) if hb_val is not None else 900
 
         now_dt = clock.now()
-        scheduler.schedule_repeating(
-            "heartbeat",
-            start=now_dt + timedelta(seconds=hb_sec),
-            interval_seconds=float(hb_sec),
-            callback=lambda: notify.notify_heartbeat("Engine running normally"),
-        )
+        if self.mode != Mode.BACKTEST:
+            scheduler.schedule_repeating(
+                "heartbeat",
+                start=now_dt + timedelta(seconds=hb_sec),
+                interval_seconds=float(hb_sec),
+                callback=lambda: notify.notify_heartbeat("Engine running normally"),
+            )
 
         def _snapshot_portfolio() -> None:
-            snap = ledger.snapshot()
-            eq_val = float(snap.equity)
-            pt_dict = {
-                "ts": clock.now().isoformat(),
-                "ts_ist": format_ist(clock.now()),
-                "equity": eq_val,
-                "cash": float(snap.cash),
-                "unrealized": float(ledger.unrealized),
-                "realized": float(ledger.realized),
-                "drawdown": compute_max_drawdown(
-                    [p["equity"] for p in self._equity_curve] + [eq_val]
-                ),
-            }
-            self._equity_curve.append(pt_dict)
-            journal.append(
-                "portfolio.snapshot",
-                {
-                    "equity": pt_dict["equity"],
-                    "cash": pt_dict["cash"],
-                    "unrealized": pt_dict["unrealized"],
-                    "realized": pt_dict["realized"],
-                    "seq": self._tick_seq,
-                    "ts": clock.now().isoformat(),
-                },
-            )
+            self._snapshot_portfolio_direct(c, clock, journal)
 
         replay_has_events = bool(self._is_replay and self._recorded_events_by_seq)
 
-        if not replay_has_events:
+        if not replay_has_events and self.mode != Mode.BACKTEST:
             snap_val = (
                 self.runtime.params.get("runtime.equity_snapshot_interval_seconds")
                 if self.runtime.params is not None
@@ -1836,19 +2025,20 @@ class SessionRunner:
         )
         stats_sec = float(stats_val or 60.0)
 
-        scheduler.schedule_repeating(
-            "proc_stats",
-            start=now_dt + timedelta(seconds=stats_sec),
-            interval_seconds=stats_sec,
-            callback=_emit_proc_stats,
-        )
+        if self.mode != Mode.BACKTEST:
+            scheduler.schedule_repeating(
+                "proc_stats",
+                start=now_dt + timedelta(seconds=stats_sec),
+                interval_seconds=stats_sec,
+                callback=_emit_proc_stats,
+            )
 
-        scheduler.schedule_repeating(
-            "tick_bar_stats",
-            start=now_dt + timedelta(seconds=stats_sec),
-            interval_seconds=stats_sec,
-            callback=_emit_stats,
-        )
+            scheduler.schedule_repeating(
+                "tick_bar_stats",
+                start=now_dt + timedelta(seconds=stats_sec),
+                interval_seconds=stats_sec,
+                callback=_emit_stats,
+            )
 
         # Periodic console status line
         status_val = (
@@ -1895,12 +2085,13 @@ class SessionRunner:
             if not self.quiet:
                 typer.echo(status_line)
 
-        scheduler.schedule_repeating(
-            "console_status_line",
-            start=now_dt + timedelta(seconds=status_sec),
-            interval_seconds=status_sec,
-            callback=_print_status_line,
-        )
+        if self.mode != Mode.BACKTEST:
+            scheduler.schedule_repeating(
+                "console_status_line",
+                start=now_dt + timedelta(seconds=status_sec),
+                interval_seconds=status_sec,
+                callback=_print_status_line,
+            )
 
         now_ist = clock.now().astimezone(IST)
         d = now_ist.date()
@@ -1912,7 +2103,7 @@ class SessionRunner:
             except RuntimeError:
                 asyncio.run(coro)
 
-        if not replay_has_events:
+        if not replay_has_events and self.mode != Mode.BACKTEST:
             # Strategy exit timer
             for s in self.run_config.strategies:
                 exit_time_str = s.params.get("exit_time", "15:15")
@@ -2141,13 +2332,14 @@ class SessionRunner:
                         )
                     )
 
-        check_int = min(10.0, max(2.0, stale_sec / 2.0))
-        scheduler.schedule_repeating(
-            "check_feed_staleness",
-            start=now_dt + timedelta(seconds=check_int),
-            interval_seconds=check_int,
-            callback=_check_feed_staleness,
-        )
+        if self.mode != Mode.BACKTEST:
+            check_int = min(10.0, max(2.0, stale_sec / 2.0))
+            scheduler.schedule_repeating(
+                "check_feed_staleness",
+                start=now_dt + timedelta(seconds=check_int),
+                interval_seconds=check_int,
+                callback=_check_feed_staleness,
+            )
 
     async def _drain_venue_events(self, c: dict[str, Any]) -> None:
         venue = c["venue"]
@@ -2171,7 +2363,86 @@ class SessionRunner:
 
     def _build_event_stream(
         self, c: dict[str, Any], clock: Clock
-    ) -> AsyncIterator[tuple[MarketEvent, int | None]]:
+    ) -> AsyncIterator[tuple[MarketEvent | Bar, int | None]]:
+        if self.mode == Mode.BACKTEST and not self._is_replay:
+            from algodesk.data.bar_synth import BarQuoteSynth
+            from algodesk.data.historical_feed import HistoricalFeed
+
+            part_pct = (
+                float(self.runtime.params.get("backtest.participation_pct") or 10.0)
+                if self.runtime.params
+                else 10.0
+            )
+            p_tick = (
+                float(self.runtime.params.get("backtest.price_tick") or 0.01)
+                if self.runtime.params
+                else 0.01
+            )
+            synth = BarQuoteSynth(participation_pct=int(part_pct), price_tick=float(p_tick))
+
+            cal = getattr(self._data_service, "_calendar", None) if self._data_service else None
+            manifest = None
+            if (
+                self._data_service is not None
+                and getattr(self._data_service, "_store", None) is not None
+            ):
+                manifest = getattr(self._data_service._store, "manifest", None)
+
+            ds_source = (
+                getattr(self.run_config.data_source, "plugin", "upstox")
+                if self.run_config and self.run_config.data_source
+                else "upstox"
+            )
+
+            bt_cfg = getattr(self.run_config, "backtest", None)
+            raw_start = getattr(bt_cfg, "start", "2024-11-10") if bt_cfg else "2024-11-10"
+            raw_end = getattr(bt_cfg, "end", "2026-11-13") if bt_cfg else "2026-11-13"
+            start_val: date | datetime = (
+                raw_start
+                if isinstance(raw_start, (date, datetime))
+                else date.fromisoformat(str(raw_start))
+            )
+            end_val: date | datetime = (
+                raw_end
+                if isinstance(raw_end, (date, datetime))
+                else date.fromisoformat(str(raw_end))
+            )
+            tf_val = bt_cfg.timeframe if bt_cfg else "1d"
+
+            h_feed = HistoricalFeed(
+                data_service=self._data_service,
+                instruments=list(c["instruments"].keys()),
+                start=start_val,
+                end=end_val,
+                timeframe=tf_val,
+                source=ds_source,
+                calendar=cal,
+                manifest=manifest,
+                synth=synth,
+            )
+
+            if h_feed.warmup_bars:
+                c["ind_mgr"].warmup_from_bars(h_feed.warmup_bars)
+
+            class _HistoricalStreamWrapper:
+                def __init__(self, feed: HistoricalFeed) -> None:
+                    self._feed = feed
+                    self._iter = feed.iter_with_seq()
+
+                def __aiter__(self) -> _HistoricalStreamWrapper:
+                    return self
+
+                async def __anext__(self) -> tuple[MarketEvent | Bar, int | None]:
+                    try:
+                        return next(self._iter)
+                    except StopIteration:
+                        raise StopAsyncIteration from None
+
+                async def aclose(self) -> None:
+                    self._iter = iter(())
+
+            return _HistoricalStreamWrapper(h_feed)
+
         if self._is_replay:
             files: list[Path] = []
             seen: set[str] = set()
@@ -2208,7 +2479,7 @@ class SessionRunner:
                 def __aiter__(self) -> _ReplayStreamWrapper:
                     return self
 
-                async def __anext__(self) -> tuple[MarketEvent, int | None]:
+                async def __anext__(self) -> tuple[MarketEvent | Bar, int | None]:
                     try:
                         return next(self._iter)
                     except StopIteration:
@@ -2517,9 +2788,15 @@ class SessionRunner:
         if self._stop_reason == "feed_auth":
             stop_reason = "feed_auth"
             is_fail = True
+        elif self._stop_reason == "watchdog":
+            stop_reason = "watchdog"
+            is_fail = True
         elif self._killswitch_tripped or ks_active or self._killswitch_events > 0:
             stop_reason = "kill switch"
             is_fail = True
+        elif self._stop_reason == "end of data":
+            stop_reason = "end of data"
+            is_fail = False
         elif self._stop_reason == "end of session":
             stop_reason = "end of session"
             is_fail = False
@@ -2534,6 +2811,9 @@ class SessionRunner:
             is_fail = False
         elif self._stop_reason and "replay data ended" in self._stop_reason:
             stop_reason = self._stop_reason
+            is_fail = False
+        elif self.mode == Mode.BACKTEST and not self._is_replay:
+            stop_reason = "end of data"
             is_fail = False
         else:
             stop_reason = "end of session"
@@ -2686,7 +2966,44 @@ class SessionRunner:
             except Exception:
                 pass
 
+        # Compute deterministic result_hash across metrics, trades, seed, stop_reason
+        normalized_trades = [
+            {
+                "instrument": str(r.get("instrument")),
+                "side": str(r.get("side")),
+                "qty": str(r.get("qty")),
+                "price": str(r.get("price")),
+                "charges": str(r.get("charges")),
+                "ts": str(r.get("ts")),
+            }
+            for r in trades_csv_rows
+        ]
+        res_hash_payload = {
+            "metrics": {
+                k: v
+                for k, v in metrics.items()
+                if k
+                not in (
+                    "peak_rss_mb",
+                    "platform_p50_ms",
+                    "platform_p95_ms",
+                    "platform_p95",
+                    "signal_age_p50_ms",
+                    "signal_age_p95_ms",
+                    "signal_age_p95",
+                )
+            },
+            "trades": normalized_trades,
+            "seed": self.seed or venue_seed,
+            "stop_reason": stop_reason,
+            "verdict": verdict,
+        }
+        res_hash = hashlib.sha256(
+            json.dumps(res_hash_payload, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+
         manifest_info: dict[str, Any] = {
+            "mode": mode_str,
             "code_version": "0.1.0",
             "plugin_versions": {
                 p.name: {"version": p.manifest.version, "hash": p.code_hash}
@@ -2696,6 +3013,7 @@ class SessionRunner:
             "datasets": prov.get("datasets", []),
             "checksums": prov.get("checksums", []),
             "seed": self.seed or venue_seed,
+            "result_hash": res_hash,
             "instrument_master_checksum": "verified",
             "first_tick_utc": self._first_tick_ts.isoformat() if self._first_tick_ts else None,
             "last_tick_utc": self._last_tick_ts.isoformat() if self._last_tick_ts else None,
@@ -2706,6 +3024,7 @@ class SessionRunner:
                 self._last_tick_recv_ts.isoformat() if self._last_tick_recv_ts else None
             ),
             "stop_reason": stop_reason,
+            "verdict": verdict,
         }
         if self.warmup_source is not None:
             manifest_info["warmup_override"] = self.warmup_source

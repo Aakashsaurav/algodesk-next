@@ -12,6 +12,7 @@ from typing import Any
 from algodesk.api.errors import ConfigError
 from algodesk.api.kinds import Mode
 from algodesk.config.models import (
+    BacktestConfig,
     DeploymentConfig,
     FeesConfig,
     PluginRef,
@@ -27,6 +28,7 @@ from algodesk.params.specs import validate_value
 _TOP_FIELDS = (
     "allocated_capital",
     "run",
+    "backtest",
     "data_source",
     "execution_venue",
     "calendars",
@@ -96,6 +98,7 @@ def parse_recorded_config(text: str) -> RunConfig:
     ns = {
         "RunConfig": RunConfig,
         "RunMeta": RunMeta,
+        "BacktestConfig": BacktestConfig,
         "PluginRef": PluginRef,
         "FeesConfig": FeesConfig,
         "DeploymentConfig": DeploymentConfig,

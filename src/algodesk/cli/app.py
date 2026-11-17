@@ -81,6 +81,10 @@ app.add_typer(
     __import__("algodesk.cli.screen", fromlist=["screen_app"]).screen_app,
     name="screen",
 )
+app.add_typer(
+    __import__("algodesk.cli.backtest", fromlist=["backtest_app"]).backtest_app,
+    name="backtest",
+)
 
 # Register top-level commands
 app.command("doctor")(doctor_cmd)

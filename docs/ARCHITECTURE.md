@@ -30,9 +30,9 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 | `registry` | Plugin discovery, validation, gating, loading | `PluginRegistry`, `discover`, `code_hash`, `ConformanceStore`, `scaffold_plugin`, `base_contract_problems` |
 | `journal` | Append-only hash-chained event log (SQLite) | `Journal`, `JournalSettings`, `verify_journal` |
 | `logs` | JSON logging with secret scrubbing | `setup_logging`, `get_logger` |
-| `data` | Bar & tick store, day coverage, validation, quarantine, resampler, catalog, groups, rate limiter, gap planner, parallel fetcher, data service | `BarStore`, `BarValidator`, `RateLimiter`, `GapPlanner`, `Fetcher`, `DataService`, `CoverageIndex`, `QuarantineManager`, `SessionBarStore`, `resample`, `DataManifest`, `DataCatalog` |
+| `data` | Bar & tick store, day coverage, validation, quarantine, resampler, catalog, groups, rate limiter, gap planner, parallel fetcher, data service, historical feed, quote synthesizer | `BarStore`, `BarValidator`, `RateLimiter`, `GapPlanner`, `Fetcher`, `DataService`, `CoverageIndex`, `QuarantineManager`, `SessionBarStore`, `resample`, `DataManifest`, `DataCatalog`, `HistoricalFeed`, `BarQuoteSynth` |
 | `screens` | Market screening engine: TOML rules, feature extraction, cross-sectional ranking, reproducible run bundles | `ScreenRunner`, `TomlScreenModel`, `load_toml_screen`, `build_feature_view`, `compute_percentile_ranks`, `compute_result_hash` |
-| `engine` | Deterministic event bus, clocks, scheduler, bars, runner, and strategy runtime | `EventBus`, `WallClock`, `SimClock`, `Scheduler`, `BarBuilder`, `SessionManager`, `SessionRunner`, `StrategyRuntime`, `IndicatorManager`, `NotifyBridge` |
+| `engine` | Deterministic event bus, clocks, scheduler, bars, runner, backtest runner, and strategy runtime | `EventBus`, `WallClock`, `SimClock`, `Scheduler`, `BarBuilder`, `SessionManager`, `SessionRunner`, `BacktestRunner`, `StrategyRuntime`, `IndicatorManager`, `NotifyBridge` |
 | `oms` | Order lifecycle, state machine, write-ahead journaling | `OrderManager` |
 | `portfolio` | Realized/unrealized accounting, mark-to-market, snapshots | `PortfolioLedger` |
 | `risk` | Pre-trade evaluation, persistent kill-switch, loss monitor | `RiskEngine`, `KillSwitch`, `RiskMonitor`, `RiskViewContext` |
@@ -112,7 +112,7 @@ Secrets providers (`keychain`, `env`) expose name-based lookup through `SecretRe
 
 ## 11. Strategy Runtime, Runner, Replay & Reporting
 
-`SessionRunner` coordinates event streaming, bar building, strategy execution, order routing, risk evaluation, simulated matching, and portfolio ledgering. `StrategyRuntime` provides strategies with a read-only `StrategyContext` (completed bars, incremental indicators, position and portfolio snapshots), dispatches lifecycle hooks (`on_start`, `on_bar`, `on_fill`, `on_timer`, `on_stop`), and isolates strategy exceptions so failed strategies are halted without interrupting the session. `ResultsWriter` produces an 8-file artifact bundle in `results/<run_id>/` (`SUMMARY.md`, `metrics.json`, `trades.csv`, `equity.csv`, `config.effective.txt`, `registry.snapshot.json`, `manifest.json`, and `session.md`). Telegram alerts are delivered out-of-band via `NotifyBridge`.
+`SessionRunner` coordinates event streaming, bar building, strategy execution, order routing, risk evaluation, simulated matching, and portfolio ledgering. `BacktestRunner` composes `SessionRunner` directly without duplicating trading logic, orchestrating historical bar playback via `HistoricalFeed` and `BarQuoteSynth` with zero look-ahead (`backtest.delay_bars >= 1`), STOP and STOP_MARKET orders, and batched SQLite journaling. `StrategyRuntime` provides strategies with a read-only `StrategyContext` (completed bars, incremental indicators, position and portfolio snapshots), dispatches lifecycle hooks (`on_start`, `on_bar`, `on_fill`, `on_timer`, `on_stop`), and isolates strategy exceptions so failed strategies are halted without interrupting the session. `ResultsWriter` produces an 8-file artifact bundle in `results/<run_id>/` (`SUMMARY.md`, `metrics.json`, `trades.csv`, `equity.csv`, `config.effective.txt`, `registry.snapshot.json`, `manifest.json`, and `session.md`). Telegram alerts are delivered out-of-band via `NotifyBridge`.
 
 Run preparation (`algodesk run --prepare`) runs conformance suites for all run plugins, refreshes the instrument master, and runs pre-start doctor checks before execution. Historical replay uses `SimClock` and `ReplayFeed` to replay recorded ticks through the exact production engine wiring. `compare_runs` validates bit-for-bit replay equivalence by checking performance metrics and the ordered journal event sequences (signals, risk decisions, orders, fills). Hermetic test isolation fixture (`tmp_project`) and conftest session guards guarantee tests never mutate repository data or results state.
 
@@ -126,8 +126,7 @@ AlgoDesk Next enforces strict session observability across file logging, write-a
 
 ## 13. Not built yet
 
-- **M3 Indicators and screens**: Built-in 10 indicators, multi-input/multi-output contracts, scaffold with golden.toml conformance, list/show/compute commands. Remaining: TOML and Python screens, saved screen runs.
-- **M4 Backtester and reports**: Backtest mode (bar and tick level), models, portfolio mode, results store, compare.
+- **M4 Backtester and reports**: M4-1 backtester core mode, bar quote synth, stop orders, batch journaling complete. Remaining: multi-fidelity/tick-level, parameter sweep/study, report generator.
 - **M5 Risk and control**: Risk profiles in the parameter registry, monitors, health guards, Telegram commands, outage policies.
 - **M6 Zerodha plugin and shadow**: Zerodha venue (disabled by default), all order types, reconciliation, fee schedules, shadow mode.
 - **M7 Remote runner**: Profile B on the static-IP host, login ceremony, probe, supervisor, backups.

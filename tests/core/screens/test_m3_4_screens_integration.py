@@ -544,6 +544,12 @@ def test_universe_screen_resolution_normal(tmp_project: Any) -> None:
         {
             "allocated_capital": Decimal("100000"),
             "run": {"name": "screen_univ_test", "mode": Mode.BACKTEST},
+            "backtest": {
+                "start": "2026-10-26",
+                "end": "2026-10-26",
+                "fidelity": "bar",
+                "timeframe": "1d",
+            },
             "data_source": {"plugin": "upstox"},
             "execution_venue": {"plugin": "sim"},
             "calendar": {"plugin": "exchange"},
@@ -608,6 +614,12 @@ def test_universe_screen_missing_refuses(tmp_project: Any) -> None:
         {
             "allocated_capital": Decimal("100000"),
             "run": {"name": "screen_missing_test", "mode": Mode.BACKTEST},
+            "backtest": {
+                "start": "2026-10-26",
+                "end": "2026-10-26",
+                "fidelity": "bar",
+                "timeframe": "1d",
+            },
             "data_source": {"plugin": "upstox"},
             "execution_venue": {"plugin": "sim"},
             "calendar": {"plugin": "exchange"},
@@ -646,6 +658,12 @@ def test_universe_screen_stale_refuses(tmp_project: Any) -> None:
         {
             "allocated_capital": Decimal("100000"),
             "run": {"name": "screen_stale_test", "mode": Mode.BACKTEST},
+            "backtest": {
+                "start": "2026-10-26",
+                "end": "2026-10-26",
+                "fidelity": "bar",
+                "timeframe": "1d",
+            },
             "data_source": {"plugin": "upstox"},
             "execution_venue": {"plugin": "sim"},
             "calendar": {"plugin": "exchange"},
@@ -697,6 +715,12 @@ def test_universe_screen_skip_guard_failed_refuses(tmp_project: Any) -> None:
         {
             "allocated_capital": Decimal("100000"),
             "run": {"name": "screen_fail_test", "mode": Mode.BACKTEST},
+            "backtest": {
+                "start": "2026-10-26",
+                "end": "2026-10-26",
+                "fidelity": "bar",
+                "timeframe": "1d",
+            },
             "data_source": {"plugin": "upstox"},
             "execution_venue": {"plugin": "sim"},
             "calendar": {"plugin": "exchange"},

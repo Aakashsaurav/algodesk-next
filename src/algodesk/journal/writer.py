@@ -22,7 +22,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from algodesk.api.errors import JournalError
+from algodesk.api.errors import JournalError, SafetyViolation
 from algodesk.api.scrub import Scrubber
 from algodesk.journal.store import (
     GENESIS_HASH,
@@ -41,11 +41,13 @@ def utcnow() -> datetime:
 
 @dataclass(frozen=True)
 class JournalSettings:
-    """Settings for Journal writer. All required, no defaults."""
+    """Settings for Journal writer."""
 
     flush_interval_ms: int
     max_buffer_events: int
     backpressure_timeout_ms: int
+    batch_mode: bool = False
+    batch_size: int = 1000
 
 
 def encode_payload(val: Any) -> Any:
@@ -190,6 +192,9 @@ class Journal:
             self._queue: collections.deque[_PendingEvent] = collections.deque()
             self._writer_exception: Exception | None = None
             self._stopped = False
+            self.batch_mode: bool = bool(getattr(self.settings, "batch_mode", False))
+            self.batch_size: int = int(getattr(self.settings, "batch_size", 1000))
+            self._flushing = False
             self._last_seq: int = 0
             self._last_hash: str = GENESIS_HASH
             self._committed_seq: int = 0
@@ -263,9 +268,23 @@ class Journal:
         code_version: str,
         config_hash: str,
         registry_hash: str,
+        *,
+        batch_mode: bool | None = None,
+        batch_size: int | None = None,
     ) -> str:
         """Start a new run and record run record in runs table."""
         self._check_writer_error()
+        if batch_mode is not None:
+            self.batch_mode = batch_mode
+        if batch_size is not None:
+            self.batch_size = batch_size
+
+        if self.batch_mode and str(mode).lower() in ("paper", "live"):
+            raise SafetyViolation(
+                what=f"Journal batch mode is forbidden in '{mode}' mode",
+                where="journal.start_run",
+                fix="Disable batch mode for paper and live runs",
+            )
         now = self._clock().astimezone(UTC)
         ts_part = now.strftime("%Y%m%d_%H%M%S")
         rand_part = secrets.token_hex(4)
@@ -352,7 +371,7 @@ class Journal:
         now_dt = self._clock().astimezone(UTC)
         ts_utc = now_dt.isoformat()
         mono_ns = time.monotonic_ns()
-        durable_event = threading.Event() if durable else None
+        durable_event = threading.Event() if (durable and not self.batch_mode) else None
 
         with self._cond:
             if self._current_run_id is None:
@@ -416,8 +435,16 @@ class Journal:
         while True:
             batch: list[_PendingEvent] = []
             with self._cond:
-                while not self._stopped and not self._queue:
-                    self._cond.wait(self.settings.flush_interval_ms / 1000.0)
+                if self.batch_mode:
+                    while (
+                        not self._stopped
+                        and not self._flushing
+                        and len(self._queue) < self.batch_size
+                    ):
+                        self._cond.wait(self.settings.flush_interval_ms / 1000.0)
+                else:
+                    while not self._stopped and not self._queue:
+                        self._cond.wait(self.settings.flush_interval_ms / 1000.0)
                 if not self._queue:
                     if self._stopped:
                         break
@@ -475,18 +502,21 @@ class Journal:
         timeout = self.settings.backpressure_timeout_ms / 1000.0
         deadline = time.monotonic() + timeout
         with self._cond:
+            self._flushing = True
             target = self._last_seq
             self._cond.notify_all()
             while self._committed_seq < target and not self._stopped:
                 self._check_writer_error()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    self._flushing = False
                     raise JournalError(
                         what=f"Flush timed out after {self.settings.backpressure_timeout_ms}ms",
                         where="journal.flush",
                         fix="Check disk write performance or increase backpressure_timeout_ms",
                     )
                 self._cond.wait(min(remaining, self.settings.flush_interval_ms / 1000.0))
+            self._flushing = False
         self._check_writer_error()
 
     def close(self) -> None:

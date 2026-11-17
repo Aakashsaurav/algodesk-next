@@ -11,6 +11,8 @@ sources = ["AlgoDesk Next Architecture Specification §5.2"]
 [capabilities]
 market_orders = true
 limit_orders = true
+stop_orders = true
+stop_market_orders = true
 depth_matching = true
 failure_injection = true
 

@@ -29,6 +29,8 @@ class OrderType(StrEnum):
 
     MARKET = "MARKET"
     LIMIT = "LIMIT"
+    STOP = "STOP"
+    STOP_MARKET = "STOP_MARKET"
 
 
 class Product(StrEnum):
@@ -128,6 +130,7 @@ class OrderSpec:
     qty: int
     type: OrderType
     price: Decimal | None = None
+    trigger_price: Decimal | None = None
     product: Product = Product.CNC
     validity: Validity = Validity.DAY
     tag: str = ""
@@ -141,6 +144,18 @@ class OrderSpec:
         if self.type == OrderType.LIMIT:
             if self.price is None or self.price <= Decimal(0):
                 raise ValueError(f"Limit order requires positive price, got {self.price!r}")
+        elif self.type == OrderType.STOP:
+            if self.price is None or self.price <= Decimal(0):
+                raise ValueError(f"Stop order requires positive limit price, got {self.price!r}")
+            if self.trigger_price is None or self.trigger_price <= Decimal(0):
+                raise ValueError(
+                    f"Stop order requires positive trigger price, got {self.trigger_price!r}"
+                )
+        elif self.type == OrderType.STOP_MARKET:
+            if self.trigger_price is None or self.trigger_price <= Decimal(0):
+                raise ValueError(
+                    f"Stop-market order requires positive trigger price, got {self.trigger_price!r}"
+                )
         if len(self.extensions) > 0:
             raise ValueError("extensions mapping must be empty in M1")
 

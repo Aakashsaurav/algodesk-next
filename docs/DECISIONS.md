@@ -298,21 +298,16 @@ Short decision records (context, decision, reason) in the order they were taken.
 4. *Sub-10s no-op accumulate planning via bulk in-memory coverage*: `GapPlanner.plan` bulk-loads existing coverage for all planned series and passes `preloaded_coverage` to `evaluate_empty_record` and `is_empty_record_final`. In-memory evaluation eliminates thousands of per-empty-day unindexed SQL queries (`LIKE '%SYM%'`), reducing 500-symbol no-op plan time from 140 s (9,957 SQL statements) to ~2.1 s (173 SQL statements) with 0 Parquet opens.
 5. *Fetcher worker bounds and rate limiter primacy*: `data.fetch_max_workers` defaults to 1 (in `config/params/data.toml` and `src/algodesk/data/fetcher.py`). At 300 requests per minute the vendor rate limiter, not worker thread count, bounds throughput. Single-worker execution prevents thread contention and ensures deterministic serial manifest writes.
 
+**ADR-079 Engine backtest mode, bar quote synthesis, stop orders, and batch journaling.**
+1. *Engine backtest mode via composed SessionRunner*: Backtest is an execution mode of the exact same engine (`SessionRunner`), composed directly by `BacktestRunner` without copying or reimplementing risk, OMS, or portfolio ledger logic. Backtest configurations require `run.mode = "backtest"` and a validated `[backtest]` section with `start`, `end`, `fidelity = "bar"`, and `timeframe`. Order-capable broker plugins are strictly rejected in backtest mode.
+2. *Historical bar feed and zero look-ahead bar-to-quote synthesis*: `HistoricalFeed` streams cached bars through `DataService.get(cache_only=True)` without downloading, pre-loading warm-up bars, merging active bars by timestamp, and breaking ties by instrument ID. `BarQuoteSynth` converts each completed bar into four discrete synthetic quotes inside the bar's period: O, then L, H for an up bar ($C \ge O$) or H, L for a down bar, then C. Depth is synthesized as `backtest.participation_pct` * bar volume. Decisions taken on bar $t$ are enforced with minimum delay `backtest.delay_bars = 1`, guaranteeing an order decided on bar $t$ can never fill on any quote of bar $t$ (INV-1).
+3. *STOP and STOP_MARKET order types and venue bar model*: `OrderType.STOP` and `OrderType.STOP_MARKET` are added to the public API with an optional `trigger_price` on `OrderSpec`. `SimVenue` declares support for STOP and STOP_MARKET, triggering them when a market quote crosses the trigger price. A stop crossed by the opening quote fills at that open price. Market fills apply `backtest.slippage_bps`. Ambiguous bars where a resting stop and limit are both reachable within the bar are tracked and counted.
+4. *Batched journaling in backtest mode*: Backtest mode writes events to an isolated per-run SQLite database using batched commits (`backtest.journal_batch_size`), bypassing per-minute statistics events while preserving the SHA-256 hash chain intact. Paper and live modes strictly refuse batch mode (`SafetyViolation`).
+5. *Daily strategy execution on 1d*: `sma_cross` on daily timeframe runs with `Product.CNC`, crossover entries and exits only, ignoring intraday `exit_time` and timers. Results write the standard eight-file bundle with mode `backtest` and explicit assumptions documented in `SUMMARY.md`.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+**ADR-080 Backtest deterministic termination, SimClock end-of-data advance, sleep ban, idle watchdog, and progress/interruption.**
+1. *Deterministic backtest termination at end of data*: Backtests terminate cleanly as soon as the historical bar feed exhausts. SimClock is advanced to the end timestamp of the final session, and the end-of-session lifecycle runs once: active resting orders (CREATED, SUBMITTED, ACKNOWLEDGED, PARTIALLY_FILLED) are cancelled, marks are finalized from latest quotes, and unresolved open positions are listed in `SUMMARY.md`. Results are written with `stop_reason = "end of data"` and verdict `PASS`.
+2. *Prohibition of wall-clock waiting and timer isolation*: In backtest mode, repeating wall-clock timers (`heartbeat`, `console_status_line`, `check_feed_staleness`, `tick_bar_stats`, `proc_stats`) and `asyncio.sleep()` are bypassed. All temporal progression and event firing are driven strictly by `SimClock` advancing on bar arrivals. Tests enforce this by patching `time.sleep()` and `asyncio.sleep()` to raise if called during a backtest.
+3. *Backtest watchdog for stalls and data starvation*: Parameter `backtest.max_idle_seconds` (default 60.0s, registry parameter in `config/params/backtest.toml`) monitors elapsed wall-clock time between bar dispatches. If no bar is processed within this interval, the session stops immediately, raises actionable `BacktestWatchdogError`, writes complete results with `stop_reason = "watchdog"` and verdict `FAIL`, and exits CLI with code 1.
+4. *Console progress and graceful Ctrl-C interruption*: When quiet mode is disabled, backtest streams progress indicators to stderr every `cli.progress_every` sessions reporting elapsed wall-clock seconds. On `KeyboardInterrupt` (Ctrl-C), the engine catches the signal, drains pending events, finalizes journals, writes results with `stop_reason = "interrupt"` and verdict `STOPPED`, and outputs the results directory path.
+5. *Batch journal durable non-blocking commit and deterministic result hash*: Journal batch mode in backtests commits events in configured batch sizes without blocking synchronous fsync on `durable=True` order submissions, resolving thread deadlocks. A deterministic `result_hash` SHA-256 digest is generated over normalized trade fields (omitting dynamic run-id client references) and core metrics, allowing repeat backtests to verify bitwise determinism with `compare_runs`.
