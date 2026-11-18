@@ -26,6 +26,7 @@ class HistoricalFeed:
         calendar: Any = None,
         manifest: Any = None,
         synth: BarQuoteSynth | None = None,
+        adjust: str = "splits",
     ) -> None:
         self.data_service = data_service
         self.instruments = list(instruments)
@@ -35,6 +36,7 @@ class HistoricalFeed:
         self.calendar = calendar
         self.manifest = manifest
         self.synth = synth or BarQuoteSynth()
+        self.adjust = adjust
 
         # Normalize start/end datetimes in UTC
         if isinstance(start, date) and not isinstance(start, datetime):
@@ -82,17 +84,12 @@ class HistoricalFeed:
         expected_sessions: set[date] | None = None
         if self.calendar is not None:
             try:
+                from algodesk.data.coverage import is_trading_session
+
                 curr = self.start_date
                 expected_sessions = set()
                 while curr <= self.end_date:
-                    is_td = False
-                    if hasattr(self.calendar, "is_trading_day"):
-                        is_td = self.calendar.is_trading_day(curr)
-                    elif hasattr(self.calendar, "is_session"):
-                        is_td = self.calendar.is_session(curr)
-                    else:
-                        is_td = True
-                    if is_td:
+                    if is_trading_session(curr, calendar=self.calendar, manifest=self.manifest):
                         expected_sessions.add(curr)
                     curr += timedelta(days=1)
             except Exception:
@@ -117,37 +114,32 @@ class HistoricalFeed:
                         end=self.start_dt,
                         source=self.source,
                         cache_only=True,
+                        adjust=self.adjust,
                     )
                     w_bars = [b for b in w_slice.bars if b.end_ts <= self.start_dt]
                     # Take last warmup_bars_count bars
                     all_warmup_bars.extend(w_bars[-self.warmup_bars_count :])
-                except Exception:
+                except (KeyError, FileNotFoundError):
                     pass
 
             # 2. Active backtest window bars
-            try:
-                act_slice = self.data_service.get(
-                    series_key,
-                    start=self.start_dt,
-                    end=self.end_dt,
-                    source=self.source,
-                    cache_only=True,
-                )
-                for b in act_slice.bars:
-                    if b.start_ts > self.end_dt:
-                        continue
-                    if b.end_ts <= self.start_dt:
-                        continue
-                    if expected_sessions is not None and b.start_ts.date() not in expected_sessions:
-                        continue
-                    all_active_bars.append(b)
-                # If calendar filtered all bars, fall back to active slice bars
-                if not all_active_bars and act_slice.bars and expected_sessions is not None:
-                    for b in act_slice.bars:
-                        if b.start_ts <= self.end_dt and b.end_ts > self.start_dt:
-                            all_active_bars.append(b)
-            except Exception:
-                pass
+            # Do NOT catch DataError so corporate action conflicts / manual_required raise loud
+            act_slice = self.data_service.get(
+                series_key,
+                start=self.start_dt,
+                end=self.end_dt,
+                source=self.source,
+                cache_only=True,
+                adjust=self.adjust,
+            )
+            for b in act_slice.bars:
+                if b.start_ts > self.end_dt:
+                    continue
+                if b.end_ts <= self.start_dt:
+                    continue
+                if expected_sessions is not None and b.start_ts.date() not in expected_sessions:
+                    continue
+                all_active_bars.append(b)
 
         # Sort warm-up bars by (start_ts, instrument)
         all_warmup_bars.sort(key=lambda b: (b.start_ts, str(b.instrument)))

@@ -10,6 +10,7 @@ from typing import Any
 from algodesk.api.errors import ConfigError
 from algodesk.api.market import parse_id
 from algodesk.api.trading import Charges, Fill, Product, Side
+from algodesk.fees.errors import FeeScheduleError
 from algodesk.fees.models import Schedule
 
 
@@ -36,6 +37,10 @@ def _round_component(val: Decimal, rounding: str | None = None) -> Decimal:
 
 class ChargesList(list[Charges]):
     """A list of Charges for individual fills with aggregate convenience properties."""
+
+    def __init__(self, *args: Any, fallback_used_count: int = 0, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.fallback_used_count = fallback_used_count
 
     @property
     def total(self) -> Decimal:
@@ -144,18 +149,34 @@ def _calculate_taxes(
     taxes: Iterable[Any],
     components: Mapping[str, Decimal],
     trade_date: date,
-) -> dict[str, Decimal]:
+    fallback_mode: str | None = None,
+) -> tuple[dict[str, Decimal], bool]:
     tax_items: dict[str, Decimal] = {}
+    tax_fb = False
     for tax in taxes:
         if tax.effective_from and trade_date < tax.effective_from:
-            continue
+            if fallback_mode == "earliest":
+                tax_fb = True
+            else:
+                raise FeeScheduleError(
+                    what=(
+                        f"Trade date {trade_date.isoformat()} is before earliest verified "
+                        f"effective_from ({tax.effective_from.isoformat()}) for tax '{tax.name}'"
+                    ),
+                    where=f"FeeEngine:tax:{tax.name}",
+                    fix=(
+                        "Configure fees.fallback = 'earliest' in run config to extrapolate "
+                        f"earliest verified rates or trade on or after "
+                        f"{tax.effective_from.isoformat()}"
+                    ),
+                )
         if tax.effective_to and trade_date > tax.effective_to:
             continue
         taxable_base = sum(components.get(k, Decimal("0.00")) for k in tax.applies_to)
         tax_items[tax.name] = tax_items.get(tax.name, Decimal("0.00")) + _round_half_up(
             taxable_base * tax.rate
         )
-    return tax_items
+    return tax_items, tax_fb
 
 
 def _resolve_fill_attributes(
@@ -210,6 +231,28 @@ def _resolve_fill_attributes(
 class FeeEngine:
     """Pure fee calculation engine driving schedules against trades and fills."""
 
+    fallback: str | None = None
+    fallback_used_count: int = 0
+
+    def __init__(self, fallback: str | None = None) -> None:
+        self.fallback = fallback if fallback is not None else FeeEngine.fallback
+        self.fallback_used = 0
+
+    @classmethod
+    def set_fallback(cls, fallback: str | None) -> None:
+        """Set default fallback mode for fee calculation (e.g. 'earliest')."""
+        cls.fallback = fallback
+
+    @classmethod
+    def reset_fallback_count(cls) -> None:
+        """Reset the count of fallback uses."""
+        cls.fallback_used_count = 0
+
+    @classmethod
+    def get_fallback_used(cls) -> int:
+        """Return total times fallback was used across calculations."""
+        return cls.fallback_used_count
+
     @classmethod
     def calculate_trade_charges(
         cls,
@@ -224,6 +267,7 @@ class FeeEngine:
         instrument_type: str | None = None,
         is_exercise: bool = False,
         is_first_scrip_day: bool = True,
+        fallback: str | None = None,
     ) -> Charges:
         """Calculate itemised charges and total for a single trade execution."""
         if is_exercise:
@@ -246,13 +290,25 @@ class FeeEngine:
         itype = (
             instrument_type.lower() if instrument_type else ("fut" if seg_str == "fno" else None)
         )
+        fallback_mode = fallback or cls.fallback
 
-        matching = [
+        # Filter candidate components for segment/product/exchange/instrument_type
+        relevant = [
             c
             for c in sch.components
-            if _component_matches(c, seg_str, prod_str, trade_date, exch_str, itype)
+            if c.segment.lower() == seg_str
+            and c.product.upper() == prod_str
+            and (c.exchange is None or c.exchange.lower() == exch_str)
+            and (
+                itype is None
+                and c.instrument_type is None
+                or itype == "fut"
+                and c.instrument_type in (None, "fut")
+                or itype == "opt"
+                and c.instrument_type == "opt"
+            )
         ]
-        if not matching:
+        if not relevant:
             raise ConfigError(
                 f"No fee schedule components found for segment={segment!r}, "
                 f"product={product!r}, date={trade_date.isoformat()}",
@@ -263,17 +319,79 @@ class FeeEngine:
                 ),
             )
 
+        # Collect distinct components applicable to this trade's side
+        side_applicable = [c for c in relevant if c.side == "both" or c.side.lower() == side_str]
+        comp_groups: dict[str, list[Any]] = {}
+        for c in side_applicable:
+            comp_groups.setdefault(c.name, []).append(c)
+
+        matching: list[Any] = []
+        fallback_used_here = False
+
+        for comp_name, comps in comp_groups.items():
+            earliest_dt = min(c.effective_from for c in comps)
+            if trade_date < earliest_dt:
+                if fallback_mode == "earliest":
+                    earliest_comp = min(comps, key=lambda c: c.effective_from)
+                    matching.append(earliest_comp)
+                    fallback_used_here = True
+                else:
+                    raise FeeScheduleError(
+                        what=(
+                            f"Trade date {trade_date.isoformat()} is before earliest verified "
+                            f"effective_from ({earliest_dt.isoformat()}) "
+                            f"for component '{comp_name}' ({segment}:{product})"
+                        ),
+                        where=f"FeeEngine:{segment}:{product}:{comp_name}",
+                        fix=(
+                            "Configure fees.fallback = 'earliest' in run config to extrapolate "
+                            f"earliest verified rates or trade on or after "
+                            f"{earliest_dt.isoformat()}"
+                        ),
+                    )
+            else:
+                matched_c = [
+                    c
+                    for c in comps
+                    if _component_matches(c, seg_str, prod_str, trade_date, exch_str, itype)
+                ]
+                if not matched_c:
+                    if fallback_mode == "earliest":
+                        earliest_comp = min(comps, key=lambda c: c.effective_from)
+                        matching.append(earliest_comp)
+                        fallback_used_here = True
+                    else:
+                        raise FeeScheduleError(
+                            what=(
+                                f"No verified rate found for component '{comp_name}' "
+                                f"on trade date {trade_date.isoformat()}"
+                            ),
+                            where=f"FeeEngine:{segment}:{product}:{comp_name}",
+                            fix=(
+                                "Add component rate in schedule.toml or configure "
+                                "fees.fallback = 'earliest'"
+                            ),
+                        )
+                else:
+                    matching.extend(matched_c)
+
         items: dict[str, Decimal] = {}
         for c in matching:
-            if c.side != "both" and c.side.lower() != side_str:
-                continue
             raw = _compute_component_raw(c, turnover, is_first_scrip_day)
             rounding_rule = getattr(c, "rounding", None)
             items[c.name] = items.get(c.name, Decimal("0.00")) + _round_component(
                 raw, rounding_rule
             )
 
-        tax_items = _calculate_taxes(sch.taxes, items, trade_date)
+        tax_items, tax_fb = _calculate_taxes(
+            sch.taxes, items, trade_date, fallback_mode=fallback_mode
+        )
+        if tax_fb:
+            fallback_used_here = True
+
+        if fallback_used_here:
+            cls.fallback_used_count += 1
+
         all_items: dict[str, Decimal] = {**items, **tax_items}
         return Charges(items=all_items, total=sum(all_items.values(), Decimal("0.00")))
 
@@ -284,9 +402,11 @@ class FeeEngine:
         schedule: Schedule | Any,
         *,
         orders: Mapping[str, Any] | None = None,
+        fallback: str | None = None,
     ) -> ChargesList:
         """Compute charges for a sequence of fills, applying DP charges once per scrip/day."""
         sch = _coerce_schedule(schedule)
+        before_count = cls.fallback_used_count
         results = ChargesList()
         seen_scrip_days: set[tuple[date, str]] = set()
 
@@ -310,9 +430,11 @@ class FeeEngine:
                 exchange=exch,
                 instrument_type=itype,
                 is_first_scrip_day=is_first,
+                fallback=fallback,
             )
             results.append(chg)
 
+        results.fallback_used_count = cls.fallback_used_count - before_count
         return results
 
 
@@ -321,6 +443,7 @@ def charges_for_fills(
     schedule: Schedule,
     *,
     orders: Mapping[str, Any] | None = None,
+    fallback: str | None = None,
 ) -> ChargesList:
     """Convenience functional wrapper for FeeEngine.charges_for_fills."""
-    return FeeEngine.charges_for_fills(fills, schedule, orders=orders)
+    return FeeEngine.charges_for_fills(fills, schedule, orders=orders, fallback=fallback)

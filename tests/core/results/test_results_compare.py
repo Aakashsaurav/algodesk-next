@@ -227,3 +227,61 @@ def test_compare_plugin_version_diffs_only_for_configured_plugins(tmp_project: P
     # Since nse_bhavcopy is not configured, its version difference should NOT cause divergence!
     assert is_equal is True
     assert diff is None
+
+
+def test_compare_runs_cotemporal_permutation_diagnostic_note(tmp_project: Path) -> None:
+    """results compare flags sequence inequality but includes a clear diagnostic note."""
+    results_dir = tmp_project / "results"
+    run_a = results_dir / "run_perm_a"
+    run_b = results_dir / "run_perm_b"
+    run_a.mkdir(parents=True, exist_ok=True)
+    run_b.mkdir(parents=True, exist_ok=True)
+
+    metrics = {
+        "trades": 2,
+        "gross_pnl": 100.0,
+        "net_pnl": 90.0,
+        "charges": 10.0,
+        "win_rate": 100.0,
+        "max_drawdown": 0.5,
+    }
+    (run_a / "metrics.json").write_text(json.dumps(metrics), encoding="utf-8")
+    (run_b / "metrics.json").write_text(json.dumps(metrics), encoding="utf-8")
+
+    ts = "2026-11-18T09:45:00.012000+00:00"
+    sig_1 = {
+        "strategy": "sma",
+        "instrument": "NSE:EQ:HDFCBANK",
+        "side": "SELL",
+        "qty": 10,
+        "ts": ts,
+    }
+    sig_2 = {
+        "strategy": "sma",
+        "instrument": "NSE:EQ:ICICIBANK",
+        "side": "SELL",
+        "qty": 10,
+        "ts": ts,
+    }
+
+    evs_a = [
+        {"kind": "signal", "payload_json": json.dumps(sig_1)},
+        {"kind": "signal", "payload_json": json.dumps(sig_2)},
+    ]
+    evs_b = [
+        {"kind": "signal", "payload_json": json.dumps(sig_2)},
+        {"kind": "signal", "payload_json": json.dumps(sig_1)},
+    ]
+    with open(run_a / "events.jsonl", "w", encoding="utf-8") as f:
+        for ev in evs_a:
+            f.write(json.dumps(ev) + "\n")
+    with open(run_b / "events.jsonl", "w", encoding="utf-8") as f:
+        for ev in evs_b:
+            f.write(json.dumps(ev) + "\n")
+
+    is_equal, diff = compare_runs(tmp_project, run_a.name, run_b.name)
+    assert is_equal is False
+    assert diff is not None
+    assert "signals[0]" in diff
+    assert "note: Metrics and event contents match 100%" in diff
+    assert "non-deterministic iteration" in diff

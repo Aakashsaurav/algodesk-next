@@ -175,6 +175,7 @@ def test_options_stt_transition(zerodha_schedule: Schedule) -> None:
         trade_date=date(2026, 3, 31),
         schedule=zerodha_schedule,
         instrument_type="opt",
+        fallback="earliest",
     )
     assert pre_chg.stt == Decimal("62.50")  # 0.0625% of 100,000
 
@@ -187,6 +188,7 @@ def test_options_stt_transition(zerodha_schedule: Schedule) -> None:
         trade_date=date(2026, 4, 1),
         schedule=zerodha_schedule,
         instrument_type="opt",
+        fallback="earliest",
     )
     assert post_chg.stt == Decimal("150.00")  # 0.15% of 100,000
 

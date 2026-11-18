@@ -633,6 +633,54 @@ Screens default to `adjust = "splits"`: when stored candles match requested basi
    Daily (`1d`) candles support single-request spans up to 3,650 days (10 years) under Upstox API limits. Multi-symbol group backfills display a per-symbol table of rows added and itemize symbols with zero rows and non-final coverage. If zero-row symbols exceed `data.accumulate_max_empty_pct` (default 2%), `data accumulate` fails loudly with exit code 1, listing failing symbols.
 
 
+## Backtest readiness and fees
+
+Backtests run strictly offline on cached historical data and enforce data readiness, point-in-time universe membership, and trade-date-effective fee schedules before executing strategies.
+
+1. **Pre-run readiness check**:
+   Inspect whether local data satisfies backtest requirements without executing the session:
+   ```bash
+   # Tabular summary of symbol status and missing ranges
+   algodesk backtest check <run>
+
+   # Machine-readable JSON output
+   algodesk backtest check <run> --json
+
+   # Non-destructive test of earlier date windows
+   algodesk backtest check <run> --start 2022-01-03 --end 2022-01-07
+   ```
+   If the percentage of missing symbols exceeds `backtest.max_missing_pct` (default 10.0%), `backtest check` and `backtest run` fail closed with exit code 1 and output the exact remediation command:
+   ```bash
+   algodesk data accumulate --group <group> --source <source> --timeframe <tf> --days <N>
+   ```
+   Below the limit, missing symbols are skipped, listed with their skip reasons (`no_data`, `missing_sessions`, `pending_empty`, `coverage_without_bars`, `quarantined`, `insufficient_warmup`), and filtered from the effective universe in ops while keeping engine logic unchanged. Backtest results store `readiness.json` in the run output folder.
+
+2. **Universe point-in-time resolution**:
+   - `universe.membership = "at_start"` (default): Resolves active group constituents as-of the backtest start date using point-in-time history parquets (`data/universe/<group>.parquet`) and computes a deterministic SHA-256 hash. Additions and removals later in the backtest window are not modelled.
+   - `universe.membership = "union"`: Includes all symbols that ever belonged to the group.
+
+3. **Trade-date fee selection and fail-closed safety**:
+   Fees evaluate component schedules effective on each trade date. If a trade date precedes the earliest verified `effective_from` date for any required component, `FeeEngine` fails closed with an actionable `FeeScheduleError`.
+   - Inspect applicable rates and components for a specific date:
+     ```bash
+     algodesk fees show <schedule> --as-of YYYY-MM-DD
+     algodesk fees show zerodha_nse --as-of 2026-11-13
+     algodesk fees show zerodha_nse --as-of 2026-11-13 --json
+     ```
+   - To extrapolate earliest verified rates across pre-verified trade dates, configure:
+     ```toml
+     [fees]
+     schedule = "zerodha_nse"
+     fallback = "earliest"
+     ```
+     When fallback is used, the total count of fallback calculations is journaled as `fees.fallback_used` in `metrics.json` and highlighted as an assumption caveat in `SUMMARY.md`.
+
+4. **Historical feed adjustments & sessions**:
+   - `adjust = "splits"` (default): Delivers raw candles adjusted for stock splits and bonuses.
+   - `adjust = "total"`: Dynamically applies dividend and corporate action factors; fails closed with actionable `DataError` on corporate action conflict or `manual_required` without swallowing errors.
+   - Sessions adhere strictly to exchange truth: Saturday special sessions yield bars without gap reporting, and exchange holidays yield neither bars nor gaps.
+
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |

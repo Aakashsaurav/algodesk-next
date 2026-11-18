@@ -97,6 +97,7 @@ class FeesConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schedule: str
+    fallback: Literal["earliest"] | None = None
 
 
 class DeploymentConfig(BaseModel):
@@ -115,6 +116,7 @@ class UniverseConfig(BaseModel):
     screen: str | None = None
     symbols: list[str] | None = None
     group: str | None = None
+    membership: Literal["at_start", "union"] = "at_start"
 
     @model_validator(mode="after")
     def _validate_universe(self) -> UniverseConfig:
@@ -151,6 +153,9 @@ class BacktestConfig(BaseModel):
     timeframe: str = "1d"
     study: str | None = None
     oos_from: date | str | None = None
+    adjust: Literal["splits", "total"] = "splits"
+    max_missing_pct: float | None = None
+    warmup_bars: int | None = None
 
     @field_validator("fidelity")
     @classmethod

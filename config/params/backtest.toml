@@ -65,3 +65,15 @@ scope = "global"
 tighten = "down"
 description = "Maximum wall-clock idle seconds without processing a bar before backtest watchdog trips"
 owner = "engine"
+
+[[param]]
+name = "backtest.max_missing_pct"
+type = "float"
+default = 10.0
+min = 0.0
+max = 100.0
+scope = "global"
+tighten = "down"
+description = "Maximum percentage of symbols with missing or invalid data permitted before backtest check fails"
+owner = "data"
+

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import traceback
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import click
 import typer
@@ -39,7 +39,105 @@ from algodesk.cli.session import session_app
 from algodesk.cli.spike import spike_app
 from algodesk.cli.telegram import telegram_app
 from algodesk.ops.checks import build_core_checks
+from algodesk.ops.fees import inspect_fee_schedule
 from algodesk.ops.runtime import Runtime
+
+
+def _render_fees_show(info: dict[str, Any], json_output: bool) -> None:
+    schedule, eval_date = info["schedule"], info["as_of"]
+    active_comps, active_taxes = info["active_comps"], info["active_taxes"]
+    if json_output:
+        import json
+
+        data = {
+            "schedule": schedule,
+            "as_of": eval_date.isoformat(),
+            "components": [
+                {
+                    "name": c.name,
+                    "segment": c.segment,
+                    "product": c.product,
+                    "kind": c.kind,
+                    "rate": str(c.rate) if c.rate is not None else None,
+                    "amount": str(c.amount) if c.amount is not None else None,
+                    "side": c.side,
+                    "exchange": getattr(c, "exchange", None),
+                    "instrument_type": getattr(c, "instrument_type", None),
+                    "effective_from": c.effective_from.isoformat(),
+                    "effective_to": c.effective_to.isoformat() if c.effective_to else None,
+                }
+                for c in active_comps
+            ],
+            "taxes": [
+                {"name": t.name, "rate": str(t.rate), "applies_to": t.applies_to}
+                for t in active_taxes
+            ],
+        }
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    typer.echo(f"=== Fee Schedule: {schedule} (As-of: {eval_date.isoformat()}) ===")
+    meta_ver = getattr(info["meta"], "verified_on", "unverified")
+    typer.echo(f"Source: {info['meta'].source}\nVerified on: {meta_ver}\n")
+    headers = [
+        "Segment",
+        "Product",
+        "Component",
+        "Side",
+        "Kind",
+        "Rate / Amount",
+        "Exch",
+        "Type",
+        "From",
+    ]
+    rows = []
+    for c in sorted(active_comps, key=lambda x: (x.segment, x.product, x.name)):
+        val = (
+            f"{c.rate}"
+            if c.rate is not None
+            else (f"₹{c.amount:.2f}" if c.amount is not None else "")
+        )
+        rows.append(
+            [
+                c.segment.upper(),
+                c.product.upper(),
+                c.name,
+                c.side,
+                c.kind,
+                val,
+                getattr(c, "exchange", None) or "all",
+                getattr(c, "instrument_type", None) or "all",
+                c.effective_from.isoformat(),
+            ]
+        )
+    typer.echo(format_table(headers, rows))
+    if active_taxes:
+        typer.echo("\n--- Applicable Taxes ---")
+        for t in active_taxes:
+            applies = ", ".join(t.applies_to)
+            typer.echo(f"  {t.name.upper()}: {float(t.rate) * 100:.1f}% on {applies}")
+
+
+@fees_app.command("show")
+@handle_cli_errors
+def fees_show_cmd(
+    ctx: typer.Context,
+    schedule: str = typer.Argument(..., help="Fee schedule name (e.g. zerodha_nse)"),
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="Date YYYY-MM-DD to evaluate applicable components"
+    ),
+    segment: str | None = typer.Option(None, "--segment", help="Filter by segment (eq, fno)"),
+    product: str | None = typer.Option(
+        None, "--product", help="Filter by product (CNC, MIS, NRML)"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
+) -> None:
+    """Show applicable fee components and rates for a schedule on a given date."""
+    with _open_rt(ctx) as rt:
+        res = inspect_fee_schedule(
+            rt=rt, schedule=schedule, as_of=as_of, segment=segment, product=product
+        )
+        _render_fees_show(res, json_output=json_output)
 
 
 def _open_rt(ctx: typer.Context, *, ensure: bool = False) -> Runtime:

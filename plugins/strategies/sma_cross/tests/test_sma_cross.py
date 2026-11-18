@@ -224,3 +224,50 @@ def test_sma_cross_no_new_entry_at_or_after_exit_time() -> None:
     )
     intents_after = strat.on_bar(ctx, b_after)
     assert len(intents_after) == 0
+
+
+def test_sma_cross_multi_instrument_timer_order_deterministic() -> None:
+    """Verify on_timer exits multiple instruments in exact deterministic configuration order."""
+    manifest = _make_manifest()
+    symbols = [
+        InstrumentId("NSE:EQ:INFY"),
+        InstrumentId("NSE:EQ:HDFCBANK"),
+        InstrumentId("NSE:EQ:ICICIBANK"),
+        InstrumentId("NSE:EQ:TCS"),
+    ]
+    cfg = {"instruments": [str(s) for s in symbols], "fast": 5, "slow": 10, "qty": 10}
+    strat = SMACrossStrategy(manifest, config=cfg)
+
+    clock = MagicMock()
+    clock.now.return_value = datetime(2026, 11, 18, 9, 45, tzinfo=UTC)
+
+    positions = {
+        symbols[0]: Position(
+            instrument=symbols[0], qty=10, avg_price=Decimal("1500"), product=Product.MIS
+        ),
+        symbols[1]: Position(
+            instrument=symbols[1], qty=5, avg_price=Decimal("1600"), product=Product.MIS
+        ),
+        symbols[2]: Position(
+            instrument=symbols[2], qty=8, avg_price=Decimal("1000"), product=Product.MIS
+        ),
+        symbols[3]: Position(
+            instrument=symbols[3], qty=12, avg_price=Decimal("3500"), product=Product.MIS
+        ),
+    }
+
+    ctx = StrategyContext(
+        clock=clock,
+        instruments={s: MagicMock() for s in symbols},
+        position=lambda inst: positions.get(inst),
+    )
+    strat.on_start(ctx)
+
+    intents = strat.on_timer(ctx, "exit_time")
+    assert len(intents) == 4
+    # Ensure emitted intents strictly follow the configuration order, not hash order
+    for idx, sym in enumerate(symbols):
+        assert isinstance(intents[idx], PlaceOrder)
+        assert intents[idx].spec.instrument == sym
+        assert intents[idx].spec.side == Side.SELL
+        assert intents[idx].spec.qty == positions[sym].qty

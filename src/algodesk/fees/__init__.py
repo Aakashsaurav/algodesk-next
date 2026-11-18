@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from algodesk.fees.engine import ChargesList, FeeEngine, charges_for_fills
+from algodesk.fees.errors import FeeScheduleError
 from algodesk.fees.models import (
     ComponentKind,
     ComponentSide,
@@ -17,6 +18,7 @@ __all__ = [
     "ComponentKind",
     "ComponentSide",
     "FeeEngine",
+    "FeeScheduleError",
     "Schedule",
     "ScheduleComponent",
     "ScheduleMeta",

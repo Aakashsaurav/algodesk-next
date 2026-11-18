@@ -29,6 +29,15 @@ from algodesk.api.trading import Fill, Intent
 from .config_schema import SMACrossConfig
 
 
+class InstrumentSequence(list[InstrumentId]):
+    """Ordered list of instruments preserving deterministic sequence while allowing set equality."""
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, (set, frozenset)):
+            return set(self) == other
+        return super().__eq__(other)
+
+
 class SMACrossStrategy(PluginBase):
     """Long-only Simple Moving Average crossover strategy demo."""
 
@@ -42,7 +51,10 @@ class SMACrossStrategy(PluginBase):
     ) -> None:
         super().__init__(manifest, config or {}, ctx)
         self._cfg = SMACrossConfig.model_validate(self.config)
-        self._instruments: set[InstrumentId] = {InstrumentId(s) for s in self._cfg.instruments}
+        self._instruments: InstrumentSequence = InstrumentSequence(
+            InstrumentId(s) for s in self._cfg.instruments
+        )
+        self._instruments_set: set[InstrumentId] = set(self._instruments)
         self._prev_fast: dict[InstrumentId, float] = {}
         self._prev_slow: dict[InstrumentId, float] = {}
         self._entry_prices: dict[InstrumentId, float] = {}
@@ -72,7 +84,8 @@ class SMACrossStrategy(PluginBase):
     def on_start(self, ctx: StrategyContext) -> None:
         """Initialize monitored instruments from context if none configured."""
         if not self._instruments and ctx.instruments:
-            self._instruments = set(ctx.instruments.keys())
+            self._instruments = InstrumentSequence(InstrumentId(s) for s in ctx.instruments.keys())
+            self._instruments_set = set(self._instruments)
 
     def on_bar(self, ctx: StrategyContext, bar: Bar) -> Sequence[Intent]:
         """Process completed bars and emit entry/exit PlaceOrder intents."""
@@ -80,7 +93,7 @@ class SMACrossStrategy(PluginBase):
             return ()
         if bar.timeframe != self._cfg.timeframe:
             return ()
-        if self._instruments and bar.instrument not in self._instruments:
+        if self._instruments_set and bar.instrument not in self._instruments_set:
             return ()
 
         if ctx.indicator is None:
@@ -103,7 +116,9 @@ class SMACrossStrategy(PluginBase):
         current_qty = pos.qty if pos is not None else 0
 
         is_daily = self._cfg.timeframe == "1d"
-        product_enum = Product.CNC if (is_daily or self._cfg.product.lower() == "cnc") else Product.MIS
+        product_enum = (
+            Product.CNC if (is_daily or self._cfg.product.lower() == "cnc") else Product.MIS
+        )
 
         # 1. Exit check: Fast crosses below slow
         if prev_fast >= prev_slow and fast_val < slow_val and current_qty > 0:
@@ -225,6 +240,7 @@ class SMACrossStrategy(PluginBase):
     def on_stop(self, ctx: StrategyContext) -> None:
         """Lifecycle stop hook resetting tracking structures."""
         self._instruments.clear()
+        self._instruments_set.clear()
         self._prev_fast.clear()
         self._prev_slow.clear()
         self._entry_prices.clear()

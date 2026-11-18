@@ -131,7 +131,9 @@ class SimVenue:
         self._event_queue.put_nowait(event)
 
     def _validate_order(self, spec: OrderSpec, client_ref: str) -> str | None:
-        if spec.type not in getattr(self, "supported_order_types", {OrderType.MARKET, OrderType.LIMIT}):
+        if spec.type not in getattr(
+            self, "supported_order_types", {OrderType.MARKET, OrderType.LIMIT}
+        ):
             return f"unsupported order type {spec.type.value}"
 
         if spec.instrument not in self._configured_ids and spec.instrument not in self._instruments:

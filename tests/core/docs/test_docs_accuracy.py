@@ -81,6 +81,8 @@ ALLOWED_NON_PARAM_NAMES = {
     "table.csv": "Screen run passed symbols CSV filename",
     "groups.import": "Journal event type for group imports",
     "groups.import-history": "Journal event type for history group imports",
+    "readiness.json": "Backtest readiness report JSON filename",
+    "fees.fallback_used": "Metrics count of trades using fallback fee schedule",
 }
 
 KNOWN_RUNTIME_PREFIXES = (

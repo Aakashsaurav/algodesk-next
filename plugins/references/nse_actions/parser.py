@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
-import tomllib
 from typing import Any
 
 from algodesk.api.market import ActionRecord

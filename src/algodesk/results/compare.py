@@ -311,6 +311,30 @@ def _format_version_differences(dir_a: Path, dir_b: Path) -> list[str]:
     return diffs
 
 
+def _is_cotemporal_permutation(
+    seqs_a: dict[str, list[dict[str, Any]]],
+    seqs_b: dict[str, list[dict[str, Any]]],
+    seq_names: tuple[str, ...],
+) -> bool:
+    """Check if sequence differences are purely intra-timestamp permutations."""
+
+    def key_fn(item: dict[str, Any]) -> tuple[str, str, str, str]:
+        ts = str(item.get("_ts") or "")[:19]
+        return (
+            ts,
+            str(item.get("instrument") or ""),
+            str(item.get("side") or ""),
+            str(item.get("rule") or ""),
+        )
+
+    for s_name in seq_names:
+        sorted_a = sorted(seqs_a[s_name], key=key_fn)
+        sorted_b = sorted(seqs_b[s_name], key=key_fn)
+        if _collect_sequence_diffs(s_name, sorted_a, sorted_b, diff_count=1):
+            return False
+    return True
+
+
 def _attach_version_diffs(dir_a: Path, dir_b: Path, base_msg: str) -> str:
     v_diffs = _format_version_differences(dir_a, dir_b)
     if not v_diffs:
@@ -375,6 +399,13 @@ def compare_runs(
 
         counts_str = ", ".join(f"{k} (A={v[0]}, B={v[1]})" for k, v in counts.items())
         diff_lines = [first_diff, f"counts: {counts_str}"]
+        if diff_metric is None and all(v[0] == v[1] for v in counts.values()):
+            if _is_cotemporal_permutation(seqs_a, seqs_b, seq_names):
+                diff_lines.append(
+                    "note: Metrics and event contents match 100%, but event sequence "
+                    "order differed at identical timestamps. "
+                    "Check strategy for non-deterministic iteration (e.g. unordered set/dict)."
+                )
         for s_name in seq_names:
             diff_list = seq_diffs.get(s_name, [])
             if diff_list:

@@ -63,6 +63,8 @@ start = "2026-11-10"
 end = "2026-11-12"
 fidelity = "bar"
 timeframe = "1d"
+max_missing_pct = 100.0
+warmup_bars = 0
 
 [data_source]
 plugin = "upstox"
