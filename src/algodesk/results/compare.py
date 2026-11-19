@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -420,3 +420,91 @@ def compare_runs(
         return False, f"Code or plugin versions differ: {', '.join(v_diffs)}"
 
     return True, None
+
+
+def compare_backtest_manifests(
+    dir_a: Path,
+    dir_b: Path,
+) -> tuple[bool, str | None]:
+    """Compare backtest result_hash and determine first differing input if unequal."""
+    man_a = _read_json_file(dir_a / "manifest.json")
+    man_b = _read_json_file(dir_b / "manifest.json")
+    h_a = man_a.get("result_hash")
+    h_b = man_b.get("result_hash")
+
+    if h_a and h_b and h_a == h_b:
+        return True, None
+
+    # 1. Dataset checksums
+    cs_a = man_a.get("dataset_checksums") or man_a.get("checksums") or []
+    cs_b = man_b.get("dataset_checksums") or man_b.get("checksums") or []
+    if cs_a != cs_b:
+        return False, f"data checksum: {cs_a} != {cs_b}"
+
+    # 2. Fee schedule
+    fee_a = man_a.get("fee_schedule_hash")
+    fee_b = man_b.get("fee_schedule_hash")
+    if fee_a != fee_b:
+        return False, f"fee schedule: {fee_a} != {fee_b}"
+
+    # 3. Parameters
+    p_a = man_a.get("strategy_parameters") or {}
+    p_b = man_b.get("strategy_parameters") or {}
+    if p_a != p_b:
+        for k in sorted(set(p_a.keys()) | set(p_b.keys())):
+            if p_a.get(k) != p_b.get(k):
+                return False, f"parameter: {k} ({p_a.get(k)} != {p_b.get(k)})"
+        return False, f"parameter: {p_a} != {p_b}"
+
+    # 4. Seed
+    seed_a, seed_b = man_a.get("seed"), man_b.get("seed")
+    if seed_a != seed_b:
+        return False, f"seed: {seed_a} != {seed_b}"
+
+    # 5. Code version
+    cv_a, cv_b = man_a.get("code_version"), man_b.get("code_version")
+    if cv_a != cv_b:
+        return False, f"code version: {cv_a} != {cv_b}"
+
+    return False, f"result_hash: {h_a} != {h_b}"
+
+
+def format_backtest_compare_table(dir_a: Path, dir_b: Path) -> str:
+    """Format side-by-side headline metrics comparison table between two backtest runs."""
+    m_a = _read_json_file(dir_a / "metrics.json")
+    m_b = _read_json_file(dir_b / "metrics.json")
+
+    metrics_keys: list[tuple[str, Callable[[dict[str, Any]], str]]] = [
+        ("Net P&L (₹)", lambda m: f"₹{float(m.get('net_pnl', 0.0)):.2f}"),
+        ("Trades", lambda m: str(m.get("trades", 0))),
+        ("Win Rate (%)", lambda m: f"{float(m.get('win_rate', 0.0)):.2f}%"),
+        ("Max Drawdown (%)", lambda m: f"{float(m.get('max_drawdown', 0.0)):.2f}%"),
+        ("CAGR (%)", lambda m: f"{float(m.get('cagr', 0.0)) * 100:.2f}%"),
+        ("Sharpe", lambda m: f"{float(m.get('sharpe', 0.0)):.4f}"),
+        ("Sortino", lambda m: f"{float(m.get('sortino', 0.0)):.4f}"),
+        ("Profit Factor", lambda m: str(m.get("profit_factor", "None"))),
+    ]
+
+    header_a = dir_a.name[:25]
+    header_b = dir_b.name[:25]
+    lines = [
+        f"{'Metric':<22} | {header_a:<25} | {header_b:<25}",
+        f"{'-' * 22}-|-{'-' * 25}-|-{'-' * 25}",
+    ]
+    for label, fmt in metrics_keys:
+        val_a = fmt(m_a)
+        val_b = fmt(m_b)
+        lines.append(f"{label:<22} | {val_a:<25} | {val_b:<25}")
+
+    return "\n".join(lines)
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            return {}
+    return {}

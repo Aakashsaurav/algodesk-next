@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from algodesk.api.kinds import Mode
 from algodesk.api.protocols import Clock
@@ -44,6 +45,28 @@ class BacktestRunner:
             run_id=run_id,
             quiet=quiet,
         )
+        self._install_daily_mark()
+
+    def _install_daily_mark(self) -> None:
+        """Ensure backtest records one mark-to-market equity row per session close."""
+        sr = self.session_runner
+        orig_direct = sr._snapshot_portfolio_direct
+        current_date: list[str | None] = [None]
+        pending_mark: list[tuple[dict[str, Any], Clock, Any] | None] = [None]
+
+        def _daily_mark(c: dict[str, Any], clock: Clock, journal: Any) -> None:
+            from algodesk.logs.formatting import format_ist
+
+            d_str = format_ist(clock.now())[:10]
+            if current_date[0] is not None and d_str != current_date[0]:
+                if pending_mark[0] is not None:
+                    p_c, p_clk, p_j = pending_mark[0]
+                    orig_direct(p_c, p_clk, p_j)
+                    pending_mark[0] = None
+            current_date[0] = d_str
+            pending_mark[0] = (c, clock, journal)
+
+        sr._snapshot_portfolio_direct = _daily_mark  # type: ignore[method-assign]
 
     @property
     def mode(self) -> Mode:
@@ -61,5 +84,20 @@ class BacktestRunner:
         res = self.session_runner.run()
         if inspect.iscoroutine(res):
             ret: Path = asyncio.run(res)
-            return ret
-        return res  # type: ignore[return-value]
+        else:
+            ret = res  # type: ignore[assignment]
+        self._post_run_index(ret)
+        return ret
+
+    def _post_run_index(self, res_path: Path) -> None:
+        """Upsert backtest run record into SQLite results index."""
+        try:
+            if not isinstance(self.runtime.root, Path):
+                return
+            from algodesk.results.index import ResultsIndex
+
+            db_path = self.runtime.root / "data" / "state" / "results_index.db"
+            idx = ResultsIndex(db_path)
+            idx.upsert_run(res_path)
+        except Exception:
+            pass

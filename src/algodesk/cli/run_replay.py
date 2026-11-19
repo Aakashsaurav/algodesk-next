@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -385,9 +386,32 @@ def replay_cmd(
             typer.echo(f"results folder: {p}")
 
 
+index_app = typer.Typer(help="Manage and rebuild results index database")
+results_app.add_typer(index_app, name="index")
+
+
+@index_app.command("rebuild")
+@handle_cli_errors
+def results_index_rebuild_cmd(ctx: typer.Context) -> None:
+    """Rebuild SQLite results index from existing results folders."""
+    with _open_rt(ctx, ensure=True) as rt:
+        from algodesk.results.index import ResultsIndex
+
+        db_path = rt.root / "data" / "state" / "results_index.db"
+        idx = ResultsIndex(db_path)
+        count = idx.rebuild(rt.root / "results")
+        typer.echo(f"Rebuilt results index: {count} run(s) indexed at {db_path}")
+
+
 @results_app.command("list")
 @handle_cli_errors
-def results_list_cmd(ctx: typer.Context) -> None:
+def results_list_cmd(
+    ctx: typer.Context,
+    type_opt: str | None = typer.Option(
+        None, "--type", help="Filter by run type (backtest, paper, replay, screen)"
+    ),
+    study_opt: str | None = typer.Option(None, "--study", help="Filter by study name"),
+) -> None:
     """List execution results folders and summary performance metrics."""
     with _open_rt(ctx, ensure=True) as rt:
         results_dir = rt.root / "results"
@@ -395,79 +419,41 @@ def results_list_cmd(ctx: typer.Context) -> None:
             typer.echo("No results directory found.")
             return
 
+        from algodesk.results.index import ResultsIndex
+
+        db_path = rt.root / "data" / "state" / "results_index.db"
+        idx = ResultsIndex(db_path)
+        # Ensure index has records
+        if not db_path.is_file() or not idx.list_runs():
+            idx.rebuild(results_dir)
+
+        runs = idx.list_runs(run_type=type_opt, study=study_opt)
+        if not runs:
+            typer.echo("No results found under results/")
+            return
+
         headers = ["RUN ID", "DATE", "MODE", "TRADES", "NET P&L", "VERDICT", "START_IST"]
         rows: list[list[str]] = []
-
-        for p in sorted(results_dir.iterdir(), reverse=True):
-            if not p.is_dir():
-                continue
-            m_path = p / "metrics.json"
-            s_path = p / "SUMMARY.md"
-            if not m_path.is_file() and not s_path.is_file():
-                continue
-
-            r_id, dt, mode, trades, net_pnl, verdict, start_ist = (
-                p.name,
-                "unknown",
-                "paper",
-                "0",
-                "0.00",
-                "PASS",
-                "N/A",
-            )
+        for r in runs:
+            r_id = r["run_id"]
+            dt = r["start_date"] or "unknown"
+            mode = r["run_type"]
+            trades = str(r["trades"]) if mode != "screen" else "-"
+            net_pnl = f"{float(r['net_pnl']):.2f}" if mode != "screen" else "-"
+            verdict = r["verdict"] or "PASS"
+            start_ist = "N/A"
+            m_path = results_dir / r_id / "metrics.json"
             if m_path.is_file():
                 try:
                     data = json.loads(m_path.read_text())
-                    run_type = str(data.get("run_type", ""))
-                    # For screen runs: DATE = as_of, trades and net_pnl shown as "-"
-                    if run_type == "screen":
-                        dt = str(data.get("as_of", data.get("date", dt)))
-                        mode = "screen"
-                        trades = "-"
-                        net_pnl = "-"
-                        # START_IST from start_ist field (written by screen_writer)
-                        if data.get("start_ist"):
-                            start_ist = str(data["start_ist"])
-                        else:
-                            # Fall back to run_id timestamp
-                            import re as _re
-
-                            m_match = _re.search(r"(\d{8}_\d{6})", r_id)
-                            if m_match:
-                                try:
-                                    ts_utc = datetime.strptime(
-                                        m_match.group(1), "%Y%m%d_%H%M%S"
-                                    ).replace(tzinfo=UTC)
-                                    start_ist = format_ist(ts_utc)
-                                except Exception:
-                                    pass
-                    else:
-                        dt, mode = str(data.get("date", dt)), str(data.get("mode", mode))
-                        trades = str(data.get("trades", 0))
-                        net_pnl = f"{float(data.get('net_pnl', 0.0)):.2f}"
-                        if data.get("first_tick_ist") and data.get("first_tick_ist") != "N/A":
-                            start_ist = str(data.get("first_tick_ist"))
-                        elif data.get("first_tick_ts"):
-                            start_ist = format_ist(data.get("first_tick_ts"))
+                    if data.get("first_tick_ist") and data.get("first_tick_ist") != "N/A":
+                        start_ist = str(data["first_tick_ist"])
+                    elif data.get("start_ist"):
+                        start_ist = str(data["start_ist"])
+                    elif data.get("first_tick_ts"):
+                        start_ist = format_ist(data.get("first_tick_ts"))
                 except Exception:
                     pass
-
-            if s_path.is_file():
-                try:
-                    for line in s_path.read_text().splitlines():
-                        if "Verdict:" in line:
-                            verdict = line.split("Verdict:")[-1].strip().split(".")[0]
-                        elif "Date:" in line and mode != "screen":
-                            dt = line.split("Date:")[-1].strip()
-                        elif "Mode:" in line and mode != "screen":
-                            mode = line.split("Mode:")[-1].strip()
-                except Exception:
-                    pass
-
-            if mode == "screen":
-                trades = "-"
-                net_pnl = "-"
-
             if start_ist == "N/A":
                 import re
 
@@ -480,12 +466,7 @@ def results_list_cmd(ctx: typer.Context) -> None:
                         start_ist = format_ist(ts_utc)
                     except Exception:
                         pass
-
             rows.append([r_id, dt, mode, trades, net_pnl, verdict, start_ist])
-
-        if not rows:
-            typer.echo("No results found under results/")
-            return
 
         typer.echo(format_table(headers, rows))
 
@@ -529,6 +510,92 @@ def results_show_cmd(
             else:
                 typer.echo(f"Results bundle '{run_id}' contains no summary or metrics.")
 
+            if m_path.is_file():
+                _echo_metrics_table(m_path)
+
+
+def _echo_metrics_table(m_path: Path) -> None:
+    """Print formatted metrics table below SUMMARY in results show."""
+    try:
+        data = json.loads(m_path.read_text(encoding="utf-8"))
+        headers = ["METRIC", "VALUE"]
+        rows = [
+            ["Net P&L", f"₹{float(data.get('net_pnl', 0.0)):.2f}"],
+            ["Gross P&L", f"₹{float(data.get('gross_pnl', 0.0)):.2f}"],
+            ["Charges", f"₹{float(data.get('charges', 0.0)):.2f}"],
+            ["Trades", str(data.get("trades", 0))],
+            ["Win Rate", f"{float(data.get('win_rate', 0.0)):.2f}%"],
+            ["Max Drawdown", f"{float(data.get('max_drawdown', 0.0)):.2f}%"],
+        ]
+        if "cagr" in data:
+            rows.append(["CAGR", f"{float(data['cagr']) * 100:.2f}%"])
+        if "sharpe" in data:
+            rows.append(["Sharpe", f"{float(data['sharpe']):.4f}"])
+        if "sortino" in data:
+            rows.append(["Sortino", f"{float(data['sortino']):.4f}"])
+        if "profit_factor" in data:
+            rows.append(["Profit Factor", str(data["profit_factor"])])
+        if "expectancy" in data:
+            rows.append(["Expectancy", f"₹{float(data['expectancy']):.2f}"])
+        typer.echo("\n" + format_table(headers, rows))
+    except Exception:
+        pass
+
+
+@results_app.command("delete")
+@handle_cli_errors
+def results_delete_cmd(
+    ctx: typer.Context,
+    run_id: str = typer.Argument(..., help="Run ID of the results bundle to delete"),
+    reason: str = typer.Option(..., "--reason", help="Mandatory reason for deletion"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate deletion without moving files"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+) -> None:
+    """Delete a results bundle by moving it to results/.trash/ and updating index."""
+    import shutil
+
+    with _open_rt(ctx, ensure=True) as rt:
+        target = rt.root / "results" / run_id
+        if not target.is_dir():
+            raise ConfigError(
+                what=f"Results bundle '{run_id}' not found",
+                where=str(target),
+                fix="Use 'algodesk results list' to see available runs",
+            )
+
+        if not yes and not dry_run:
+            prompt_val = typer.prompt(f"Type 'DELETE {run_id}' to confirm")
+            if prompt_val.strip() != f"DELETE {run_id}":
+                typer.echo("Deletion aborted: confirmation phrase did not match.")
+                raise typer.Exit(1)
+
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        trash_dir = rt.root / "results" / ".trash" / ts
+        dest = trash_dir / run_id
+
+        if dry_run:
+            typer.echo(f"[dry-run] Would delete results bundle {run_id} (reason: {reason})")
+            typer.echo(f"[dry-run] Would move {target} to {dest}")
+            typer.echo(
+                f"[dry-run] Would remove index record for {run_id} from data/state/results_index.db"
+            )
+            typer.echo("[dry-run] Journal database is never touched.")
+            return
+
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(target), str(dest))
+
+        from algodesk.results.index import ResultsIndex
+
+        db_path = rt.root / "data" / "state" / "results_index.db"
+        idx = ResultsIndex(db_path)
+        idx.delete_run(run_id)
+
+        typer.echo(
+            f"Deleted results bundle {run_id} (moved to results/.trash/{ts}/{run_id}). "
+            "Journal database untouched."
+        )
+
 
 @results_app.command("compare")
 @handle_cli_errors
@@ -540,6 +607,28 @@ def results_compare_cmd(
     """Compare performance metrics and ordered journal event sequences of two runs."""
     state = _get_cli_state(ctx)
     with _open_rt(ctx, ensure=True) as rt:
+        dir_a = rt.root / "results" / run_a if not Path(run_a).is_dir() else Path(run_a)
+        dir_b = rt.root / "results" / run_b if not Path(run_b).is_dir() else Path(run_b)
+
+        mode_a = _detect_run_mode(dir_a)
+        mode_b = _detect_run_mode(dir_b)
+
+        from algodesk.results.compare import (
+            compare_backtest_manifests,
+            format_backtest_compare_table,
+        )
+
+        if mode_a == "backtest" and mode_b == "backtest":
+            tbl = format_backtest_compare_table(dir_a, dir_b)
+            typer.echo(tbl)
+            h_equal, h_diff = compare_backtest_manifests(dir_a, dir_b)
+            typer.echo(f"hashes equal: {h_equal}")
+            if not h_equal and h_diff:
+                typer.echo(f"first difference: {h_diff}")
+            is_equal, diff = compare_runs(rt.root, run_a, run_b)
+            typer.echo(f"equal: {is_equal}")
+            return
+
         is_equal, diff = compare_runs(rt.root, run_a, run_b)
         if state.json:
             typer.echo(
@@ -549,3 +638,17 @@ def results_compare_cmd(
             typer.echo(f"equal: {is_equal}")
             if not is_equal and diff:
                 typer.echo(f"first difference: {diff}")
+
+
+def _detect_run_mode(run_dir: Path) -> str:
+    m_file = run_dir / "metrics.json"
+    if m_file.is_file():
+        try:
+            data = json.loads(m_file.read_text(encoding="utf-8"))
+            if data.get("mode"):
+                return str(data["mode"]).lower()
+        except Exception:
+            pass
+    if "backtest" in run_dir.name:
+        return "backtest"
+    return "paper"

@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from algodesk.logs.formatting import format_ist
+
 
 @dataclass(frozen=True, slots=True)
 class RoundTrip:
@@ -22,6 +24,8 @@ class RoundTrip:
     net_pnl: float
     is_net_win: bool
     is_gross_win: bool
+    entry_date: str = ""
+    exit_date: str = ""
 
 
 def compute_round_trip_metrics(fills: Sequence[Any]) -> dict[str, Any]:
@@ -57,6 +61,7 @@ def compute_round_trip_metrics(fills: Sequence[Any]) -> dict[str, Any]:
         price = float(
             getattr(f, "price", 0.0) or (f.get("price", 0.0) if isinstance(f, dict) else 0.0)
         )
+        fill_ts = getattr(f, "ts", None) or (f.get("ts") if isinstance(f, dict) else None)
 
         chg_obj = getattr(f, "charges", None)
         if chg_obj is not None and hasattr(chg_obj, "total"):
@@ -84,6 +89,10 @@ def compute_round_trip_metrics(fills: Sequence[Any]) -> dict[str, Any]:
             allocated_charges = matched_qty * (open_lot["charge_per_unit"] + charge_per_unit)
             net_pnl = gross_pnl - allocated_charges
 
+            open_ts = open_lot.get("ts")
+            entry_date = format_ist(open_ts)[:10] if open_ts else ""
+            exit_date = format_ist(fill_ts)[:10] if fill_ts else ""
+
             closed.append(
                 RoundTrip(
                     instrument=inst,
@@ -96,6 +105,8 @@ def compute_round_trip_metrics(fills: Sequence[Any]) -> dict[str, Any]:
                     net_pnl=round(net_pnl, 2),
                     is_net_win=net_pnl > 0.0,
                     is_gross_win=gross_pnl > 0.0,
+                    entry_date=entry_date,
+                    exit_date=exit_date,
                 )
             )
 
@@ -111,6 +122,7 @@ def compute_round_trip_metrics(fills: Sequence[Any]) -> dict[str, Any]:
                     "qty": remaining_qty,
                     "price": price,
                     "charge_per_unit": charge_per_unit,
+                    "ts": fill_ts,
                 }
             )
 

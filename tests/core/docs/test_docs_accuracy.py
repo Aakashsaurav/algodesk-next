@@ -83,6 +83,12 @@ ALLOWED_NON_PARAM_NAMES = {
     "groups.import-history": "Journal event type for history group imports",
     "readiness.json": "Backtest readiness report JSON filename",
     "fees.fallback_used": "Metrics count of trades using fallback fee schedule",
+    "algodesk.results.metrics": "Pure function backtest performance metrics module",
+    "backtest.oos_from": "Run configuration key for out-of-sample split date",
+    "backtest.study": "Run configuration key for study name",
+    "equity_daily.csv": "Daily mark-to-market equity curve CSV filename",
+    "orders.csv": "Backtest orders log CSV filename",
+    "round_trips.csv": "Closed round trips CSV filename",
 }
 
 KNOWN_RUNTIME_PREFIXES = (

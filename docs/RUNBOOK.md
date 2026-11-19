@@ -681,6 +681,42 @@ Backtests run strictly offline on cached historical data and enforce data readin
    - Sessions adhere strictly to exchange truth: Saturday special sessions yield bars without gap reporting, and exchange holidays yield neither bars nor gaps.
 
 
+## Backtest results and metrics
+
+Every historical backtest produces an immutable, comprehensive results bundle under `results/<run_id>/` and updates the SQLite results store (`data/state/results_index.db`).
+
+1. **Artifacts bundle**:
+   - `SUMMARY.md`: Concise session summary bounded to 150 words. Features an initial statistical significance warning if trade count is below `report.min_trades` (default 30), leads with out-of-sample performance when `oos_from` is configured, and concludes with an explicit assumptions line.
+   - `equity_daily.csv`: Daily mark-to-market equity snapshots (`date`, `equity`, `cash`, `unrealized`, `realized`, `drawdown`, `daily_return`) recording exactly one row per session close without simulated timers.
+   - `round_trips.csv`: FIFO matched round trips with entry and exit IST dates (`entry_date`, `exit_date`), quantity, execution prices, and net P&L after all statutory and broker charges.
+   - `orders.csv`: Complete history of created orders, states, order types, limit/trigger prices, and fill execution prices.
+   - `metrics.json`: Standardized JSON report (`metrics_version: 1`) including CAGR, annualized volatility, Sharpe and Sortino ratios, maximum drawdown and longest duration in days, win rate, expectancy, profit factor, exposure share, and annualized turnover. Supports `in_sample` and `out_of_sample` splits.
+   - `manifest.json`: Full provenance documenting the 8-component canonical `result_hash` (universe hash, dataset checksums, corporate actions hash, fee schedule hash, strategy file hash and parameters, parameter registry snapshot hash, model settings, run seed, and code version).
+
+2. **Results store CLI (`algodesk results`)**:
+   - **Rebuild index**: Rescans past results folders and populates SQLite index:
+     ```bash
+     algodesk results index rebuild
+     ```
+   - **List runs**: Filter past runs by type or study:
+     ```bash
+     algodesk results list --type backtest --study sma_sweep
+     ```
+   - **Show run**: Display `SUMMARY.md` followed by a structured performance metrics table:
+     ```bash
+     algodesk results show <run_id>
+     ```
+   - **Delete run**: Safely move a run bundle to `results/.trash/<timestamp>/` and remove it from the index without touching the journal:
+     ```bash
+     algodesk results delete <run_id> --reason "obsolete trial" --yes
+     # Or run with --dry-run to simulate deletion
+     ```
+   - **Compare backtests**: Compare two backtest runs side-by-side with a headline metrics table, bitwise result hash verification, and detection of the first differing manifest input:
+     ```bash
+     algodesk results compare <run_a> <run_b>
+     ```
+
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |
