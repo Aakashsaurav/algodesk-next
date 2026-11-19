@@ -265,8 +265,9 @@ def test_sma_cross_multi_instrument_timer_order_deterministic() -> None:
 
     intents = strat.on_timer(ctx, "exit_time")
     assert len(intents) == 4
-    # Ensure emitted intents strictly follow the configuration order, not hash order
-    for idx, sym in enumerate(symbols):
+    # Ensure emitted intents strictly follow stable instrument ID ascending order (M1-18 / ADR-083)
+    sorted_symbols = sorted(symbols, key=str)
+    for idx, sym in enumerate(sorted_symbols):
         assert isinstance(intents[idx], PlaceOrder)
         assert intents[idx].spec.instrument == sym
         assert intents[idx].spec.side == Side.SELL

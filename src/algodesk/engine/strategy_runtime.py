@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import traceback
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
 from typing import Any
 
 from algodesk.api.errors import ConfigError, PluginError
@@ -37,7 +36,7 @@ class StrategyRuntime:
         clock: Clock | Any | None = None,
         bus: Any | None = None,
         notifier: Any | None = None,
-        on_intent: Callable[[Any, datetime], None] | None = None,
+        on_intent: Callable[..., None] | None = None,
         on_reject: Callable[[Any, Any | None, str], None] | None = None,
     ) -> None:
         self._registry = registry
@@ -48,7 +47,7 @@ class StrategyRuntime:
         self._clock: Clock = clock if clock is not None else SystemClock()
         self._bus = bus
         self._notifier = notifier
-        self._on_intent = on_intent
+        self._on_intent: Callable[..., None] | None = on_intent
         self._on_reject = on_reject
 
         self._strategies: dict[str, Strategy] = {}
@@ -172,18 +171,30 @@ class StrategyRuntime:
             except Exception:
                 pass
 
-    async def _process_intents(self, name: str, intents: Sequence[Intent]) -> None:
+    async def _process_intents(
+        self,
+        name: str,
+        intents: Sequence[Intent],
+        origin: str = "bar",
+    ) -> None:
         """Journal each signal, run pre-trade risk check, and submit approved intents to OMS."""
         if not intents:
             return
 
         now_ts = self._clock.now()
+        sorted_intents = sorted(
+            intents,
+            key=lambda it: str(getattr(getattr(it, "spec", None), "instrument", "")),
+        )
 
-        for intent in intents:
+        for intent in sorted_intents:
             if self._on_intent is not None:
                 try:
                     target_inst = getattr(getattr(intent, "spec", None), "instrument", None)
-                    self._on_intent(target_inst, now_ts)
+                    try:
+                        self._on_intent(target_inst, now_ts, origin=origin, intent=intent)
+                    except TypeError:
+                        self._on_intent(target_inst, now_ts)
                 except Exception:
                     pass
 
@@ -265,7 +276,7 @@ class StrategyRuntime:
 
     def dispatch_start(self) -> None:
         """Call on_start on all active strategies."""
-        for name, strat in list(self._strategies.items()):
+        for name, strat in sorted(self._strategies.items(), key=lambda x: str(x[0])):
             if self._halted.get(name):
                 continue
             ctx = self._contexts[name]
@@ -276,59 +287,59 @@ class StrategyRuntime:
 
     async def dispatch_bar(self, bar: Bar) -> None:
         """Dispatch a completed bar to active strategies and process resulting intents."""
-        for name, strat in list(self._strategies.items()):
+        for name, strat in sorted(self._strategies.items(), key=lambda x: str(x[0])):
             if self._halted.get(name):
                 continue
             ctx = self._contexts[name]
             try:
                 intents = strat.on_bar(ctx, bar)
                 if intents:
-                    await self._process_intents(name, intents)
+                    await self._process_intents(name, intents, origin="bar")
             except Exception as exc:
                 self._handle_exception(name, "on_bar", exc)
 
     async def dispatch_tick(self, tick: Tick) -> None:
         """Dispatch a market tick to active strategies and process resulting intents."""
-        for name, strat in list(self._strategies.items()):
+        for name, strat in sorted(self._strategies.items(), key=lambda x: str(x[0])):
             if self._halted.get(name):
                 continue
             ctx = self._contexts[name]
             try:
                 intents = strat.on_tick(ctx, tick)
                 if intents:
-                    await self._process_intents(name, intents)
+                    await self._process_intents(name, intents, origin="tick")
             except Exception as exc:
                 self._handle_exception(name, "on_tick", exc)
 
     async def dispatch_fill(self, fill: Fill) -> None:
         """Dispatch trade fill to active strategies and process resulting intents."""
-        for name, strat in list(self._strategies.items()):
+        for name, strat in sorted(self._strategies.items(), key=lambda x: str(x[0])):
             if self._halted.get(name):
                 continue
             ctx = self._contexts[name]
             try:
                 intents = strat.on_fill(ctx, fill)
                 if intents:
-                    await self._process_intents(name, intents)
+                    await self._process_intents(name, intents, origin="fill")
             except Exception as exc:
                 self._handle_exception(name, "on_fill", exc)
 
     async def dispatch_timer(self, timer_name: str) -> None:
         """Dispatch timer event to active strategies and process resulting intents."""
-        for name, strat in list(self._strategies.items()):
+        for name, strat in sorted(self._strategies.items(), key=lambda x: str(x[0])):
             if self._halted.get(name):
                 continue
             ctx = self._contexts[name]
             try:
                 intents = strat.on_timer(ctx, timer_name)
                 if intents:
-                    await self._process_intents(name, intents)
+                    await self._process_intents(name, intents, origin="timer")
             except Exception as exc:
                 self._handle_exception(name, "on_timer", exc)
 
     def dispatch_stop(self) -> None:
         """Call on_stop on all active strategies."""
-        for name, strat in list(self._strategies.items()):
+        for name, strat in sorted(self._strategies.items(), key=lambda x: str(x[0])):
             if self._halted.get(name):
                 continue
             ctx = self._contexts[name]

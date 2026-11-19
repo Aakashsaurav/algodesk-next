@@ -52,7 +52,7 @@ class SMACrossStrategy(PluginBase):
         super().__init__(manifest, config or {}, ctx)
         self._cfg = SMACrossConfig.model_validate(self.config)
         self._instruments: InstrumentSequence = InstrumentSequence(
-            InstrumentId(s) for s in self._cfg.instruments
+            sorted((InstrumentId(s) for s in self._cfg.instruments), key=str)
         )
         self._instruments_set: set[InstrumentId] = set(self._instruments)
         self._prev_fast: dict[InstrumentId, float] = {}
@@ -84,7 +84,9 @@ class SMACrossStrategy(PluginBase):
     def on_start(self, ctx: StrategyContext) -> None:
         """Initialize monitored instruments from context if none configured."""
         if not self._instruments and ctx.instruments:
-            self._instruments = InstrumentSequence(InstrumentId(s) for s in ctx.instruments.keys())
+            self._instruments = InstrumentSequence(
+                sorted((InstrumentId(s) for s in ctx.instruments.keys()), key=str)
+            )
             self._instruments_set = set(self._instruments)
 
     def on_bar(self, ctx: StrategyContext, bar: Bar) -> Sequence[Intent]:
@@ -221,7 +223,7 @@ class SMACrossStrategy(PluginBase):
         product_enum = Product.CNC if self._cfg.product.lower() == "cnc" else Product.MIS
         now_ts = ctx.clock.now().timestamp() if ctx.clock else 0.0
 
-        for inst in self._instruments:
+        for inst in sorted(self._instruments, key=str):
             pos = ctx.position(inst) if ctx.position is not None else None
             if pos is not None and pos.qty > 0:
                 self._entry_prices.pop(inst, None)

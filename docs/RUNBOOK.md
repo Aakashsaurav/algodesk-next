@@ -354,6 +354,16 @@ Verify bit-identical deterministic replay determinism:
 ```bash
 algodesk replay --dates 2026-10-26 --run demo_paper --twice
 ```
+**Replay after a changed plugin**:
+When a strategy plugin or indicator changes after a paper run, its code SHA-256 hash recorded in `.algodesk/conformance.json` changes. Replay checks the loaded plugin against the conformance record and issues a warning if the hash differs from the paper session. If the plugin's iteration order, parameters, or logic changed, replay signals or trades may diverge from paper. To ensure deterministic comparison, replay uses stable instrument ID ascending ordering across all iterations. Re-run conformance testing after editing any plugin via:
+```bash
+algodesk plugins test strategy <name>
+```
+
+**Latency metrics observability**:
+- `platform_p95_ms`: Measures platform execution latency from market tick arrival to strategy order intent emission during normal bar processing. Time-of-day timer intents (e.g. 15:15 IST exit_time) do not originate from bar arrivals; their delta from the previous bar close represents holding time, not platform latency, and is measured separately as `timer_latency_p95_ms`.
+- `bar_close_delay_p95_ms`: Measures tick-to-bar arrival latency for real market bars. Synthetic gap-fill bars and timer-closed bars (e.g. during illiquid intervals or after silence) are separated into `timer_bar_delay_p95_ms`, preventing multi-minute gaps from distorting live feed delivery metrics.
+
 List and view past run result artifacts:
 ```bash
 algodesk results list

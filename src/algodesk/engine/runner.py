@@ -303,8 +303,10 @@ class SessionRunner:
         self._feed_delays: list[float] = []
         self._feed_delays_by_inst: dict[str, list[float]] = {}
         self._platform_latencies: list[float] = []
+        self._timer_latencies: list[float] = []
         self._signal_ages: list[float] = []
         self._bar_close_delays: list[float] = []
+        self._timer_bar_delays: list[float] = []
         self._first_tick_logged: set[InstrumentId] = set()
         self._latest_tick_ts: dict[Any, datetime] = {}
         self._latest_tick_mono: dict[Any, float] = {}
@@ -1080,7 +1082,10 @@ class SessionRunner:
     ) -> BarBuilder:
         assert self.run_config is not None
 
+        timer_closed_keys: set[tuple[Any, str, datetime]] = set()
+
         def _on_timer_close(inst: Any, tf: str, end_ts: datetime) -> None:
+            timer_closed_keys.add((inst, tf, end_ts))
             if journal is not None:
                 journal.append(
                     "bar.timer_close",
@@ -1103,9 +1108,18 @@ class SessionRunner:
             tf = str(getattr(bar, "timeframe", "1m"))
             self._bars_by_tf[tf] = self._bars_by_tf.get(tf, 0) + 1
             tick_ts = self._latest_tick_ts.get(bar.instrument) or self._last_tick_ts
-            if tick_ts is not None and getattr(bar, "end_ts", None) is not None:
-                bcd = max(0.0, (tick_ts - bar.end_ts).total_seconds() * 1000.0)
-                self._bar_close_delays.append(bcd)
+            bar_end = getattr(bar, "end_ts", None)
+            key = (bar.instrument, tf, bar_end)
+            is_timer_closed = key in timer_closed_keys or getattr(bar, "synthetic", False)
+            if key in timer_closed_keys:
+                timer_closed_keys.discard(key)
+
+            if tick_ts is not None and bar_end is not None:
+                bcd = max(0.0, (tick_ts - bar_end).total_seconds() * 1000.0)
+                if is_timer_closed:
+                    self._timer_bar_delays.append(bcd)
+                else:
+                    self._bar_close_delays.append(bcd)
             now_mono = time.monotonic()
             self._last_bar_close_mono[bar.instrument] = now_mono
             self._last_bar_trigger_mono[bar.instrument] = now_mono
@@ -1115,7 +1129,7 @@ class SessionRunner:
 
         tfs = [s.params.get("timeframe", "5m") for s in self.run_config.strategies]
         return BarBuilder(
-            timeframes=tuple(set(tfs)),
+            timeframes=tuple(sorted(set(tfs))),
             session_manager=session_mgr,
             bus=bus,
             scheduler=scheduler,
@@ -1133,13 +1147,25 @@ class SessionRunner:
         elif component:
             self._rejects_by_rule[component] = self._rejects_by_rule.get(component, 0) + 1
 
-    def _on_strategy_intent(self, inst: Any, now_dt: datetime) -> None:
+    def _on_strategy_intent(
+        self,
+        inst: Any,
+        now_dt: datetime,
+        origin: str = "bar",
+        intent: Any | None = None,
+    ) -> None:
         self._signals_count += 1
         t_mono = time.monotonic()
         close_mono = self._last_bar_close_mono.get(inst, t_mono)
         lat = max(0.01, (t_mono - close_mono) * 1000.0)
-        self._platform_latencies.append(lat)
-        self._tick_to_intent_latencies.append(lat)
+        is_timer = (
+            origin == "timer" or getattr(getattr(intent, "spec", None), "tag", None) == "exit_time"
+        )
+        if is_timer:
+            self._timer_latencies.append(lat)
+        else:
+            self._platform_latencies.append(lat)
+            self._tick_to_intent_latencies.append(lat)
         bar_end = self._last_bar_end_ts.get(inst, now_dt)
         sig_age = max(0.0, (now_dt - bar_end).total_seconds() * 1000.0)
         self._signal_ages.append(sig_age)
@@ -1279,7 +1305,7 @@ class SessionRunner:
         from algodesk.data.aliases import resolve_alias
 
         inst_map: dict[InstrumentId, Instrument] = {}
-        for s in symbols:
+        for s in sorted(symbols, key=str):
             canonical_id = resolve_alias(s)
             p = parse_id(canonical_id)
             inst = Instrument(
@@ -1299,6 +1325,7 @@ class SessionRunner:
             inst_map[canonical_id] = inst
             if str(canonical_id) != str(s):
                 inst_map[InstrumentId(s)] = inst
+        inst_map = {k: inst_map[k] for k in sorted(inst_map.keys(), key=str)}
 
         import hashlib
 
@@ -1373,7 +1400,16 @@ class SessionRunner:
                     )
                     oms = c.get("oms")
                     if oms is not None:
-                        for ref, ord_obj in list(oms.orders.items()):
+                        for ref, ord_obj in sorted(
+                            list(oms.orders.items()),
+                            key=lambda item: (
+                                str(
+                                    getattr(item[1], "instrument", None)
+                                    or getattr(getattr(item[1], "spec", None), "instrument", "")
+                                ),
+                                str(item[0]),
+                            ),
+                        ):
                             inst = getattr(ord_obj, "instrument", None) or getattr(
                                 getattr(ord_obj, "spec", None), "instrument", None
                             )
@@ -1838,7 +1874,18 @@ class SessionRunner:
                             if isinstance(feed_error, FeedAuthError):
                                 oms = c.get("oms")
                                 if oms is not None:
-                                    for ref, ord_obj in list(oms.orders.items()):
+                                    for ref, ord_obj in sorted(
+                                        list(oms.orders.items()),
+                                        key=lambda item: (
+                                            str(
+                                                getattr(item[1], "instrument", None)
+                                                or getattr(
+                                                    getattr(item[1], "spec", None), "instrument", ""
+                                                )
+                                            ),
+                                            str(item[0]),
+                                        ),
+                                    ):
                                         if hasattr(ord_obj, "state") and ord_obj.state in (
                                             OrderState.CREATED,
                                             OrderState.SUBMITTED,
@@ -1931,9 +1978,9 @@ class SessionRunner:
         universe_insts = list(c.get("instruments", {}).values())
         if not universe_insts:
             symbols = getattr(getattr(self.run_config, "universe", None), "symbols", None) or []
-            universe_markets = {session_mgr.market_key(s) for s in symbols}
+            universe_markets = sorted({session_mgr.market_key(s) for s in symbols})
         else:
-            universe_markets = {session_mgr.market_key(inst.id) for inst in universe_insts}
+            universe_markets = sorted({session_mgr.market_key(inst.id) for inst in universe_insts})
 
         for m in universe_markets:
             if session_mgr.state(m) == MarketState.STOPPED:
@@ -2175,7 +2222,18 @@ class SessionRunner:
                             )
                             oms = c.get("oms")
                             if oms is not None:
-                                for ref, ord_obj in list(oms.orders.items()):
+                                for ref, ord_obj in sorted(
+                                    list(oms.orders.items()),
+                                    key=lambda item: (
+                                        str(
+                                            getattr(item[1], "instrument", None)
+                                            or getattr(
+                                                getattr(item[1], "spec", None), "instrument", ""
+                                            )
+                                        ),
+                                        str(item[0]),
+                                    ),
+                                ):
                                     inst = getattr(ord_obj, "instrument", None) or getattr(
                                         getattr(ord_obj, "spec", None), "instrument", None
                                     )
@@ -2260,7 +2318,20 @@ class SessionRunner:
                                     )
                                     oms = c.get("oms")
                                     if oms is not None:
-                                        for ref, ord_obj in list(oms.orders.items()):
+                                        for ref, ord_obj in sorted(
+                                            list(oms.orders.items()),
+                                            key=lambda item: (
+                                                str(
+                                                    getattr(item[1], "instrument", None)
+                                                    or getattr(
+                                                        getattr(item[1], "spec", None),
+                                                        "instrument",
+                                                        "",
+                                                    )
+                                                ),
+                                                str(item[0]),
+                                            ),
+                                        ):
                                             inst = getattr(ord_obj, "instrument", None) or getattr(
                                                 getattr(ord_obj, "spec", None), "instrument", None
                                             )
@@ -2728,6 +2799,15 @@ class SessionRunner:
             p50_plat = 0.0
             p95_plat = 0.0
 
+        if self._timer_latencies:
+            sorted_tl = sorted(self._timer_latencies)
+            n_tl = len(sorted_tl)
+            p50_tl = float(sorted_tl[int(n_tl * 0.50)])
+            p95_tl = float(sorted_tl[min(n_tl - 1, int(n_tl * 0.95))])
+        else:
+            p50_tl = 0.0
+            p95_tl = 0.0
+
         if self._signal_ages:
             sorted_sa = sorted(self._signal_ages)
             n_sa = len(sorted_sa)
@@ -2745,6 +2825,15 @@ class SessionRunner:
         else:
             p50_bcd = 0.0
             p95_bcd = 0.0
+
+        if self._timer_bar_delays:
+            sorted_tbd = sorted(self._timer_bar_delays)
+            n_tbd = len(sorted_tbd)
+            p50_tbd = float(sorted_tbd[int(n_tbd * 0.50)])
+            p95_tbd = float(sorted_tbd[min(n_tbd - 1, int(n_tbd * 0.95))])
+        else:
+            p50_tbd = 0.0
+            p95_tbd = 0.0
 
         peak_rss_raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         if sys.platform == "darwin":
@@ -2839,11 +2928,16 @@ class SessionRunner:
                 {
                     "p50_ms": round(p50_plat, 2),
                     "p95_ms": round(p95_plat, 2),
+                    "timer_latency_p50_ms": round(p50_tl, 2),
+                    "timer_latency_p95_ms": round(p95_tl, 2),
                     "feed_delay_p50_ms": round(p50_fd, 2),
                     "feed_delay_p95_ms": round(p95_fd, 2),
                     "bar_close_delay_p50_ms": round(p50_bcd, 2),
                     "bar_close_delay_p95_ms": round(p95_bcd, 2),
+                    "timer_bar_delay_p50_ms": round(p50_tbd, 2),
+                    "timer_bar_delay_p95_ms": round(p95_tbd, 2),
                     "samples": len(self._platform_latencies or self._tick_to_intent_latencies),
+                    "timer_samples": len(self._timer_latencies),
                 },
             )
             journal.append(
@@ -2921,6 +3015,9 @@ class SessionRunner:
             "platform_p50_ms": round(p50_plat, 2),
             "platform_p95_ms": round(p95_plat, 2),
             "platform_p95": round(p95_plat, 2),
+            "timer_latency_p50_ms": round(p50_tl, 2),
+            "timer_latency_p95_ms": round(p95_tl, 2),
+            "timer_latency_p95": round(p95_tl, 2),
             "signal_age_p50_ms": round(p50_sig_age, 2),
             "signal_age_p95_ms": round(p95_sig_age, 2),
             "signal_age_p95": round(p95_sig_age, 2),
@@ -2929,6 +3026,9 @@ class SessionRunner:
             "bar_close_delay_p95_ms": round(p95_bcd, 2),
             "bar_close_delay_p95": round(p95_bcd, 2),
             "bar_close_delay_ms": round(p95_bcd, 2),
+            "timer_bar_delay_p50_ms": round(p50_tbd, 2),
+            "timer_bar_delay_p95_ms": round(p95_tbd, 2),
+            "timer_bar_delay_p95": round(p95_tbd, 2),
             "peak_rss_mb": peak_rss_mb,
             "recorder_rows": rec_rows,
             "recorder_bytes": rec_bytes,
@@ -2988,9 +3088,15 @@ class SessionRunner:
                     "platform_p50_ms",
                     "platform_p95_ms",
                     "platform_p95",
+                    "timer_latency_p50_ms",
+                    "timer_latency_p95_ms",
+                    "timer_latency_p95",
                     "signal_age_p50_ms",
                     "signal_age_p95_ms",
                     "signal_age_p95",
+                    "timer_bar_delay_p50_ms",
+                    "timer_bar_delay_p95_ms",
+                    "timer_bar_delay_p95",
                 )
             },
             "trades": normalized_trades,
@@ -3036,6 +3142,10 @@ class SessionRunner:
             f"Verdict: {summary_info['verdict']}\n"
             f"Stop Reason: {stop_reason}\n"
         )
+        if p95_tl > 0:
+            session_md_text += f"Timer Latency (p95): {p95_tl:.2f} ms\n"
+        if p95_tbd > 0:
+            session_md_text += f"Timer Bar Delay (p95): {p95_tbd:.2f} ms\n"
         if is_partial:
             session_md_text += "Run Type: partial (started after session open)\n"
         if open_positions:
