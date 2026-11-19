@@ -15,6 +15,7 @@ from algodesk.cli.common import _open_rt, format_table, handle_cli_errors
 from algodesk.config.snapshot import build_effective
 from algodesk.engine.backtest import BacktestRunner
 from algodesk.fees.engine import FeeEngine
+from algodesk.ops.fees import check_fees_readiness
 from algodesk.ops.readiness import evaluate_backtest_readiness
 
 backtest_app = typer.Typer(help="Execute and manage backtest sessions.")
@@ -69,10 +70,38 @@ def _print_readiness_report(report: Any, allowed_missing: float) -> None:
         for sk in report.skipped:
             typer.echo(f"  - {sk['symbol']}: {sk['reason']}")
 
+    if report.warnings:
+        typer.echo(f"\nWarnings ({len(report.warnings)}):")
+        for w in report.warnings:
+            typer.echo(f"  - {w['symbol']}: {w['warning']}")
+            if w.get("fix"):
+                typer.echo(f"    Cleanup: {w['fix']}")
+
     if report.remediation_commands:
         typer.echo("\nRemediation commands:")
         for cmd in report.remediation_commands:
             typer.echo(f"  {cmd}")
+
+
+def _print_fees_readiness_report(fee_report: Any) -> None:
+    """Print tabular formatted fee readiness check conforming to ADR-084."""
+    typer.echo(f"\n=== Fees Readiness: schedule '{fee_report.schedule}' ===")
+    headers = ["Component", "Segment", "Product", "Earliest Verified", "Status"]
+    rows = []
+    for c in fee_report.components:
+        rows.append(
+            [
+                c.name,
+                c.segment,
+                c.product,
+                c.earliest_verified.isoformat(),
+                c.status,
+            ]
+        )
+    typer.echo(format_table(headers, rows))
+    if fee_report.has_errors:
+        typer.echo(f"\nFee check error: {fee_report.error_message}")
+        typer.echo(f"Fix: {fee_report.remediation_fix}")
 
 
 @backtest_app.command("check")
@@ -116,12 +145,21 @@ def backtest_check_cmd(
             end_override=end_d,
         )
 
+        fee_report = check_fees_readiness(
+            eff.run,
+            rt,
+            start_override=start_d,
+        )
+
         allowed_missing = _resolve_missing_allowance(eff.run, rt)
 
         if json_output:
-            typer.echo(json.dumps(report.to_dict(), indent=2))
+            combined = report.to_dict()
+            combined["fees"] = fee_report.to_dict()
+            typer.echo(json.dumps(combined, indent=2))
         else:
             _print_readiness_report(report, allowed_missing)
+            _print_fees_readiness_report(fee_report)
 
         if report.missing_pct > allowed_missing:
             if json_output:
@@ -138,6 +176,15 @@ def backtest_check_cmd(
                 ),
                 where=f"backtest.check:{name}",
                 fix=fix_msg,
+            )
+
+        if fee_report.has_errors:
+            if json_output:
+                raise typer.Exit(code=1)
+            raise ConfigError(
+                what=fee_report.error_message,
+                where=f"backtest.check:{name}",
+                fix=fee_report.remediation_fix,
             )
 
 
@@ -172,6 +219,14 @@ def backtest_run_cmd(
 
         # 1. Evaluate readiness before backtest run
         report, effective_run = evaluate_backtest_readiness(eff.run, rt)
+
+        fee_report = check_fees_readiness(eff.run, rt)
+        if fee_report.has_errors:
+            raise ConfigError(
+                what=fee_report.error_message,
+                where=f"backtest.run:{name}",
+                fix=fee_report.remediation_fix,
+            )
 
         allowed_missing = _resolve_missing_allowance(eff.run, rt)
 

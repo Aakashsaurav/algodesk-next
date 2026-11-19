@@ -647,19 +647,21 @@ Screens default to `adjust = "splits"`: when stored candles match requested basi
 
 Backtests run strictly offline on cached historical data and enforce data readiness, point-in-time universe membership, and trade-date-effective fee schedules before executing strategies.
 
-1. **Pre-run readiness check**:
+1. **Pre-run readiness check & shared series resolution**:
    Inspect whether local data satisfies backtest requirements without executing the session:
    ```bash
-   # Tabular summary of symbol status and missing ranges
+   # Tabular summary of symbol status, partition warnings, and fee readiness
    algodesk backtest check <run>
 
-   # Machine-readable JSON output
+   # Machine-readable JSON output (includes readiness report and fees block)
    algodesk backtest check <run> --json
 
    # Non-destructive test of earlier date windows
    algodesk backtest check <run> --start 2022-01-03 --end 2022-01-07
    ```
-   If the percentage of missing symbols exceeds `backtest.max_missing_pct` (default 10.0%), `backtest check` and `backtest run` fail closed with exit code 1 and output the exact remediation command:
+   - **Shared series resolution (ADR-084)**: Both `backtest check` and `HistoricalFeed` use the shared resolver `resolve_backtest_series`. When `adjust="splits"` (default) or `"none"`, the preferred partition is `raw` (falling back to `adjusted` if absent). When `adjust="total"`, preferred is `adjusted` (falling back to `raw`).
+   - **Non-blocking partition warnings**: Alternate partitions (e.g. stale `adjusted` partitions or other sources like `yfinance`, `nse_bhavcopy`) appear as informative warnings with exact cleanup commands (`algodesk data delete <symbol> --reason ...`), never as run failures.
+   - If the percentage of missing symbols exceeds `backtest.max_missing_pct` (default 10.0%), `backtest check` and `backtest run` fail closed with exit code 1 and output the exact remediation command:
    ```bash
    algodesk data accumulate --group <group> --source <source> --timeframe <tf> --days <N>
    ```
@@ -669,9 +671,11 @@ Backtests run strictly offline on cached historical data and enforce data readin
    - `universe.membership = "at_start"` (default): Resolves active group constituents as-of the backtest start date using point-in-time history parquets (`data/universe/<group>.parquet`) and computes a deterministic SHA-256 hash. Additions and removals later in the backtest window are not modelled.
    - `universe.membership = "union"`: Includes all symbols that ever belonged to the group.
 
-3. **Trade-date fee selection and fail-closed safety**:
-   Fees evaluate component schedules effective on each trade date. If a trade date precedes the earliest verified `effective_from` date for any required component, `FeeEngine` fails closed with an actionable `FeeScheduleError`.
-   - Inspect applicable rates and components for a specific date:
+3. **Targeted fee schedule readiness & selection**:
+   `backtest check` and `backtest run` scope fee schedule verification strictly to the components required by the run (segment, product from strategy params like `CNC` / `MIS`, and universe instruments). Unused components in the schedule (e.g. options MIS components verified only from late 2026) do not block equity runs.
+   `backtest check` prints a dedicated "Fees" block displaying:
+   `Component | Segment | Product | Earliest Verified | Status (OK / FALLBACK / ERROR)`
+   - Inspect applicable rates and components across the entire schedule:
      ```bash
      algodesk fees show <schedule> --as-of YYYY-MM-DD
      algodesk fees show zerodha_nse --as-of 2026-11-13
@@ -685,10 +689,12 @@ Backtests run strictly offline on cached historical data and enforce data readin
      ```
      When fallback is used, the total count of fallback calculations is journaled as `fees.fallback_used` in `metrics.json` and highlighted as an assumption caveat in `SUMMARY.md`.
 
-4. **Historical feed adjustments & sessions**:
+4. **Historical feed adjustments, sessions & fill mechanics**:
    - `adjust = "splits"` (default): Delivers raw candles adjusted for stock splits and bonuses.
    - `adjust = "total"`: Dynamically applies dividend and corporate action factors; fails closed with actionable `DataError` on corporate action conflict or `manual_required` without swallowing errors.
-   - Sessions adhere strictly to exchange truth: Saturday special sessions yield bars without gap reporting, and exchange holidays yield neither bars nor gaps.
+   - **Daily quote synthesis and fill mechanics**: For daily (`1d`) bars, `BarQuoteSynth` synthesizes 4 quotes: Quote 0 (Open, 00:00 IST), Quote 1 (Low/High, 06:00 IST), Quote 2 (High/Low, 12:00 IST), and Quote 3 (Close, 24:00 IST). For contiguous daily bars, Quote 0 shares the exact boundary timestamp with the preceding bar's `BarClosed`. Under `SimVenue`, orders submitted upon bar close ignore quotes where `recv_ts <= trigger_recv_ts`, filling on Quote 1 (e.g. daily low 1258.25 for 9 Jan RELIANCE) plus slippage (5 bps -> 1258.90).
+   - **Session date display**: In `trades.csv`, `ts_ist` displays the clean session date (`YYYY-MM-DD 00:00:00 IST`) rather than 06:00 IST, maintaining the exact 10-column schema strictly unchanged.
+
 
 
 ## Backtest results and metrics

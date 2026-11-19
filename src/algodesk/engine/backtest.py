@@ -86,8 +86,40 @@ class BacktestRunner:
             ret: Path = asyncio.run(res)
         else:
             ret = res  # type: ignore[assignment]
+        self._normalize_trades_session_dates(ret)
         self._post_run_index(ret)
         return ret
+
+    def _normalize_trades_session_dates(self, res_path: Path) -> None:
+        """Format trades.csv ts_ist as session date for daily backtests."""
+        trades_csv = res_path / "trades.csv"
+        if not trades_csv.is_file():
+            return
+        import csv
+
+        bt_cfg = getattr(self.session_runner.run_config, "backtest", None)
+        tf = getattr(bt_cfg, "timeframe", "1d")
+        if tf != "1d":
+            return
+
+        try:
+            with open(trades_csv, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                fieldnames = list(reader.fieldnames or [])
+                rows = list(reader)
+            if not rows or not fieldnames:
+                return
+            for r in rows:
+                ts_ist = r.get("ts_ist", "")
+                if ts_ist and " " in ts_ist:
+                    date_part = ts_ist.split(" ")[0]
+                    r["ts_ist"] = f"{date_part} 00:00:00 IST"
+            with open(trades_csv, mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+        except Exception:
+            pass
 
     def _post_run_index(self, res_path: Path) -> None:
         """Upsert backtest run record into SQLite results index."""

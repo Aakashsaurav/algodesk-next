@@ -8,6 +8,7 @@ from typing import Any
 
 from algodesk.api.market import Bar, InstrumentId, Quote
 from algodesk.data.bar_synth import BarQuoteSynth
+from algodesk.data.readiness import resolve_backtest_series
 from algodesk.data.service import DataService
 
 
@@ -99,8 +100,18 @@ class HistoricalFeed:
         all_warmup_bars: list[Bar] = []
 
         # Read in chunks or window per instrument with cache_only=True
+        man = self.manifest or getattr(getattr(self.data_service, "store", None), "manifest", None)
+        store = getattr(self.data_service, "store", None)
         for inst in self.instruments:
             series_key = f"{inst}:{self.timeframe}" if ":" not in str(inst)[7:] else str(inst)
+            resolved = resolve_backtest_series(
+                inst,
+                timeframe=self.timeframe,
+                source=self.source,
+                adjust=self.adjust,
+                manifest=man,
+                store=store,
+            )
             # 1. Warm-up read before start
             if self.warmup_bars_count > 0:
                 # Estimate pre-start window: for 1d, 2.5x calendar days gives enough bars
@@ -112,9 +123,10 @@ class HistoricalFeed:
                         series_key,
                         start=w_start_dt,
                         end=self.start_dt,
-                        source=self.source,
+                        source=resolved.source,
+                        download=resolved.adjustment,
                         cache_only=True,
-                        adjust=self.adjust,
+                        adjust=resolved.adjust,
                     )
                     w_bars = [b for b in w_slice.bars if b.end_ts <= self.start_dt]
                     # Take last warmup_bars_count bars
@@ -128,9 +140,10 @@ class HistoricalFeed:
                 series_key,
                 start=self.start_dt,
                 end=self.end_dt,
-                source=self.source,
+                source=resolved.source,
+                download=resolved.adjustment,
                 cache_only=True,
-                adjust=self.adjust,
+                adjust=resolved.adjust,
             )
             for b in act_slice.bars:
                 if b.start_ts > self.end_dt:

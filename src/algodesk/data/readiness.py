@@ -5,13 +5,193 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from algodesk.api.market import CoverageStatus, SeriesKey
+from algodesk.api.market import InstrumentId, SeriesKey
 from algodesk.data.aliases import resolve_alias
 from algodesk.data.coverage import is_empty_record_final, is_trading_session
 from algodesk.data.layout import dataset_id_for_key
 from algodesk.data.manifest import DataManifest
 from algodesk.data.service import DataService
+
+_DEFAULT_EXCH_TZ = ZoneInfo("Asia/Kolkata")
+
+
+@dataclass
+class ResolvedSeries:
+    """Resolved data series parameters for backtest execution and readiness check."""
+
+    instrument: InstrumentId
+    timeframe: str
+    source: str
+    adjustment: str
+    adjust: str
+    dataset_id: str
+    warnings: list[str] = field(default_factory=list)
+    cleanup_commands: list[str] = field(default_factory=list)
+
+
+def resolve_backtest_series(
+    instrument: InstrumentId | str,
+    timeframe: str = "1d",
+    source: str = "upstox",
+    adjust: str = "splits",
+    manifest: Any = None,
+    store: Any = None,
+) -> ResolvedSeries:
+    """Resolve single authoritative series for backtest execution and readiness (ADR-084)."""
+    raw_str = str(instrument).strip().upper()
+    if manifest is not None and isinstance(manifest, DataManifest):
+        try:
+            res_alias = resolve_alias(raw_str, manifest=manifest)
+            canonical_inst = InstrumentId(str(res_alias).upper())
+        except Exception:
+            canonical_inst = InstrumentId(raw_str)
+    else:
+        try:
+            res_alias = resolve_alias(raw_str)
+            canonical_inst = InstrumentId(str(res_alias).upper())
+        except Exception:
+            canonical_inst = InstrumentId(raw_str)
+    inst_str = str(canonical_inst)
+    adj_mode = adjust if adjust in ("none", "splits", "total") else "splits"
+    pref_download = "raw" if adj_mode in ("splits", "none") else "adjusted"
+    fb_download = "adjusted" if pref_download == "raw" else "raw"
+
+    pref_key = SeriesKey(canonical_inst, "bars", timeframe, pref_download, source)
+    pref_ds_id = dataset_id_for_key(pref_key)
+    fb_key = SeriesKey(canonical_inst, "bars", timeframe, fb_download, source)
+    fb_ds_id = dataset_id_for_key(fb_key)
+
+    legacy_id = f"{inst_str}_{timeframe}_{source}"
+    pref_exists = _series_partition_exists(
+        pref_ds_id, pref_key, manifest, store, legacy_id=legacy_id
+    )
+    fb_exists = _series_partition_exists(fb_ds_id, fb_key, manifest, store)
+
+    chosen_download = pref_download if (pref_exists or not fb_exists) else fb_download
+    chosen_ds_id = pref_ds_id if chosen_download == pref_download else fb_ds_id
+
+    warnings, cleanup_cmds = _collect_partition_warnings(
+        inst_str,
+        canonical_inst,
+        timeframe,
+        chosen_ds_id,
+        chosen_download,
+        pref_download,
+        fb_ds_id,
+        fb_download,
+        fb_exists,
+        source,
+        manifest,
+    )
+    return ResolvedSeries(
+        instrument=canonical_inst,
+        timeframe=timeframe,
+        source=source,
+        adjustment=chosen_download,
+        adjust=adj_mode,
+        dataset_id=chosen_ds_id,
+        warnings=warnings,
+        cleanup_commands=cleanup_cmds,
+    )
+
+
+def _series_partition_exists(
+    ds_id: str,
+    key: SeriesKey,
+    manifest: Any,
+    store: Any,
+    legacy_id: str | None = None,
+) -> bool:
+    """Check if partition exists in manifest or store directory."""
+    if manifest is not None:
+        try:
+            if hasattr(manifest, "get_parts"):
+                if manifest.get_parts(dataset_id=ds_id):
+                    return True
+                if legacy_id and manifest.get_parts(dataset_id=legacy_id):
+                    return True
+        except Exception:
+            pass
+        try:
+            if hasattr(manifest, "get_coverage_days"):
+                cov = manifest.get_coverage_days(ds_id)
+                if not cov and legacy_id and key.adjustment == "raw":
+                    cov = manifest.get_coverage_days(legacy_id)
+                valid_statuses = (
+                    "COMPLETE",
+                    "CoverageStatus.COMPLETE",
+                    "PENDING",
+                    "CoverageStatus.PENDING",
+                    "EMPTY",
+                    "CoverageStatus.EMPTY",
+                )
+                if any(
+                    str(r.status) in valid_statuses
+                    or getattr(r.status, "name", "") in ("COMPLETE", "PENDING", "EMPTY")
+                    for r in cov
+                ):
+                    return True
+        except Exception:
+            pass
+    if store is not None and hasattr(store, "data_dir"):
+        from algodesk.data.layout import bar_file_path
+
+        try:
+            if bar_file_path(store.data_dir, key, datetime.now(UTC)).exists():
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _collect_partition_warnings(
+    inst_str: str,
+    canonical_inst: InstrumentId,
+    timeframe: str,
+    chosen_ds_id: str,
+    chosen_download: str,
+    pref_download: str,
+    fb_ds_id: str,
+    fb_download: str,
+    fb_exists: bool,
+    source: str,
+    manifest: Any,
+) -> tuple[list[str], list[str]]:
+    """Collect non-blocking warnings and cleanup commands for alternate partitions."""
+    warnings: list[str] = []
+    cleanup_cmds: list[str] = []
+    if manifest is not None:
+        try:
+            for ds in manifest.list_datasets():
+                if (
+                    ds.instrument == inst_str
+                    and ds.timeframe == timeframe
+                    and ds.dataset_id != chosen_ds_id
+                ):
+                    warnings.append(
+                        f"Alternate partition found: dataset={ds.dataset_id} "
+                        f"(source={ds.source}, adjustment={getattr(ds, 'adjustment', 'unknown')})"
+                    )
+                    cleanup_cmds.append(
+                        f"algodesk data delete {canonical_inst} "
+                        f"--reason 'cleanup alternate partition {ds.dataset_id}'"
+                    )
+        except Exception:
+            pass
+    if chosen_download == pref_download and fb_exists:
+        fb_warn = (
+            f"Alternate partition found: dataset={fb_ds_id} "
+            f"(source={source}, adjustment={fb_download})"
+        )
+        if fb_warn not in warnings:
+            warnings.append(fb_warn)
+            cleanup_cmds.append(
+                f"algodesk data delete {canonical_inst} "
+                f"--reason 'cleanup alternate partition {fb_ds_id}'"
+            )
+    return warnings, cleanup_cmds
 
 
 @dataclass
@@ -31,6 +211,9 @@ class SymbolReadiness:
     warmup_bars_needed: int = 0
     problems: list[str] = field(default_factory=list)
     fix_commands: list[str] = field(default_factory=list)
+    resolved_series: str = ""
+    warnings: list[str] = field(default_factory=list)
+    warning_cleanup_commands: list[str] = field(default_factory=list)
 
     @property
     def is_ready(self) -> bool:
@@ -69,6 +252,7 @@ class ReadinessReport:
     missing_pct: float = 0.0
     skipped: list[dict[str, str]] = field(default_factory=list)
     problems: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[dict[str, Any]] = field(default_factory=list)
     symbol_reports: dict[str, SymbolReadiness] = field(default_factory=dict)
     remediation_commands: list[str] = field(default_factory=list)
 
@@ -91,6 +275,7 @@ class ReadinessReport:
             },
             "missing_pct": self.missing_pct,
             "problems": self.problems,
+            "warnings": self.warnings,
         }
 
 
@@ -113,11 +298,44 @@ def check_symbol_readiness(
     canonical_inst = resolve_alias(symbol, manifest=manifest)
     inst_str = str(canonical_inst)
 
-    report = SymbolReadiness(symbol=symbol, instrument_id=inst_str)
+    resolved = resolve_backtest_series(
+        canonical_inst,
+        timeframe=timeframe,
+        source=source,
+        adjust=adjust,
+        manifest=manifest,
+        store=getattr(data_service, "store", None),
+    )
+
+    report = SymbolReadiness(
+        symbol=symbol,
+        instrument_id=inst_str,
+        resolved_series=resolved.dataset_id,
+        warnings=list(resolved.warnings),
+        warning_cleanup_commands=list(resolved.cleanup_commands),
+    )
     series_key = f"{inst_str}:{timeframe}"
 
-    start_dt = datetime.combine(start, time(0, 0), tzinfo=UTC)
-    end_dt = datetime.combine(end, time(23, 59, 59, 999999), tzinfo=UTC)
+    exch_tz = (
+        getattr(data_service, "_exchange_tz", None)
+        or getattr(getattr(data_service, "store", None), "exchange_tz", None)
+        or getattr(getattr(data_service, "store", None), "_exchange_tz", None)
+        or getattr(calendar, "tz", None)
+        or getattr(calendar, "_tz", None)
+        or _DEFAULT_EXCH_TZ
+    )
+    if callable(exch_tz):
+        exch_tz = exch_tz()
+
+    start_dt = datetime.combine(start, time(0, 0), tzinfo=exch_tz).astimezone(UTC)
+    end_dt = datetime.combine(end, time(23, 59, 59, 999999), tzinfo=exch_tz).astimezone(UTC)
+
+    def _bar_date(b: Any) -> date:
+        ts: datetime = b.start_ts
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        res_date: date = ts.astimezone(exch_tz).date()
+        return res_date
 
     # 1. Stored bars inspection (cache-only)
     stored_bars = []
@@ -126,31 +344,41 @@ def check_symbol_readiness(
             series_key,
             start=start_dt,
             end=end_dt,
-            source=source,
+            source=resolved.source,
+            download=resolved.adjustment,
             cache_only=True,
-            adjust=adjust,
+            adjust=resolved.adjust,
         )
-        stored_bars = [b for b in data_slice.bars if start_dt <= b.start_ts <= end_dt]
+        stored_bars = [b for b in data_slice.bars if start <= _bar_date(b) <= end]
     except Exception:
         stored_bars = []
 
-    stored_days_set = {b.start_ts.date() for b in stored_bars}
+    stored_days_set = {_bar_date(b) for b in stored_bars}
     if stored_bars:
         report.first_stored_day = min(stored_days_set)
         report.last_stored_day = max(stored_days_set)
 
     # 2. Coverage records inspection
-    dataset_id = dataset_id_for_key(SeriesKey(canonical_inst, "bars", timeframe, "raw", source))
+    dataset_id = resolved.dataset_id
     cov_recs = manifest.get_coverage_days(
         dataset_id,
         start_day=start.isoformat(),
         end_day=end.isoformat(),
     )
     if not cov_recs:
-        # Also check fallback if recorded with legacy format
-        alt_id = f"{inst_str}_{timeframe}_{source}"
+        alt_id = f"{inst_str}_{timeframe}_{resolved.source}"
         cov_recs = manifest.get_coverage_days(
             alt_id,
+            start_day=start.isoformat(),
+            end_day=end.isoformat(),
+        )
+    if not cov_recs:
+        alt_adj = "raw" if resolved.adjustment == "adjusted" else "adjusted"
+        alt_ds_id = dataset_id_for_key(
+            SeriesKey(canonical_inst, "bars", timeframe, alt_adj, resolved.source)
+        )
+        cov_recs = manifest.get_coverage_days(
+            alt_ds_id,
             start_day=start.isoformat(),
             end_day=end.isoformat(),
         )
@@ -158,7 +386,10 @@ def check_symbol_readiness(
 
     # 3. Check coverage_without_bars (COMPLETE in coverage but no bars stored)
     for c_day_str, r in sorted(cov_map.items()):
-        if str(r.status) == "COMPLETE" or r.status == CoverageStatus.COMPLETE:
+        st = str(r.status)
+        if st in ("COMPLETE", "CoverageStatus.COMPLETE") or (
+            hasattr(r.status, "name") and r.status.name == "COMPLETE"
+        ):
             d = date.fromisoformat(c_day_str)
             if d not in stored_days_set:
                 report.coverage_without_bars.append(d)
@@ -167,9 +398,13 @@ def check_symbol_readiness(
     for c_day_str, r in sorted(cov_map.items()):
         st = str(r.status)
         d = date.fromisoformat(c_day_str)
-        if st == "PENDING" or r.status == CoverageStatus.PENDING:
+        if st in ("PENDING", "CoverageStatus.PENDING") or (
+            hasattr(r.status, "name") and r.status.name == "PENDING"
+        ):
             report.pending_empty_days.append(d)
-        elif st in ("EMPTY", "CoverageStatus.EMPTY") or r.status == CoverageStatus.EMPTY:
+        elif st in ("EMPTY", "CoverageStatus.EMPTY") or (
+            hasattr(r.status, "name") and r.status.name == "EMPTY"
+        ):
             if not is_empty_record_final(r, calendar=calendar, manifest=manifest, params=params):
                 report.pending_empty_days.append(d)
 
@@ -182,11 +417,16 @@ def check_symbol_readiness(
     # 6. Missing sessions
     for sess in expected_sessions:
         if sess not in stored_days_set:
-            # Check if this session was verified final EMPTY (e.g. pre-listing)
             rec = cov_map.get(sess.isoformat())
-            if rec and (str(rec.status) == "EMPTY" or rec.status == CoverageStatus.EMPTY):
-                if is_empty_record_final(rec, calendar=calendar, manifest=manifest, params=params):
-                    continue
+            if rec:
+                st = str(rec.status)
+                if st in ("EMPTY", "CoverageStatus.EMPTY") or (
+                    hasattr(rec.status, "name") and rec.status.name == "EMPTY"
+                ):
+                    if is_empty_record_final(
+                        rec, calendar=calendar, manifest=manifest, params=params
+                    ):
+                        continue
             report.missing_sessions.append(sess)
 
     # 7. Warm-up bars inspection
@@ -200,9 +440,10 @@ def check_symbol_readiness(
                 series_key,
                 start=w_start_dt,
                 end=start_dt,
-                source=source,
+                source=resolved.source,
+                download=resolved.adjustment,
                 cache_only=True,
-                adjust=adjust,
+                adjust=resolved.adjust,
             )
             w_bars = [b for b in w_slice.bars if b.end_ts <= start_dt]
         except Exception:
@@ -242,7 +483,6 @@ def check_symbol_readiness(
         report.problems.append(f"Quarantined data: {'; '.join(report.quarantined_days)}")
 
     if report.insufficient_warmup:
-        # Pre-start window start is needed
         w_start_date = start - timedelta(days=max(10, warmup_bars_count * 3))
         if earliest_missing_date is None or w_start_date < earliest_missing_date:
             earliest_missing_date = w_start_date
@@ -252,7 +492,6 @@ def check_symbol_readiness(
         )
 
     if report.problems:
-        # Compute days N from earliest missing date through today
         ref_date = earliest_missing_date if earliest_missing_date is not None else start
         days_n = max(7, (today - ref_date).days + 1)
         target = f"--group {group}" if group else f"--symbols {symbol}"
@@ -318,6 +557,10 @@ def check_backtest_readiness(
             adjust=adjust,
         )
         report.symbol_reports[sym] = sym_rep
+
+        for warn in sym_rep.warnings:
+            fix = sym_rep.warning_cleanup_commands[0] if sym_rep.warning_cleanup_commands else ""
+            report.warnings.append({"symbol": sym, "warning": warn, "fix": fix})
 
         if sym_rep.is_ready:
             report.with_data.append(sym)
