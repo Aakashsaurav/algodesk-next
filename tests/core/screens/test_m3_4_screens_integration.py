@@ -571,7 +571,7 @@ def test_universe_screen_resolution_normal(tmp_project: Any) -> None:
     # Inject fake screen result with 2 passed symbols
     fake_screen_res = ScreenResult(
         name="test_scr",
-        as_of=date(2026, 11, 12),
+        as_of=date.today(),
         rows=[
             ScreenRow(symbol="NSE:EQ:RELIANCE", passed=True, score=1.0),
             ScreenRow(symbol="NSE:EQ:TCS", passed=True, score=0.8),

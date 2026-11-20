@@ -73,9 +73,9 @@ def test_vector_2_delivery_sell_first_of_day(zerodha_schedule: Schedule) -> None
     assert chg.stamp == Decimal("0.00")
     assert chg.exchange_txn == Decimal("1.49")
     assert chg.sebi == Decimal("0.05")
-    assert chg.dp == Decimal("13.50")  # DP charge ₹13.50
-    assert chg.gst == Decimal("2.71")  # 18% of (1.49 + 0.05 + 13.50) = 2.7072 -> 2.71
-    assert chg.total == Decimal("67.75")
+    assert chg.dp == Decimal("13.00")  # DP charge ₹13.00 (verified 20 Nov 2026)
+    assert chg.gst == Decimal("2.62")  # 18% of (1.49 + 0.05 + 13.00) = 2.6172 -> 2.62
+    assert chg.total == Decimal("67.16")
 
 
 def test_vector_3_delivery_sell_standalone(zerodha_schedule: Schedule) -> None:
@@ -94,9 +94,9 @@ def test_vector_3_delivery_sell_standalone(zerodha_schedule: Schedule) -> None:
     assert chg.stamp == Decimal("0.00")
     assert chg.exchange_txn == Decimal("0.74")  # 25000 * 0.0000297 = 0.7425 -> 0.74
     assert chg.sebi == Decimal("0.03")  # 25000 * 10 / 1e7 = 0.025 -> 0.03
-    assert chg.dp == Decimal("13.50")
-    assert chg.gst == Decimal("2.57")  # 18% of (0.74 + 0.03 + 13.50) = 2.5686 -> 2.57
-    assert chg.total == Decimal("41.84")
+    assert chg.dp == Decimal("13.00")
+    assert chg.gst == Decimal("2.48")  # 18% of (0.74 + 0.03 + 13.00) = 2.4786 -> 2.48
+    assert chg.total == Decimal("41.25")
 
 
 def test_delivery_sell_second_trade_suppresses_dp(zerodha_schedule: Schedule) -> None:
@@ -298,13 +298,13 @@ def test_charges_for_fills_dp_once_per_scrip_day(zerodha_schedule: Schedule) -> 
     results = charges_for_fills(fills, zerodha_schedule)
     assert len(results) == 4
 
-    assert results[0].dp == Decimal("13.50")
+    assert results[0].dp == Decimal("13.00")
     assert results[1].dp == Decimal("0.00")
-    assert results[2].dp == Decimal("13.50")
-    assert results[3].dp == Decimal("13.50")
+    assert results[2].dp == Decimal("13.00")
+    assert results[3].dp == Decimal("13.00")
 
     # Aggregate convenience properties
-    assert results.dp == Decimal("40.50")  # 3 * 13.50
+    assert results.dp == Decimal("39.00")  # 3 * 13.00
     assert results.total == sum((c.total for c in results), Decimal("0.00"))
 
 

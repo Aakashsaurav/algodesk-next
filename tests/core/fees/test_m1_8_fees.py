@@ -355,9 +355,9 @@ def test_vector_2_nse_delivery_sell_itemised(zerodha_schedule: Schedule) -> None
     assert chg.exchange_txn == Decimal("1.54")
     assert chg.stamp == Decimal("0.00")
     assert chg.sebi == Decimal("0.05")
-    assert chg.dp == Decimal("13.50")
-    assert chg.gst == Decimal("2.72")
-    assert chg.total == Decimal("67.81")
+    assert chg.dp == Decimal("13.00")
+    assert chg.gst == Decimal("2.63")
+    assert chg.total == Decimal("67.22")
 
 
 def test_vector_3_bse_delivery_buy_itemised(zerodha_schedule: Schedule) -> None:
@@ -396,9 +396,9 @@ def test_vector_4_bse_delivery_sell_itemised(zerodha_schedule: Schedule) -> None
     assert chg.exchange_txn == Decimal("1.88")
     assert chg.stamp == Decimal("0.00")
     assert chg.sebi == Decimal("0.05")
-    assert chg.dp == Decimal("13.50")
-    assert chg.gst == Decimal("2.78")
-    assert chg.total == Decimal("68.21")
+    assert chg.dp == Decimal("13.00")
+    assert chg.gst == Decimal("2.69")
+    assert chg.total == Decimal("67.62")
 
 
 def test_vector_5_nse_intraday_buy_itemised(zerodha_schedule: Schedule) -> None:

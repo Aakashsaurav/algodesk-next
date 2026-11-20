@@ -4,7 +4,7 @@ Owner: Aakash · Version: 1.0 · Date: 30 October 2026
 
 ## Summary
 
-Milestones M0, M1, and M2 are complete. AlgoDesk Next provides a pluggable trading workbench for Indian markets with layered TOML configuration, parameter registry audit trails, hash-chained journaling, scrubbed JSON logging, deterministic execution engine, and bit-for-bit replay equivalence. Milestone M2 delivers the historical market data layer: RateLimiter, GapPlanner, Fetcher, BarStore, QuarantineManager, BarValidator, CorporateActions, Bhavcopy reference ingestion, contract-aware partition layout, accumulation, tick-source compare, trash-safe tick deletion, vendor file import plugin, and live smoke tests.
+Milestones M0, M1, and M2 are complete. AlgoDesk Next provides a pluggable trading workbench for Indian markets with layered TOML configuration, parameter registry audit trails, hash-chained journaling, scrubbed JSON logging, deterministic execution engine, and bit-for-bit replay equivalence. Milestone M2 delivers the historical market data layer: RateLimiter, GapPlanner, Fetcher, BarStore, QuarantineManager, BarValidator, CorporateActions, Bhavcopy ingestion, contract-aware layout, accumulation, tick compare, trash-safe deletion, vendor file import, and smoke tests.
 
 ## Milestones
 
@@ -14,7 +14,7 @@ Milestones M0, M1, and M2 are complete. AlgoDesk Next provides a pluggable tradi
 | M1 | Walking skeleton | Done (M1 checklist complete) |
 | M2 | Data layer | Done (M2 checklist complete) |
 | M3 | Indicators and screens | Done |
-| M4 | Backtester and reports | In progress (M4-1, M4-1b, M4-2, M4-2b, M4-3, M4-1c complete) |
+| M4 | Backtester and reports | In progress (M4-1, M4-1b, M4-2, M4-2b, M4-3, M4-1c, M4-1d complete) |
 | M5 to M9 | Risk, Zerodha, remote, extended paper, live | Not started |
 
 ## M1 acceptance checklist

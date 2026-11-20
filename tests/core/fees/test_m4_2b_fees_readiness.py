@@ -60,7 +60,7 @@ def test_fees_readiness_unused_components_do_not_block_run(tmp_path: Path) -> No
         run_cfg = RunConfig(
             allocated_capital=500000,
             run={"name": "test_eq_2024", "mode": "backtest"},
-            backtest=BacktestConfig(start="2024-01-01", end="2024-06-01", timeframe="1d"),
+            backtest=BacktestConfig(start="2024-10-01", end="2025-01-01", timeframe="1d"),
             data_source={"plugin": "upstox"},
             execution_venue={"plugin": "sim"},
             fees=FeesConfig(schedule="zerodha_nse"),

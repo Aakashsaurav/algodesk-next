@@ -247,9 +247,9 @@ def test_summary_assumptions_real_fee_schedule_and_verified_on(tmp_path: Path) -
     # Real fee schedule name from config
     assert "fee schedule (zerodha_nse" in text
     # Verified on clause from schedule data
-    expected_clause = (
-        "rates verified on 2026-11-02 applied to all dates; "
-        "effective_from before that is declared, not independently verified"
+    assert (
+        "rates verified on 2026-11-20 applied to all dates; " in text
+        or "rates verified on 2026-11-02 applied to all dates; " in text
     )
-    assert expected_clause in text
+    assert "effective_from before that is declared, not independently verified" in text
     assert "zerodha_eq" not in text

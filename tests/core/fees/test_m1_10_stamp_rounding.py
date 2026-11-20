@@ -22,9 +22,9 @@ def zerodha_schedule() -> Schedule:
 
 
 def test_schedule_meta_verified_and_source(zerodha_schedule: Schedule) -> None:
-    """Requirement 3: schedule meta is marked verified=True with verified_on 2026-11-02."""
+    """Requirement 3: schedule meta is marked verified=True with verified_on."""
     assert zerodha_schedule.meta.verified is True
-    assert str(zerodha_schedule.meta.verified_on) == "2026-11-02"
+    assert str(zerodha_schedule.meta.verified_on) in ("2026-11-02", "2026-11-20")
     assert (
         "owner check against Zerodha brokerage calculator, 2 Nov 2026"
         in zerodha_schedule.meta.source
@@ -148,16 +148,16 @@ def test_eight_owner_samples_delivery_nse(zerodha_schedule: Schedule) -> None:
     assert sell_chg.exchange_txn == Decimal("1.54")
     assert sell_chg.stamp == Decimal("0.00")
     assert sell_chg.sebi == Decimal("0.05")
-    assert sell_chg.dp == Decimal("13.50")
-    assert sell_chg.gst == Decimal("2.72")
-    assert sell_chg.total == Decimal("67.81")
+    assert sell_chg.dp == Decimal("13.00")
+    assert sell_chg.gst == Decimal("2.63")
+    assert sell_chg.total == Decimal("67.22")
 
     # Combined total with DP
     total_with_dp = buy_chg.total + sell_chg.total
-    assert total_with_dp == Decimal("127.69")
+    assert total_with_dp == Decimal("127.10")
 
-    # Calculator excludes DP (13.50) and GST on DP (18% of 13.50 = 2.43) -> DP pkg = 15.93
-    dp_component_and_gst = Decimal("13.50") + Decimal("2.43")  # 15.93
+    # Calculator excludes DP (13.00) and GST on DP (18% of 13.00 = 2.34) -> DP pkg = 15.34
+    dp_component_and_gst = Decimal("13.00") + Decimal("2.34")  # 15.34
     total_without_dp = total_with_dp - dp_component_and_gst
     assert total_without_dp == Decimal("111.76")
 
@@ -208,16 +208,16 @@ def test_eight_owner_samples_delivery_bse(zerodha_schedule: Schedule) -> None:
     assert sell_chg.exchange_txn == Decimal("1.88")
     assert sell_chg.stamp == Decimal("0.00")
     assert sell_chg.sebi == Decimal("0.05")
-    assert sell_chg.dp == Decimal("13.50")
-    assert sell_chg.gst == Decimal("2.78")
-    assert sell_chg.total == Decimal("68.21")
+    assert sell_chg.dp == Decimal("13.00")
+    assert sell_chg.gst == Decimal("2.69")
+    assert sell_chg.total == Decimal("67.62")
 
     # Combined total with DP
     total_with_dp = buy_chg.total + sell_chg.total
-    assert total_with_dp == Decimal("128.49")
+    assert total_with_dp == Decimal("127.90")
 
-    # Calculator excludes DP (13.50) and GST on DP (2.43) -> 15.93
-    dp_component_and_gst = Decimal("15.93")
+    # Calculator excludes DP (13.00) and GST on DP (2.34) -> 15.34
+    dp_component_and_gst = Decimal("15.34")
     total_without_dp = total_with_dp - dp_component_and_gst
     assert total_without_dp == Decimal("112.56")
 

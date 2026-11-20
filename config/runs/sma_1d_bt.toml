@@ -22,6 +22,7 @@ seed = 7
 
 [fees]
 schedule = "zerodha_nse"
+fallback = "earliest"
 
 [[calendars]]
 plugin = "exchange"

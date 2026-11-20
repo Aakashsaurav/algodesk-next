@@ -1,7 +1,7 @@
 [meta]
 name = "zerodha_nse"
-source = "zerodha.com/charges (checked 30 Oct 2026), 1 Apr 2026 STT notice, and owner check against Zerodha brokerage calculator, 2 Nov 2026"
-verified_on = "2026-11-02"
+source = "zerodha.com/charges (checked 30 Oct 2026 & 20 Nov 2026), official Zerodha bulletins (347967, 373933, 391488), 1 Apr 2026 STT notice, and owner check against Zerodha brokerage calculator, 2 Nov 2026"
+verified_on = "2026-11-20"
 verified = true
 
 # ==============================================================================
@@ -52,7 +52,39 @@ source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
 note = "half-up versus always-up is not yet distinguished"
 verified = true
 
-# Prior equity delivery txn charge (pre-2026-10-30)
+# NSE equity delivery txn charge (2023-04-01 to 2024-03-31: 0.00325%)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000325
+segment = "eq"
+product = "CNC"
+side = "both"
+exchange = "nse"
+effective_from = 2023-04-01
+effective_to = 2024-03-31
+source = "https://zerodha.com/marketintel/bulletin/347967/revision-in-transaction-charges-and-stt-from-1st-april-2023"
+verified_on = "2026-11-20"
+note = "from Zerodha bulletin"
+verified = true
+
+# NSE equity delivery txn charge (2024-04-01 to 2024-09-30: 0.00322%)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000322
+segment = "eq"
+product = "CNC"
+side = "both"
+exchange = "nse"
+effective_from = 2024-04-01
+effective_to = 2024-09-30
+source = "https://zerodha.com/marketintel/bulletin/373933/revision-in-nse-transaction-charges-from-april-1-2024"
+verified_on = "2026-11-20"
+note = "from Zerodha bulletin"
+verified = true
+
+# NSE equity delivery txn charge (2024-10-01 to 2026-10-29: 0.00297%)
 [[component]]
 name = "exchange_txn"
 kind = "pct"
@@ -60,8 +92,12 @@ rate = 0.0000297
 segment = "eq"
 product = "CNC"
 side = "both"
-effective_from = 2020-01-01
+exchange = "nse"
+effective_from = 2024-10-01
 effective_to = 2026-10-29
+source = "https://zerodha.com/marketintel/bulletin/391488/revision-in-transactions-charges-from-1st-october-2024"
+verified_on = "2026-11-20"
+note = "from Zerodha bulletin"
 verified = true
 
 # NSE equity delivery txn charge (from 2026-10-30)
@@ -103,11 +139,14 @@ verified = true
 [[component]]
 name = "dp"
 kind = "per_scrip_day"
-amount = 13.50
+amount = 13.00
 segment = "eq"
 product = "CNC"
 side = "sell"
-effective_from = 2020-01-01
+effective_from = 2024-10-01
+source = "zerodha.com/charges ('₹15.34 per scrip (₹3.5 CDSL fee + ₹9.5 Zerodha fee + ₹2.34 GST)...') and Zerodha bulletin https://zerodha.com/marketintel/bulletin/391488/revision-in-transactions-charges-from-1st-october-2024"
+verified_on = "2026-11-20"
+note = "composition changed from 5 + 8 to 3.5 + 9.5 (total 13 before GST) on 2024-10-01"
 verified = true
 
 # ==============================================================================
@@ -159,7 +198,39 @@ source = "owner check against Zerodha brokerage calculator, 2 Nov 2026"
 note = "half-up versus always-up is not yet distinguished"
 verified = true
 
-# Prior equity intraday txn charge (pre-2026-10-30)
+# NSE equity intraday txn charge (2023-04-01 to 2024-03-31: 0.00325%)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000325
+segment = "eq"
+product = "MIS"
+side = "both"
+exchange = "nse"
+effective_from = 2023-04-01
+effective_to = 2024-03-31
+source = "https://zerodha.com/marketintel/bulletin/347967/revision-in-transaction-charges-and-stt-from-1st-april-2023"
+verified_on = "2026-11-20"
+note = "from Zerodha bulletin"
+verified = true
+
+# NSE equity intraday txn charge (2024-04-01 to 2024-09-30: 0.00322%)
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.0000322
+segment = "eq"
+product = "MIS"
+side = "both"
+exchange = "nse"
+effective_from = 2024-04-01
+effective_to = 2024-09-30
+source = "https://zerodha.com/marketintel/bulletin/373933/revision-in-nse-transaction-charges-from-april-1-2024"
+verified_on = "2026-11-20"
+note = "from Zerodha bulletin"
+verified = true
+
+# NSE equity intraday txn charge (2024-10-01 to 2026-10-29: 0.00297%)
 [[component]]
 name = "exchange_txn"
 kind = "pct"
@@ -167,8 +238,12 @@ rate = 0.0000297
 segment = "eq"
 product = "MIS"
 side = "both"
-effective_from = 2020-01-01
+exchange = "nse"
+effective_from = 2024-10-01
 effective_to = 2026-10-29
+source = "https://zerodha.com/marketintel/bulletin/391488/revision-in-transactions-charges-from-1st-october-2024"
+verified_on = "2026-11-20"
+note = "from Zerodha bulletin"
 verified = true
 
 # NSE equity intraday txn charge (from 2026-10-30)

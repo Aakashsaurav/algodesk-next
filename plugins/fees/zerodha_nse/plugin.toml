@@ -5,8 +5,15 @@ api_version = 1
 entry = "plugin:ZerodhaNseFeesPlugin"
 modes_allowed = ["research", "backtest", "paper", "live"]
 order_capable = false
-verified_on = "2026-10-21"
-sources = ["PRD Appendix D.2", "Zerodha brokerage calculator"]
+verified_on = "2026-11-20"
+sources = [
+    "PRD Appendix D.2",
+    "Zerodha brokerage calculator",
+    "zerodha.com/charges",
+    "https://zerodha.com/marketintel/bulletin/347967/revision-in-transaction-charges-and-stt-from-1st-april-2023",
+    "https://zerodha.com/marketintel/bulletin/373933/revision-in-nse-transaction-charges-from-april-1-2024",
+    "https://zerodha.com/marketintel/bulletin/391488/revision-in-transactions-charges-from-1st-october-2024",
+]
 
 [capabilities]
 equity_delivery = true

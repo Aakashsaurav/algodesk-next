@@ -309,6 +309,12 @@ def inspect_fee_schedule(
 
     for (seg, prod, itype, comp_name), comps in sorted(grouped.items()):
         earliest_dt = min(c.effective_from for c in comps)
+        # Future-dated unrequested segments (e.g. options from 2026) or pre-start DP
+        # do not block viewing active equity fees
+        if not seg_filter and itype == "opt":
+            continue
+        if not seg_filter and comp_name == "dp" and eval_date < earliest_dt:
+            continue
         if eval_date < earliest_dt:
             itype_str = f" {itype}" if itype else ""
             raise FeeScheduleError(

@@ -699,7 +699,8 @@ Backtests run strictly offline on cached historical data and enforce data readin
    - Inspect applicable rates and components across the entire schedule:
      ```bash
      algodesk fees show <schedule> --as-of YYYY-MM-DD
-     algodesk fees show zerodha_nse --as-of 2026-11-13
+     algodesk fees show zerodha_nse --as-of 2024-03-31
+     algodesk fees show zerodha_nse --as-of 2024-04-01
      algodesk fees show zerodha_nse --as-of 2026-11-13 --json
      ```
    - To extrapolate earliest verified rates across pre-verified trade dates, configure:
@@ -709,6 +710,20 @@ Backtests run strictly offline on cached historical data and enforce data readin
      fallback = "earliest"
      ```
      When fallback is used, the total count of fallback calculations is journaled as `fees.fallback_used` in `metrics.json` and highlighted as an assumption caveat in `SUMMARY.md`.
+
+### Fees by date
+Fee components in `zerodha_nse` are date-bounded with verified effective ranges derived from official exchange bulletins and broker charge notices:
+- **NSE equity transaction charges (`exchange_txn`)**:
+  - `2023-04-01` to `2024-03-31`: `0.00325%` (Zerodha bulletin 347967)
+  - `2024-04-01` to `2024-09-30`: `0.00322%` (Zerodha bulletin 373933)
+  - `2024-10-01` to `2026-10-29`: `0.00297%` (Zerodha bulletin 391488)
+  - `2026-10-30` onward: `0.00307%` (Zerodha calculator; BSE delivery is `0.00375%`)
+- **Depository Participant (DP) charge**:
+  - `2024-10-01` onward: ₹13.00 per scrip-day on delivery SELL (composition: ₹3.50 CDSL fee + ₹9.50 Zerodha fee; ₹15.34 per scrip including 18% GST of ₹2.34, verified from bulletin 391488 and zerodha.com/charges).
+- **Date boundary enforcement**:
+  - Fills on dates prior to the earliest verified date (2023-04-01 for equity transaction charges, 2024-10-01 for DP charge) fail closed with `FeeScheduleError` unless `fees.fallback = "earliest"` is configured in run configuration.
+  - When `fees.fallback = "earliest"` is enabled, the earliest verified rate (0.00325% for equity exchange_txn, ₹13.00 for DP) is applied, fallback calculation counts are recorded in `metrics.json` (`fees.fallback_used`), and `SUMMARY.md` assumptions report `"fee rates before <date> use the earliest verified rate"`.
+  - Date inspection via `algodesk fees show zerodha_nse --as-of <date>` inspects active components for that specific date; dates before 2023-04-01 output an actionable `FeeScheduleError` advising `fees.fallback = 'earliest'`.
 
 4. **Historical feed adjustments, sessions & fill mechanics**:
    - `adjust = "splits"` (default): Delivers raw candles adjusted for stock splits and bonuses.
