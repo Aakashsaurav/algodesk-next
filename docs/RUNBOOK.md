@@ -719,9 +719,9 @@ Fee components in `zerodha_nse` are date-bounded with verified effective ranges 
   - `2024-10-01` to `2026-10-29`: `0.00297%` (Zerodha bulletin 391488)
   - `2026-10-30` onward: `0.00307%` (Zerodha calculator; BSE delivery is `0.00375%`)
 - **Depository Participant (DP) charge**:
-  - `2024-10-01` onward: ₹13.00 per scrip-day on delivery SELL (composition: ₹3.50 CDSL fee + ₹9.50 Zerodha fee; ₹15.34 per scrip including 18% GST of ₹2.34, verified from bulletin 391488 and zerodha.com/charges).
+  - Delivery SELL DP charge is ₹13.00 (₹15.34 with 18% GST of ₹2.34) effective 2024-10-01, verified against zerodha.com/charges ("₹15.34 per scrip (₹3.5 CDSL fee + ₹9.5 Zerodha fee + ₹2.34 GST)...") and Zerodha bulletin 391488 (composition changed from 5 + 8 to 3.5 + 9.5). Fills prior to 2024-10-01 use `fees.fallback = "earliest"` (applying ₹13.00).
 - **Date boundary enforcement**:
-  - Fills on dates prior to the earliest verified date (2023-04-01 for equity transaction charges, 2024-10-01 for DP charge) fail closed with `FeeScheduleError` unless `fees.fallback = "earliest"` is configured in run configuration.
+  - Fills on dates prior to the earliest verified date (2023-04-01 for equity transaction charges) fail closed with `FeeScheduleError` unless `fees.fallback = "earliest"` is configured in run configuration.
   - When `fees.fallback = "earliest"` is enabled, the earliest verified rate (0.00325% for equity exchange_txn, ₹13.00 for DP) is applied, fallback calculation counts are recorded in `metrics.json` (`fees.fallback_used`), and `SUMMARY.md` assumptions report `"fee rates before <date> use the earliest verified rate"`.
   - Date inspection via `algodesk fees show zerodha_nse --as-of <date>` inspects active components for that specific date; dates before 2023-04-01 output an actionable `FeeScheduleError` advising `fees.fallback = 'earliest'`.
 

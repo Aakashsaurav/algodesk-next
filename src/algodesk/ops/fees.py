@@ -311,9 +311,7 @@ def inspect_fee_schedule(
         earliest_dt = min(c.effective_from for c in comps)
         # Future-dated unrequested segments (e.g. options from 2026) or pre-start DP
         # do not block viewing active equity fees
-        if not seg_filter and itype == "opt":
-            continue
-        if not seg_filter and comp_name == "dp" and eval_date < earliest_dt:
+        if not seg_filter and (itype == "opt" or comp_name == "dp"):
             continue
         if eval_date < earliest_dt:
             itype_str = f" {itype}" if itype else ""

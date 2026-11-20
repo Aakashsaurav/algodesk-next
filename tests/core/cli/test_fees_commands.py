@@ -97,7 +97,7 @@ def test_fees_vectors(runner: CliRunner) -> None:
     )
     assert "computed" in res.output
     assert "59.32" in res.output
-    assert "67.16" in res.output or "67.75" in res.output
-    assert "41.25" in res.output or "41.84" in res.output
+    assert "67.75" in res.output or "67.16" in res.output
+    assert "41.84" in res.output or "41.25" in res.output
     assert "16.01" in res.output
     assert "134.40" in res.output

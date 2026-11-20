@@ -15,6 +15,7 @@ This plugin loads and exposes `schedule.toml` for consumption by the core `FeeEn
 ## Verification Status
 - **Status**: `verified = true`, `verified_on = 2026-11-20`.
 - **Method**: Official Zerodha circulars and bulletins verified on 20 November 2026. Prior delivery and intraday exchange transaction charges are dated: 0.00325% from 2023-04-01 (bulletin 347967), 0.00322% from 2024-04-01 (bulletin 373933), 0.00297% from 2024-10-01 (bulletin 391488), and 0.00307% from 2026-10-30. Delivery DP charge verified as ₹13.00 (₹3.50 CDSL + ₹9.50 Zerodha fee; ₹15.34 with 18% GST of ₹2.34) effective 2024-10-01 per bulletin 391488 and zerodha.com/charges.
+- **Declared Components**: STT, stamp duty, SEBI turnover fees, and brokerage are declared, not independently verified for dates before verified_on (2026-11-20).
 - **Stamp Duty Rounding**: Stamp duty rounds to the nearest whole rupee, half up, per order (e.g. 7.50 to 8, 1.50 to 2) with source `"owner check against Zerodha brokerage calculator, 2 Nov 2026"`.
 - **Pre-verified Fallback**: Trades before earliest verified dates (2023-04-01 for equity exchange_txn, 2024-10-01 for DP) fail closed with FeeScheduleError unless `fees.fallback = "earliest"` is configured.
 

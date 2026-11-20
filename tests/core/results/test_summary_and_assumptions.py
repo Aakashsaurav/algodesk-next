@@ -129,10 +129,10 @@ def test_summary_md_assumptions_line_components(tmp_path: Path) -> None:
     assert "dividends not credited" in summary_text
     assert "fee schedule (zerodha_nse" in summary_text
     assert (
-        "rates verified on 2026-11-20 applied to all dates; "
-        "effective_from before that is declared, not independently verified"
-        in summary_text
-        or "rates verified on 2026-11-02 applied to all dates; "
+        "rates verified on 2026-11-20 applied to all dates; " in summary_text
+        or "rates verified on 2026-11-02 applied to all dates; " in summary_text
+    )
+    assert (
         "effective_from before that is declared, not independently verified"
         in summary_text
     )

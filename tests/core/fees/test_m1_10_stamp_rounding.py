@@ -22,7 +22,7 @@ def zerodha_schedule() -> Schedule:
 
 
 def test_schedule_meta_verified_and_source(zerodha_schedule: Schedule) -> None:
-    """Requirement 3: schedule meta is marked verified=True with verified_on."""
+    """Requirement 3: schedule meta is marked verified=True with verified_on 2026-11-02."""
     assert zerodha_schedule.meta.verified is True
     assert str(zerodha_schedule.meta.verified_on) in ("2026-11-02", "2026-11-20")
     assert (
