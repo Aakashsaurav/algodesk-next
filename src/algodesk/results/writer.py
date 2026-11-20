@@ -71,6 +71,7 @@ class ResultsWriter:
         mode = str(summary_info.get("mode") or manifest_info.get("mode", "paper")).lower()
         is_backtest = mode == "backtest"
 
+        self._effective_config_text = effective_config_text
         # 1. Round trips and daily equity
         round_trips: list[RoundTrip] = []
         if trades:
@@ -421,7 +422,9 @@ class ResultsWriter:
         )
 
         if is_backtest:
-            assumptions = self._build_backtest_assumptions(metrics, readiness_data)
+            assumptions = self._build_backtest_assumptions(
+                metrics, readiness_data, summary_info=summary_info
+            )
             disclaimer = f"Note: {open_note}{assumptions}\n"
         else:
             disclaimer = f"Note: {open_note}Simulated paper fills assume zero impact.\n"
@@ -437,10 +440,44 @@ class ResultsWriter:
         content = f"# Run Summary: {self.run_id}\n\n## Summary\n{body}"
         self._write_text_file("SUMMARY.md", content)
 
+    def _resolve_fee_schedule_info(self, summary_info: Mapping[str, Any] | None) -> tuple[str, str]:
+        """Resolve fee schedule name and verified_on date for summary assumptions."""
+        sch = "zerodha_nse"
+        if summary_info and summary_info.get("fee_schedule"):
+            sch = str(summary_info["fee_schedule"])
+        elif hasattr(self, "_effective_config_text") and self._effective_config_text:
+            for line in self._effective_config_text.splitlines():
+                if "=" in line and ("schedule" in line or "fees" in line):
+                    parts = line.split("=", 1)
+                    if parts[0].strip() in ("schedule", "fees.schedule"):
+                        sch = parts[1].strip().strip('"').strip("'")
+                        break
+
+        verified_on = "2026-11-02"
+        candidates = [
+            Path("plugins") / "fees" / sch / "schedule.toml",
+            self.run_dir.parent.parent / "plugins" / "fees" / sch / "schedule.toml",
+        ]
+        for p in candidates:
+            if p.is_file():
+                try:
+                    import tomllib
+
+                    data = tomllib.loads(p.read_text(encoding="utf-8"))
+                    v_on = data.get("meta", {}).get("verified_on")
+                    if v_on:
+                        verified_on = str(v_on)
+                        break
+                except Exception:
+                    pass
+
+        return sch, verified_on
+
     def _build_backtest_assumptions(
         self,
         metrics: Mapping[str, Any],
         readiness_data: dict[str, Any] | None,
+        summary_info: Mapping[str, Any] | None = None,
     ) -> str:
         """Construct the standardized assumptions line for backtest summaries."""
         coverage_pct = 100.0
@@ -462,9 +499,15 @@ class ResultsWriter:
             oos_net = metrics["out_of_sample"].get("net_pnl", 0.0)
             oos_str = f"Net ₹{oos_net:.2f}"
 
+        fee_sch, verified_on = self._resolve_fee_schedule_info(summary_info)
+        fee_clause = (
+            f"fee schedule ({fee_sch}, rates verified on {verified_on} applied to all dates; "
+            "effective_from before that is declared, not independently verified)"
+        )
+
         return (
             "Assumptions: fill model (bar synth with slippage), price basis (splits), "
-            f"dividends not credited, fee schedule (zerodha_eq), data range ({d_range}), "
+            f"dividends not credited, {fee_clause}, data range ({d_range}), "
             f"universe coverage ({coverage_pct:.0f}%){trial_str}, "
             f"out-of-sample ({oos_str}), survivorship note (point-in-time universe unadjusted)."
         )

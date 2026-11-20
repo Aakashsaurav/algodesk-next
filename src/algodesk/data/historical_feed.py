@@ -36,7 +36,9 @@ class HistoricalFeed:
         self.warmup_bars_count = max(0, warmup_bars_count)
         self.calendar = calendar
         self.manifest = manifest
-        self.synth = synth or BarQuoteSynth()
+        self.synth = synth or BarQuoteSynth(calendar=calendar)
+        if self.synth.calendar is None and self.calendar is not None:
+            self.synth.calendar = self.calendar
         self.adjust = adjust
 
         # Normalize start/end datetimes in UTC
@@ -186,7 +188,20 @@ class HistoricalFeed:
                 all_events.append((q_1.recv_ts, 0, inst_str, q_1))
                 all_events.append((q_2.recv_ts, 0, inst_str, q_2))
                 all_events.append((q_close.recv_ts, 0, inst_str, q_close))
-                all_events.append((bar.end_ts, 1, inst_str, bar))
+                feed_bar = Bar(
+                    instrument=bar.instrument,
+                    timeframe=bar.timeframe,
+                    start_ts=q_open.recv_ts,
+                    end_ts=q_close.recv_ts,
+                    open=bar.open,
+                    high=bar.high,
+                    low=bar.low,
+                    close=bar.close,
+                    volume=bar.volume,
+                    complete=bar.complete,
+                    synthetic=bar.synthetic,
+                )
+                all_events.append((q_close.recv_ts, 1, inst_str, feed_bar))
             else:
                 all_events.append((bar.end_ts, 1, str(bar.instrument), bar))
 

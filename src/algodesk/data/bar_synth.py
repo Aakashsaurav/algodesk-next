@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
+from zoneinfo import ZoneInfo
 
 from algodesk.api.market import Bar, Level, Quote
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class BarQuoteSynth:
@@ -15,9 +19,49 @@ class BarQuoteSynth:
         self,
         participation_pct: float = 10.0,
         price_tick: float = 0.01,
+        calendar: Any = None,
     ) -> None:
         self.participation_pct = max(0.01, min(100.0, float(participation_pct)))
         self.price_tick = Decimal(str(price_tick))
+        self.calendar = calendar
+
+    def _daily_timestamps(self, bar: Bar) -> list[datetime]:
+        """Compute 4 timestamps for daily bars: session open (09:15 IST), 2 mid, session close."""
+        ts = bar.start_ts if bar.start_ts.tzinfo else bar.start_ts.replace(tzinfo=UTC)
+        d = ts.astimezone(IST).date()
+        s_open: datetime | None = None
+        s_close: datetime | None = None
+
+        if self.calendar is not None:
+            try:
+                sessions = self.calendar.sessions(d, segment="eq")
+                if sessions:
+                    s_open = sessions[0].start
+                    s_close = sessions[0].end
+            except Exception:
+                pass
+
+        if s_open is None or s_close is None:
+            if (bar.end_ts - bar.start_ts) >= timedelta(hours=12):
+                s_open = datetime(d.year, d.month, d.day, 3, 45, 0, tzinfo=UTC)
+                s_close = datetime(d.year, d.month, d.day, 10, 0, 0, tzinfo=UTC)
+            else:
+                s_open = bar.start_ts
+                s_close = bar.end_ts
+
+        duration = s_close - s_open
+        if duration > timedelta(0):
+            d_step = duration / 3
+            return [s_open, s_open + d_step, s_open + d_step * 2, s_close]
+        return [s_open, s_open, s_open, s_close]
+
+    def _intraday_timestamps(self, bar: Bar) -> list[datetime]:
+        """Compute 4 timestamps inside intraday bar period."""
+        duration = bar.end_ts - bar.start_ts
+        if duration > timedelta(0):
+            d_step = duration / 4
+            return [bar.start_ts, bar.start_ts + d_step, bar.start_ts + d_step * 2, bar.end_ts]
+        return [bar.start_ts, bar.start_ts, bar.start_ts, bar.end_ts]
 
     def synthesize(self, bar: Bar) -> tuple[Quote, Quote, Quote, Quote]:
         """Convert a single OHLCV bar into 4 quotes: O, then L/H or H/L, then C.
@@ -34,17 +78,8 @@ class BarQuoteSynth:
         else:
             prices = [bar.open, bar.high, bar.low, bar.close]
 
-        duration = bar.end_ts - bar.start_ts
-        if duration > timedelta(0):
-            d = duration / 4
-            timestamps = [
-                bar.start_ts,
-                bar.start_ts + d,
-                bar.start_ts + d * 2,
-                bar.end_ts,
-            ]
-        else:
-            timestamps = [bar.start_ts, bar.start_ts, bar.start_ts, bar.end_ts]
+        is_daily = (bar.timeframe == "1d") or ((bar.end_ts - bar.start_ts) >= timedelta(hours=20))
+        timestamps = self._daily_timestamps(bar) if is_daily else self._intraday_timestamps(bar)
 
         quotes: list[Quote] = []
         for p, ts in zip(prices, timestamps, strict=True):

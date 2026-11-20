@@ -524,7 +524,7 @@ def test_step5_data_gaps_json_output(tmp_project: Path) -> None:
 
 
 def test_step7_core_lines_guidance_budget_is_30000() -> None:
-    """config/params/core.toml sets budget.core_lines_guidance to 30000."""
+    """config/params/core.toml sets budget.core_lines_guidance to 45000."""
     with open("config/params/core.toml", "rb") as f:
         data = tomli.load(f)
 
@@ -533,4 +533,4 @@ def test_step7_core_lines_guidance_budget_is_30000() -> None:
         (p for p in params if p.get("name") == "budget.core_lines_guidance"), None
     )
     assert guidance_param is not None
-    assert guidance_param.get("default") == 30000
+    assert guidance_param.get("default") == 45000

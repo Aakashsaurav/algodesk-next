@@ -127,7 +127,11 @@ def test_summary_md_assumptions_line_components(tmp_path: Path) -> None:
     assert "fill model (bar synth with slippage)" in summary_text
     assert "price basis (splits)" in summary_text
     assert "dividends not credited" in summary_text
-    assert "fee schedule (zerodha_eq)" in summary_text
+    assert "fee schedule (zerodha_nse" in summary_text
+    assert (
+        "rates verified on 2026-11-02 applied to all dates; "
+        "effective_from before that is declared, not independently verified" in summary_text
+    )
     assert "data range (2024-01-01 to 2025-01-01)" in summary_text
     assert "universe coverage (100%)" in summary_text
     assert "trial 2 of study trend_opt" in summary_text

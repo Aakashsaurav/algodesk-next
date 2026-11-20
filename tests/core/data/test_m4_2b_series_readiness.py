@@ -201,10 +201,10 @@ def test_resolve_backtest_series_detects_stale_adjusted_warning(tmp_env) -> None
         store=store,
     )
     assert res.adjustment == "raw"
-    assert len(res.warnings) >= 1
-    assert any("bars:upstox:1d:NSE:EQ:RELIANCE:adjusted" in w for w in res.warnings)
-    assert len(res.cleanup_commands) >= 1
-    assert "algodesk data delete" in res.cleanup_commands[0]
+    assert len(res.warnings) == 1
+    assert "other series exist, not used by this run" in res.warnings[0]
+    assert len(res.cleanup_commands) == 0
+    assert "data delete" not in str(res.cleanup_commands)
 
 
 def test_step2_fixture_healthy_raw_passes_readiness(tmp_env) -> None:
@@ -272,8 +272,9 @@ def test_step2_fixture_healthy_raw_passes_readiness(tmp_env) -> None:
     assert len(sym_rep.missing_sessions) == 0
 
     # Stale partitions appear as non-blocking warnings
-    assert len(sym_rep.warnings) >= 1
-    assert any("adjusted" in w for w in sym_rep.warnings)
+    assert len(sym_rep.warnings) == 1
+    assert "other series exist, not used by this run" in sym_rep.warnings[0]
+    assert "data delete" not in str(sym_rep.warning_cleanup_commands)
 
 
 def test_step2_fixture_real_missing_day_fails_readiness(tmp_env) -> None:

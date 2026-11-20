@@ -159,9 +159,10 @@ def _collect_partition_warnings(
     source: str,
     manifest: Any,
 ) -> tuple[list[str], list[str]]:
-    """Collect non-blocking warnings and cleanup commands for alternate partitions."""
+    """Collect non-blocking info warning for other partitions/sources."""
     warnings: list[str] = []
     cleanup_cmds: list[str] = []
+    seen_other_ids: set[str] = set()
     if manifest is not None:
         try:
             for ds in manifest.list_datasets():
@@ -170,27 +171,16 @@ def _collect_partition_warnings(
                     and ds.timeframe == timeframe
                     and ds.dataset_id != chosen_ds_id
                 ):
-                    warnings.append(
-                        f"Alternate partition found: dataset={ds.dataset_id} "
-                        f"(source={ds.source}, adjustment={getattr(ds, 'adjustment', 'unknown')})"
-                    )
-                    cleanup_cmds.append(
-                        f"algodesk data delete {canonical_inst} "
-                        f"--reason 'cleanup alternate partition {ds.dataset_id}'"
-                    )
+                    seen_other_ids.add(ds.dataset_id)
         except Exception:
             pass
     if chosen_download == pref_download and fb_exists:
-        fb_warn = (
-            f"Alternate partition found: dataset={fb_ds_id} "
-            f"(source={source}, adjustment={fb_download})"
-        )
-        if fb_warn not in warnings:
-            warnings.append(fb_warn)
-            cleanup_cmds.append(
-                f"algodesk data delete {canonical_inst} "
-                f"--reason 'cleanup alternate partition {fb_ds_id}'"
-            )
+        if fb_ds_id != chosen_ds_id:
+            seen_other_ids.add(fb_ds_id)
+
+    if seen_other_ids:
+        count = len(seen_other_ids)
+        warnings.append(f"{count} other series exist, not used by this run")
     return warnings, cleanup_cmds
 
 
@@ -492,14 +482,29 @@ def check_symbol_readiness(
         )
 
     if report.problems:
-        ref_date = earliest_missing_date if earliest_missing_date is not None else start
-        days_n = max(7, (today - ref_date).days + 1)
-        target = f"--group {group}" if group else f"--symbols {symbol}"
-        cmd = (
-            f"algodesk data accumulate {target} --source {source} "
-            f"--timeframe {timeframe} --days {days_n}"
-        )
-        report.fix_commands.append(cmd)
+        uncovered_missing = [
+            s for s in report.missing_sessions if s not in report.coverage_without_bars
+        ]
+        if (
+            report.coverage_without_bars
+            and not uncovered_missing
+            and not report.pending_empty_days
+            and not report.insufficient_warmup
+        ):
+            target = f"--group {group}" if group else f"--symbols {symbol}"
+            cmd = (
+                f"algodesk data coverage repair {target} --source {source} --timeframe {timeframe}"
+            )
+            report.fix_commands.append(cmd)
+        else:
+            ref_date = earliest_missing_date if earliest_missing_date is not None else start
+            days_n = max(7, (today - ref_date).days + 1)
+            target = f"--group {group}" if group else f"--symbols {symbol}"
+            cmd = (
+                f"algodesk data accumulate {target} --source {source} "
+                f"--timeframe {timeframe} --days {days_n}"
+            )
+            report.fix_commands.append(cmd)
 
     return report
 

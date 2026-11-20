@@ -77,3 +77,15 @@ tighten = "down"
 description = "Maximum percentage of symbols with missing or invalid data permitted before backtest check fails"
 owner = "data"
 
+[[param]]
+name = "backtest.sim_latency_ms"
+type = "int"
+default = 0
+min = 0
+max = 10000
+unit = "ms"
+scope = "global"
+tighten = "down"
+description = "Simulated venue order placement latency in milliseconds for backtest bar mode"
+owner = "engine"
+

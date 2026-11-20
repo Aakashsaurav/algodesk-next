@@ -60,8 +60,21 @@ class SimVenue:
 
     def __init__(self, params: Mapping[str, Any] | None = None) -> None:
         p = dict(params or {})
-        self.latency_ms = int(p.get("sim.latency_ms", 0))
-        self.latency_jitter_ms = int(p.get("sim.latency_jitter_ms", 0))
+        mode_val = str(p.get("mode", "")).lower()
+        self.is_backtest = bool(
+            mode_val == "backtest"
+            or (
+                "backtest.sim_latency_ms" in p
+                and "sim.latency_ms" not in p
+                and mode_val not in ("paper", "replay")
+            )
+        )
+        if self.is_backtest:
+            self.latency_ms = int(p.get("backtest.sim_latency_ms", 0))
+            self.latency_jitter_ms = 0
+        else:
+            self.latency_ms = int(p.get("sim.latency_ms", 0))
+            self.latency_jitter_ms = int(p.get("sim.latency_jitter_ms", 0))
         self.through_ticks = int(p.get("sim.through_ticks", 1))
         self.allow_short = bool(p.get("sim.allow_short", False))
         self.reject_rate = float(p.get("sim.reject_rate", 0.0))
@@ -183,6 +196,11 @@ class SimVenue:
         quote = self._latest_quotes.get(spec.instrument)
         if quote is None:
             return False
+        return self._check_marketable_at_quote(spec, quote)
+
+    def _check_marketable_at_quote(self, spec: OrderSpec, quote: Quote) -> bool:
+        if spec.type not in (OrderType.LIMIT, OrderType.STOP) or spec.price is None:
+            return False
         inst = self._instruments.get(spec.instrument)
         tick = inst.tick_size if inst else Decimal("0.05")
         if spec.side == Side.BUY and quote.asks:
@@ -211,13 +229,17 @@ class SimVenue:
         if self.timeout_rate > 0.0 and self._rng.random() < self.timeout_rate:
             raise TimeoutError("Injected simulated venue timeout")
 
-        jitter = 0
-        if self.latency_jitter_ms > 0:
-            jitter = self._rng.randint(-self.latency_jitter_ms, self.latency_jitter_ms)
-        effective_delay = max(0, self.latency_ms + jitter)
-        arrival = trigger_ts + timedelta(milliseconds=effective_delay)
-
-        is_marketable = self._check_marketable_at_submission(spec)
+        if self.is_backtest:
+            effective_delay = max(0, self.latency_ms)
+            arrival = trigger_ts + timedelta(milliseconds=effective_delay)
+            is_marketable = False
+        else:
+            jitter = 0
+            if self.latency_jitter_ms > 0:
+                jitter = self._rng.randint(-self.latency_jitter_ms, self.latency_jitter_ms)
+            effective_delay = max(0, self.latency_ms + jitter)
+            arrival = trigger_ts + timedelta(milliseconds=effective_delay)
+            is_marketable = self._check_marketable_at_submission(spec)
 
         self._order_counter += 1
         venue_ref = f"SIM-{self._order_counter}"
@@ -317,8 +339,18 @@ class SimVenue:
             order = self._orders.get(client_ref)
             if order is None or order.spec.instrument != quote.instrument:
                 continue
-            if quote.recv_ts < order.arrival or quote.recv_ts <= order.trigger_recv_ts:
-                continue
+
+            if self.is_backtest:
+                # In backtest/bar mode an order decided on completed bar t arrives
+                # at the timestamp of the open quote of bar t+1.
+                if order.arrival <= order.trigger_recv_ts:
+                    order.arrival = quote.recv_ts
+
+                if quote.recv_ts < order.arrival:
+                    continue
+            else:
+                if quote.recv_ts < order.arrival or quote.recv_ts <= order.trigger_recv_ts:
+                    continue
 
             self._match_order(order, quote)
 
@@ -348,10 +380,32 @@ class SimVenue:
                 return
             order.triggered = True
 
+            # In backtest mode, STOP and STOP_MARKET crossed by the open fill at the open price
+            if self.is_backtest and order.arrival == quote.recv_ts:
+                inst = self._instruments.get(order.spec.instrument)
+                tick = inst.tick_size if inst else Decimal("0.05")
+                open_price = to_price(quote.ltp, tick)
+                if order.spec.type == OrderType.STOP_MARKET:
+                    self._apply_fill(
+                        order, order.spec.qty - order.filled_qty, open_price, quote.recv_ts
+                    )
+                    if order.client_ref in self._resting_orders:
+                        self._resting_orders.remove(order.client_ref)
+                    return
+                elif order.spec.type == OrderType.STOP:
+                    limit_p = order.spec.price or Decimal("0.00")
+                    if (is_buy and open_price <= limit_p) or (not is_buy and open_price >= limit_p):
+                        self._apply_fill(
+                            order, order.spec.qty - order.filled_qty, open_price, quote.recv_ts
+                        )
+                        if order.client_ref in self._resting_orders:
+                            self._resting_orders.remove(order.client_ref)
+                        return
+
         if order.spec.type == OrderType.STOP_MARKET:
             self._match_market_order(order, quote)
         elif order.spec.type == OrderType.STOP:
-            order.is_marketable = self._check_marketable_at_submission(order.spec)
+            order.is_marketable = self._check_marketable_at_quote(order.spec, quote)
             order.marketable_checked = False
             self._match_limit_order(order, quote)
 
@@ -439,6 +493,9 @@ class SimVenue:
         remaining = order.spec.qty - order.filled_qty
 
         # 1. Marketable matching across levels within limit price
+        if self.is_backtest and not order.marketable_checked:
+            order.is_marketable = self._check_marketable_at_quote(order.spec, quote)
+
         matched_on_arrival = False
         if order.is_marketable and not order.marketable_checked:
             order.marketable_checked = True

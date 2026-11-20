@@ -32,7 +32,23 @@ class SimVenuePlugin(PluginBase):
     ) -> None:
         super().__init__(manifest, config, ctx)
         params = dict(config or {})
-        if ctx is not None and getattr(ctx, "params", None) is not None:
+        mode = getattr(ctx, "mode", None) if ctx is not None else None
+        run_id = str(getattr(ctx, "run_id", "")).lower()
+        is_replay = "_replay_" in run_id or "replay" in run_id
+        if (
+            mode is not None
+            and str(mode).lower() in ("mode.backtest", "backtest")
+            and not is_replay
+        ):
+            params["mode"] = "backtest"
+            if getattr(ctx, "params", None) is not None:
+                try:
+                    v = ctx.params.get("backtest.sim_latency_ms")
+                    if v is not None:
+                        params["backtest.sim_latency_ms"] = v
+                except Exception:
+                    pass
+        elif ctx is not None and getattr(ctx, "params", None) is not None:
             sim_keys = (
                 "sim.latency_ms",
                 "sim.latency_jitter_ms",
