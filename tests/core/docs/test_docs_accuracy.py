@@ -28,6 +28,7 @@ ALLOWED_NON_PARAM_NAMES = {
     "check.sh": "Shell quality check script filename",
     "env.sh": "Environment setup script filename",
     "metrics.json": "Execution results metrics filename",
+    "calibration.json": "Slippage calibration results filename",
     "platform.toml": "Platform core configuration filename",
     "plugin.py": "Plugin module implementation filename",
     "plugin.toml": "Plugin manifest configuration filename",

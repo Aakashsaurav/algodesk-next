@@ -310,6 +310,7 @@ class ResultsWriter:
         if readiness_data and "universe" in readiness_data:
             u_hash = str(readiness_data["universe"].get("hash", ""))
         manifest["universe_hash"] = u_hash
+        manifest.setdefault("fidelity", "bar")
 
         data_checksums = manifest.get("checksums") or manifest.get("data_files") or []
         manifest["dataset_checksums"] = data_checksums
@@ -505,8 +506,14 @@ class ResultsWriter:
             "effective_from before that is declared, not independently verified)"
         )
 
+        fidelity = (summary_info.get("fidelity") or "bar") if summary_info else "bar"
+        if fidelity == "tick":
+            fill_model = "tick replay with paper latency, fidelity: tick"
+        else:
+            fill_model = "bar synth with slippage"
+
         return (
-            "Assumptions: fill model (bar synth with slippage), price basis (splits), "
+            f"Assumptions: fill model ({fill_model}), price basis (splits), "
             f"dividends not credited, {fee_clause}, data range ({d_range}), "
             f"universe coverage ({coverage_pct:.0f}%){trial_str}, "
             f"out-of-sample ({oos_str}), survivorship note (point-in-time universe unadjusted)."

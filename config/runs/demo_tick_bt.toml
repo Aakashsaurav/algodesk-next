@@ -1,0 +1,49 @@
+# config/runs/demo_tick_bt.toml — Tick-fidelity backtest run configuration conforming to M4-4
+
+allocated_capital = 100000
+
+[run]
+name = "demo_tick_bt"
+mode = "backtest"
+
+[backtest]
+start = "2026-11-01"
+end = "2026-11-20"
+fidelity = "bar"
+timeframe = "1m"
+
+[data_source]
+plugin = "upstox"
+
+[execution_venue]
+plugin = "sim"
+seed = 7
+
+[fees]
+schedule = "zerodha_nse"
+fallback = "earliest"
+
+[[calendars]]
+plugin = "exchange"
+exchange = "nse"
+
+[secrets]
+plugin = "keychain"
+
+[universe]
+symbols = [
+    "NSE:EQ:RELIANCE",
+    "NSE:EQ:TCS",
+    "NSE:EQ:HDFCBANK",
+    "NSE:EQ:INFY",
+    "NSE:EQ:ICICIBANK",
+    "MCX:FNO:GOLD FUT 04 DEC 26",
+]
+
+[[strategies]]
+plugin = "sma_cross"
+risk_profile = "conservative"
+params = { timeframe = "1m", fast = 3, slow = 8, qty = 1, exit_time = "15:15", product = "MIS" }
+
+[[notifiers]]
+plugin = "telegram"

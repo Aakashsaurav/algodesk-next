@@ -31,12 +31,16 @@ class BacktestRunner:
         journal_db: Path | None = None,
         run_id: str | None = None,
         quiet: bool = False,
+        feed: Any | None = None,
+        fidelity: str | None = None,
+        replay_session: str | None = None,
     ) -> None:
         self.runtime = runtime
         self.run_name = run_name
         self.session_runner = SessionRunner(
             runtime=runtime,
             run_config=run_config,
+            run_name=run_name,
             mode=Mode.BACKTEST,
             seed=seed,
             dry_run=dry_run,
@@ -44,6 +48,9 @@ class BacktestRunner:
             journal_db=journal_db,
             run_id=run_id,
             quiet=quiet,
+            feed=feed,
+            fidelity=fidelity,
+            replay_session=replay_session,
         )
         self._install_daily_mark()
 

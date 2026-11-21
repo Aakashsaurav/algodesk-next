@@ -118,6 +118,9 @@ class SessionRunner:
         warmup_source: str | None = None,
         replay_session: str | None = None,
         tick_window: tuple[datetime, datetime] | None = None,
+        feed: Any | None = None,
+        fidelity: str | None = None,
+        run_name: str | None = None,
     ) -> None:
         self.runtime = runtime
         self._secrets_provider = secrets
@@ -125,9 +128,11 @@ class SessionRunner:
         self.warmup_source = warmup_source
         self.replay_session = replay_session
         self.tick_window = tick_window
+        self._feed = feed
         self._version_warnings: list[str] = []
         self._data_service: Any = None
         self.run_config = run_config or runtime.effective.run
+        self._mode_arg = mode
         if isinstance(mode, str):
             self.mode = Mode.BACKTEST if mode.lower() == "replay" else Mode(mode.lower())
         else:
@@ -135,6 +140,18 @@ class SessionRunner:
         self._is_replay: bool = (
             str(mode).lower() == "replay" or bool(replay_dates) or bool(replay_session)
         )
+        if fidelity is not None:
+            self.fidelity = str(fidelity).lower()
+        elif (
+            self.mode == Mode.BACKTEST
+            and self.run_config
+            and getattr(getattr(self.run_config, "backtest", None), "fidelity", None) == "tick"
+        ):
+            self.fidelity = "tick"
+        elif str(mode).lower() == "replay" or (self._is_replay and self.mode != Mode.BACKTEST):
+            self.fidelity = "tick"
+        else:
+            self.fidelity = "bar"
         self.observe = observe
 
         if replay_session:
@@ -272,9 +289,19 @@ class SessionRunner:
         self.clock = clock if clock is not None else self._init_clock()
         self._journal_db = journal_db
 
-        self.run_name = getattr(getattr(self.run_config, "run", None), "name", "run")
+        self.run_name: str = str(
+            run_name or getattr(getattr(self.run_config, "run", None), "name", None) or "run"
+        )
         ts_str = WallClock().now().strftime("%Y%m%d_%H%M%S")
-        mode_str = "replay" if self._is_replay else str(self.mode.value)
+        is_bt = (
+            self.mode == Mode.BACKTEST and str(getattr(self, "_mode_arg", "")).lower() != "replay"
+        )
+        if is_bt:
+            mode_str = "backtest"
+        elif self._is_replay or str(getattr(self, "_mode_arg", "")).lower() == "replay":
+            mode_str = "replay"
+        else:
+            mode_str = str(self.mode.value)
         if run_id is not None:
             self.run_id = run_id
         else:
@@ -338,7 +365,9 @@ class SessionRunner:
 
     @property
     def mode_name(self) -> str:
-        if self._is_replay:
+        if self.mode == Mode.BACKTEST and str(getattr(self, "_mode_arg", "")).lower() != "replay":
+            return "backtest"
+        if self._is_replay or str(getattr(self, "_mode_arg", "")).lower() == "replay":
             return "replay"
         return str(self.mode.value if hasattr(self.mode, "value") else self.mode)
 
@@ -579,6 +608,8 @@ class SessionRunner:
         return results_path
 
     def _init_clock(self) -> Clock:
+        if self._feed is not None and hasattr(self._feed, "bars") and self._feed.bars:
+            return SimClock(initial_time=self._feed.bars[0].start_ts)
         if self.mode == Mode.BACKTEST and not self._is_replay:
             start_date: Any = None
             if self.run_config and getattr(self.run_config, "backtest", None):
@@ -2146,11 +2177,12 @@ class SessionRunner:
         def _dispatch_async(coro: Any) -> None:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(coro)
+                task = loop.create_task(coro)
+                self._pending_bar_tasks.append(task)
             except RuntimeError:
                 asyncio.run(coro)
 
-        if not replay_has_events and self.mode != Mode.BACKTEST:
+        if not replay_has_events:
             # Strategy exit timer
             for s in self.run_config.strategies:
                 exit_time_str = s.params.get("exit_time", "15:15")
@@ -2181,6 +2213,7 @@ class SessionRunner:
                 except Exception:
                     pass
 
+        if not replay_has_events and self.mode != Mode.BACKTEST:
             # Market-aware close timers
             grace_val = (
                 self.runtime.params.get("engine.session_end_grace_s")
@@ -2435,6 +2468,30 @@ class SessionRunner:
     def _build_event_stream(
         self, c: dict[str, Any], clock: Clock
     ) -> AsyncIterator[tuple[MarketEvent | Bar, int | None]]:
+        if self._feed is not None:
+            if hasattr(self._feed, "warmup_bars") and self._feed.warmup_bars:
+                c["ind_mgr"].warmup_from_bars(self._feed.warmup_bars)
+
+            class _CustomFeedWrapper:
+                def __init__(self, feed_obj: Any) -> None:
+                    self._feed = feed_obj
+                    self._iter = feed_obj.iter_with_seq()
+
+                def __aiter__(self) -> _CustomFeedWrapper:
+                    return self
+
+                async def __anext__(self) -> tuple[MarketEvent | Bar, int | None]:
+                    try:
+                        item: tuple[MarketEvent | Bar, int | None] = next(self._iter)
+                        return item
+                    except StopIteration:
+                        raise StopAsyncIteration from None
+
+                async def aclose(self) -> None:
+                    self._iter = iter(())
+
+            return _CustomFeedWrapper(self._feed)
+
         if self.mode == Mode.BACKTEST and not self._is_replay:
             from algodesk.data.bar_synth import BarQuoteSynth
             from algodesk.data.historical_feed import HistoricalFeed
@@ -2505,7 +2562,8 @@ class SessionRunner:
 
                 async def __anext__(self) -> tuple[MarketEvent | Bar, int | None]:
                     try:
-                        return next(self._iter)
+                        item: tuple[MarketEvent | Bar, int | None] = next(self._iter)
+                        return item
                     except StopIteration:
                         raise StopAsyncIteration from None
 
@@ -2552,7 +2610,8 @@ class SessionRunner:
 
                 async def __anext__(self) -> tuple[MarketEvent | Bar, int | None]:
                     try:
-                        return next(self._iter)
+                        item: tuple[MarketEvent | Bar, int | None] = next(self._iter)
+                        return item
                     except StopIteration:
                         raise StopAsyncIteration from None
 
@@ -3044,6 +3103,7 @@ class SessionRunner:
         summary_info = {
             "run_name": self.run_name,
             "mode": mode_str,
+            "fidelity": self.fidelity,
             "date": date_str,
             "verdict": verdict,
             "is_partial": is_partial,
@@ -3110,6 +3170,7 @@ class SessionRunner:
 
         manifest_info: dict[str, Any] = {
             "mode": mode_str,
+            "fidelity": self.fidelity,
             "code_version": "0.1.0",
             "plugin_versions": {
                 p.name: {"version": p.manifest.version, "hash": p.code_hash}

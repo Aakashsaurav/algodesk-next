@@ -132,10 +132,7 @@ def test_summary_md_assumptions_line_components(tmp_path: Path) -> None:
         "rates verified on 2026-11-20 applied to all dates; " in summary_text
         or "rates verified on 2026-11-02 applied to all dates; " in summary_text
     )
-    assert (
-        "effective_from before that is declared, not independently verified"
-        in summary_text
-    )
+    assert "effective_from before that is declared, not independently verified" in summary_text
     assert "data range (2024-01-01 to 2025-01-01)" in summary_text
     assert "universe coverage (100%)" in summary_text
     assert "trial 2 of study trend_opt" in summary_text

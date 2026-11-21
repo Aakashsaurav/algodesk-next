@@ -196,6 +196,10 @@ def backtest_run_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="Verify configuration and plan"),
     seed: int | None = typer.Option(None, "--seed", help="Random seed for simulation"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Disable console status lines"),
+    fidelity: str = typer.Option("bar", "--fidelity", help="Execution fidelity (bar or tick)"),
+    session: str | None = typer.Option(
+        None, "--session", help="Recorded session ID for replay or tick fidelity"
+    ),
 ) -> None:
     """Execute a backtest session using composed SessionRunner and cached bars."""
     with _open_rt(ctx, ensure=True) as rt:
@@ -216,6 +220,58 @@ def backtest_run_cmd(
                 where=f"config/runs/{name}.toml",
                 fix="Set run.mode = 'backtest' in the run configuration",
             )
+
+        if fidelity.lower() == "tick":
+            if not session:
+                raise ConfigError(
+                    what="Tick fidelity backtest requires --session <paper_run_id>",
+                    where="backtest.run",
+                    fix="Specify --session <paper_run_id> to run with tick fidelity",
+                )
+            sess_dir = rt.paths.results / session
+            if not sess_dir.is_dir() and Path(session).is_dir():
+                sess_dir = Path(session)
+            if not sess_dir.is_dir():
+                raise ConfigError(
+                    what=f"Session directory not found for '{session}'",
+                    where=f"results/{session}",
+                    fix="Provide a valid paper session ID",
+                )
+
+            from algodesk.engine.replay_config import (
+                apply_recorded_registry_snapshot,
+                load_recorded_session_config,
+            )
+
+            run_config, session_warnings = load_recorded_session_config(sess_dir, rt)
+            for w in session_warnings:
+                typer.echo(f"Warning: {w}")
+
+            snap_file = sess_dir / "registry.snapshot.json"
+            if snap_file.is_file() and rt.params is not None:
+                apply_recorded_registry_snapshot(snap_file, rt.params)
+
+            runner = BacktestRunner(
+                runtime=rt,
+                run_config=run_config,
+                run_name=name,
+                seed=seed,
+                dry_run=dry_run,
+                quiet=quiet,
+                fidelity="tick",
+                replay_session=session,
+            )
+
+            try:
+                res_path = runner.run()
+                if getattr(runner.session_runner, "_interrupted", False):
+                    typer.echo(f"Backtest session stopped: {res_path}")
+                else:
+                    typer.echo(f"Backtest session completed: {res_path}")
+            except KeyboardInterrupt:
+                res_path = rt.paths.results / runner.run_id
+                typer.echo(f"\nBacktest session stopped: {res_path}")
+            return
 
         # 1. Evaluate readiness before backtest run
         report, effective_run = evaluate_backtest_readiness(eff.run, rt)
@@ -337,3 +393,85 @@ def backtest_run_cmd(
             if res_path.is_dir():
                 readiness_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
             typer.echo(f"\nBacktest session stopped: {res_path}")
+
+
+@backtest_app.command("equivalence")
+@handle_cli_errors
+def backtest_equivalence_cmd(
+    ctx: typer.Context,
+    session: str = typer.Option(..., "--session", help="Recorded paper session ID"),
+) -> None:
+    """Verify equivalence between paper session signals and reconstructed bar backtest."""
+    from algodesk.engine.equivalence import run_backtest_equivalence
+
+    with _open_rt(ctx, ensure=True) as rt:
+        res = run_backtest_equivalence(rt, session)
+        typer.echo(f"signals equal: {res.signals_equal}")
+        typer.echo(
+            f"Paper signals: {res.paper_signals_count}, "
+            f"Backtest signals: {res.backtest_signals_count}"
+        )
+        if not res.signals_equal and res.differences:
+            typer.echo("Differences (first 3):")
+            for d in res.differences[:3]:
+                typer.echo(f"  {d.index + 1}. [{d.classification}] {d.description}")
+        typer.echo(
+            f"Paper orders: {res.paper_orders_count}, Backtest orders: {res.backtest_orders_count}"
+        )
+        typer.echo(
+            f"Paper fills: {res.paper_fills_count}, Backtest fills: {res.backtest_fills_count}"
+        )
+
+        if not res.signals_equal:
+            raise typer.Exit(code=1)
+
+
+@backtest_app.command("calibrate")
+@handle_cli_errors
+def backtest_calibrate_cmd(
+    ctx: typer.Context,
+    session: str = typer.Option(..., "--session", help="Recorded paper session ID"),
+) -> None:
+    """Calibrate backtest slippage against tick-fidelity paper fills."""
+    from algodesk.engine.calibration import run_slippage_calibration
+
+    with _open_rt(ctx, ensure=True) as rt:
+        res = run_slippage_calibration(rt, session)
+        typer.echo(f"=== Slippage Calibration: {res.session_id} ===")
+        typer.echo(f"Fills compared: {res.fills_compared}")
+        typer.echo("Adverse slippage (bps):")
+        typer.echo(f"  Mean:   {res.mean_adverse_bps:.2f} bps")
+        typer.echo(f"  Median: {res.median_adverse_bps:.2f} bps")
+        typer.echo(f"  95th %: {res.p95_adverse_bps:.2f} bps")
+        typer.echo("Net P&L difference per trade:")
+        typer.echo(f"  Mean:   ₹{res.mean_pnl_diff:.2f}")
+        typer.echo(f"  Median: ₹{res.median_pnl_diff:.2f}")
+        typer.echo(f"\nSUGGESTED backtest.slippage_bps: {res.suggested_slippage_bps}")
+        typer.echo(f"Wrote: {res.calibration_file}")
+        typer.echo("Note: Parameter registry was not changed.")
+
+
+@backtest_app.command("benchmark")
+@handle_cli_errors
+def backtest_benchmark_cmd(
+    ctx: typer.Context,
+    symbols: int = typer.Option(100, "--symbols", help="Number of symbols"),
+    sessions: int = typer.Option(250, "--sessions", help="Number of sessions"),
+    timeframe: str = typer.Option("1d", "--timeframe", help="Timeframe (1d or 1m)"),
+) -> None:
+    """Benchmark full runner execution speed, throughput, and memory with cProfile."""
+    from algodesk.engine.benchmark import run_benchmark_measurement
+
+    rep = run_benchmark_measurement(
+        symbols_count=symbols,
+        sessions_count=sessions,
+        timeframe=timeframe,
+    )
+    typer.echo("=== Backtest Benchmark ===")
+    typer.echo(f"Configuration: {rep.symbols} symbols x {rep.sessions} sessions ({rep.timeframe})")
+    typer.echo(f"Total bars: {rep.total_bars:,}")
+    typer.echo(f"Elapsed time: {rep.elapsed_seconds:.2f}s")
+    typer.echo(f"Throughput: {rep.bars_per_second:,.0f} bars/s")
+    typer.echo(f"Peak memory: {rep.peak_memory_mb:.1f} MB")
+    typer.echo("\nTop 10 functions by cumulative time:")
+    typer.echo(rep.profile_stats_text.strip())

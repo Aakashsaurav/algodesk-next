@@ -769,6 +769,38 @@ Every historical backtest produces an immutable, comprehensive results bundle un
      ```
 
 
+## Backtest proof, tick fidelity and calibration
+
+### Equivalence Verification
+Verify that backtest strategy execution is causal and identical to paper trading on a recorded session:
+```bash
+algodesk backtest equivalence --session <paper_run_id>
+```
+This loads recorded configuration, parameter registry snapshot, and warmup bars, reconstructs 1-minute bars using `TickBarFeed` honoring recorded timer close sequence positions, and compares signal sequences. If signals differ, the first 3 differences are printed and classified (`bar content differs`, `timer-closed bar differs`, `timer exit time differs`, `other`), exiting code 1 on mismatch.
+
+### Tick Fidelity Backtest
+Execute a backtest driven by raw recorded ticks using the paper latency model:
+```bash
+algodesk backtest run demo_tick_bt --fidelity tick --session <paper_run_id>
+```
+The output writes a backtest bundle with `mode: backtest` and `fidelity: tick` in `manifest.json` and `SUMMARY.md`.
+
+### Slippage Calibration
+Calibrate bar-fidelity fills against tick-fidelity fills:
+```bash
+algodesk backtest calibrate --session <paper_run_id>
+```
+Reports per-fill adverse price difference in bps (mean, median, 95th percentile) and net P&L difference per trade, writes `calibration.json` to the backtest results directory, and prints a suggested `backtest.slippage_bps` value without modifying the parameter registry.
+
+### Synthetic Cache Benchmarking
+Benchmark runner execution speed, throughput, and memory scaling with profiling:
+```bash
+algodesk backtest benchmark --symbols 100 --sessions 250 --timeframe 1d
+algodesk backtest benchmark --symbols 20 --sessions 20 --timeframe 1m
+```
+Generates synthetic bar caches in an isolated temporary directory, runs the full runner pipeline, and outputs throughput in bars/s, peak memory in MB, and top 10 functions by cumulative time via `cProfile`.
+
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |
