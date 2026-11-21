@@ -532,7 +532,11 @@ def _echo_metrics_table(m_path: Path) -> None:
         if "sharpe" in data:
             rows.append(["Sharpe", f"{float(data['sharpe']):.4f}"])
         if "sortino" in data:
-            rows.append(["Sortino", f"{float(data['sortino']):.4f}"])
+            val = data["sortino"]
+            if val is None:
+                rows.append(["Sortino", "None (no downside periods)"])
+            else:
+                rows.append(["Sortino", f"{float(val):.4f}"])
         if "profit_factor" in data:
             rows.append(["Profit Factor", str(data["profit_factor"])])
         if "expectancy" in data:

@@ -167,7 +167,7 @@ def test_edge_case_flat_equity() -> None:
     assert compute_cagr(equities[0], equities[-1], calendar_days=365) == 0.0
     assert compute_volatility(returns) == 0.0
     assert compute_sharpe(returns) == 0.0
-    assert compute_sortino(returns) == 0.0
+    assert compute_sortino(returns) is None
     max_dd, duration = compute_drawdown_metrics(equities)
     assert max_dd == 0.0
     assert duration == 0
@@ -209,7 +209,7 @@ def test_edge_case_one_day_run() -> None:
     assert returns == []
     assert compute_volatility(returns) == 0.0
     assert compute_sharpe(returns) == 0.0
-    assert compute_sortino(returns) == 0.0
+    assert compute_sortino(returns) is None
     assert compute_cagr(equities[0], equities[0], calendar_days=0) == 0.0
 
 
@@ -218,4 +218,4 @@ def test_edge_case_std_zero() -> None:
     returns = [0.01, 0.01, 0.01, 0.01]  # all identical
     assert compute_volatility(returns) == 0.0
     assert compute_sharpe(returns) == 0.0
-    assert compute_sortino(returns) == 0.0
+    assert compute_sortino(returns) is None

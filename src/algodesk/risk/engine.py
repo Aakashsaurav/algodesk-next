@@ -20,6 +20,9 @@ ENTRY_ONLY_RULES = {
     "max_open_positions",
     "entry_window",
     "duplicate_entry_guard",
+    "cash_available",
+    "max_gross_exposure_pct",
+    "max_order_value_pct",
 }
 
 
@@ -182,7 +185,14 @@ class RiskEngine:
         # (c) Run ALL rules of all loaded risk-rule plugins (NO SHORT-CIRCUIT)
         all_decisions: list[RiskDecision] = []
 
-        for rule in self.rules:
+        all_rules: list[Any] = []
+        for r in self.rules:
+            if hasattr(r, "rules") and isinstance(r.rules, (list, tuple)):
+                all_rules.extend(r.rules)
+            else:
+                all_rules.append(r)
+
+        for rule in all_rules:
             # Check rule name
             rule_name = getattr(rule, "name", str(type(rule).__name__))
             # (d) reducing intents skip entry-only rules

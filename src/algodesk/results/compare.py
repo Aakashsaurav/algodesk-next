@@ -481,7 +481,14 @@ def format_backtest_compare_table(dir_a: Path, dir_b: Path) -> str:
         ("Max Drawdown (%)", lambda m: f"{float(m.get('max_drawdown', 0.0)):.2f}%"),
         ("CAGR (%)", lambda m: f"{float(m.get('cagr', 0.0)) * 100:.2f}%"),
         ("Sharpe", lambda m: f"{float(m.get('sharpe', 0.0)):.4f}"),
-        ("Sortino", lambda m: f"{float(m.get('sortino', 0.0)):.4f}"),
+        (
+            "Sortino",
+            lambda m: (
+                "None (no downside periods)"
+                if m.get("sortino") is None
+                else f"{float(m.get('sortino', 0.0)):.4f}"
+            ),
+        ),
         ("Profit Factor", lambda m: str(m.get("profit_factor", "None"))),
     ]
 

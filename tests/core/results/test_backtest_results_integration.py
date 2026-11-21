@@ -176,9 +176,9 @@ def test_volatility_under_two_points() -> None:
 
 
 def test_sharpe_and_sortino_zero_deviation() -> None:
-    # Zero downside deviation should yield 0.0 without division by zero
+    # Zero downside deviation should yield None without division by zero
     returns = [0.02, 0.03, 0.04]  # all positive, rf=0
-    assert compute_sortino(returns, risk_free_rate_pct=0.0) == 0.0
+    assert compute_sortino(returns, risk_free_rate_pct=0.0) is None
 
 
 def test_compare_backtest_different_fee_schedule(tmp_path: Path) -> None:

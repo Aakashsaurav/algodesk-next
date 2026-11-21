@@ -14,14 +14,14 @@ Milestones M0-M3 complete; M4 in progress. AlgoDesk Next provides a pluggable tr
 | M1 | Walking skeleton | Done (checklist complete) |
 | M2 | Data layer | Done (checklist complete) |
 | M3 | Indicators and screens | Done |
-| M4 | Backtester and reports | In progress (M4-1 to M4-5 complete) |
+| M4 | Backtester and reports | In progress (M4-1 to M4-5b complete) |
 | M5 to M9 | Risk, Zerodha, remote, extended paper, live | Not started |
 
 ## Acceptance checklists
 
 - **M1**: Accepted on recorded paper sessions with bit-identical signals, orders, fills, and metrics; replay tolerances proven safe; fee vectors verified by hand; p95 latency and memory measured.
 - **M2**: Zero-network identical get; quarantine resilience; `data verify` clean; rebuilt timeframes equal tick-built; corporate actions audit; contract partitions; quality gates pass.
-- **M4**: Multi-instrument backtest engine with exact replay equivalence, tick fidelity, causal determinism, registry governance, and point-in-time screen-driven rotation strategy (`screen_rotation`) with rebalances reporting (`rebalances.csv`), canonical manifest hashing, and survivorship disclosure (ADR-089).
+- **M4**: Multi-instrument backtest engine with exact replay equivalence, tick fidelity, causal determinism, registry governance, point-in-time screen-driven rotation strategy (`screen_rotation`) with two-step rebalance, fill-verified rebalances reporting (`rebalances.csv`), daily mark-to-market equity curve, hardened risk-adjusted metrics, canonical manifest hashing, and survivorship disclosure (ADR-089, ADR-090).
 
 ## What exists
 

@@ -57,23 +57,73 @@ class BacktestRunner:
     def _install_daily_mark(self) -> None:
         """Ensure backtest records one mark-to-market equity row per session close."""
         sr = self.session_runner
-        orig_direct = sr._snapshot_portfolio_direct
         current_date: list[str | None] = [None]
-        pending_mark: list[tuple[dict[str, Any], Clock, Any] | None] = [None]
+        pending_mark: list[tuple[dict[str, Any], Any, Any, dict[Any, Any]] | None] = [None]
+
+        def _record_snapshot(
+            c: dict[str, Any], ts: Any, journal: Any, quotes: dict[Any, Any]
+        ) -> None:
+            from algodesk.logs.formatting import format_ist
+            from algodesk.results.writer import compute_max_drawdown
+
+            ledger = c.get("ledger")
+            if ledger is None:
+                return
+            for q in quotes.values():
+                ledger.mark(q)
+            snap = ledger.snapshot()
+            eq_val = float(snap.equity)
+            pt_dict = {
+                "ts": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                "ts_ist": format_ist(ts),
+                "equity": eq_val,
+                "cash": float(snap.cash),
+                "unrealized": float(ledger.unrealized),
+                "realized": float(ledger.realized),
+                "drawdown": compute_max_drawdown(
+                    [p["equity"] for p in sr._equity_curve] + [eq_val]
+                ),
+            }
+            sr._equity_curve.append(pt_dict)
+            if hasattr(ledger, "set_start_of_day_baseline"):
+                ledger.set_start_of_day_baseline()
+            if journal is not None and hasattr(journal, "append"):
+                journal.append(
+                    "portfolio.snapshot",
+                    {
+                        "equity": pt_dict["equity"],
+                        "cash": pt_dict["cash"],
+                        "unrealized": pt_dict["unrealized"],
+                        "realized": pt_dict["realized"],
+                        "seq": sr._tick_seq,
+                        "ts": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                    },
+                )
 
         def _daily_mark(c: dict[str, Any], clock: Clock, journal: Any) -> None:
             from algodesk.logs.formatting import format_ist
 
-            d_str = format_ist(clock.now())[:10]
+            now_ts = clock.now()
+            d_str = format_ist(now_ts)[:10]
             if current_date[0] is not None and d_str != current_date[0]:
                 if pending_mark[0] is not None:
-                    p_c, p_clk, p_j = pending_mark[0]
-                    orig_direct(p_c, p_clk, p_j)
+                    p_c, p_ts, p_j, p_quotes = pending_mark[0]
+                    _record_snapshot(p_c, p_ts, p_j, p_quotes)
                     pending_mark[0] = None
             current_date[0] = d_str
-            pending_mark[0] = (c, clock, journal)
+            pending_mark[0] = (c, now_ts, journal, dict(sr._latest_quotes))
+
+        orig_stop = sr.stop
+
+        def _stop_and_flush(*args: Any, **kwargs: Any) -> None:
+            if pending_mark[0] is not None:
+                p_c, p_ts, p_j, p_quotes = pending_mark[0]
+                _record_snapshot(p_c, p_ts, p_j, dict(sr._latest_quotes))
+                pending_mark[0] = None
+            orig_stop(*args, **kwargs)
 
         sr._snapshot_portfolio_direct = _daily_mark  # type: ignore[method-assign]
+        sr.stop = _stop_and_flush  # type: ignore[method-assign]
 
     @property
     def mode(self) -> Mode:

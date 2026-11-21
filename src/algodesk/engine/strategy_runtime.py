@@ -182,6 +182,8 @@ class StrategyRuntime:
             return
 
         now_ts = self._clock.now()
+        strat = self._strategies.get(name)
+        ctx = self._contexts.get(name)
         sorted_intents = sorted(
             intents,
             key=lambda it: str(getattr(getattr(it, "spec", None), "instrument", "")),
@@ -246,6 +248,13 @@ class StrategyRuntime:
                     inst,
                     decision.reason,
                 )
+                if strat is not None and ctx is not None and hasattr(strat, "on_reject"):
+                    on_rej_fn = getattr(strat, "on_reject", None)
+                    if callable(on_rej_fn):
+                        try:
+                            on_rej_fn(ctx, intent, decision)
+                        except Exception as exc:
+                            self._handle_exception(name, "on_reject", exc)
                 if self._on_reject is not None:
                     self._on_reject(intent, decision, "risk")
                 continue

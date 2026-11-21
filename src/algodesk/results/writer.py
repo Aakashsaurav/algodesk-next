@@ -429,12 +429,20 @@ class ResultsWriter:
             )
 
         date_str = summary_info.get("date", "2026-10-26")
+        rejects = metrics.get("rejects_by_rule", {})
+        total_rejects = sum(rejects.values()) if isinstance(rejects, Mapping) else 0
+        if total_rejects > 0:
+            details = ", ".join(f"{k}: {v}" for k, v in sorted(rejects.items()))
+            reject_clause = f"Rejections: {total_rejects} ({details}). "
+        else:
+            reject_clause = "Rejections: 0. "
+
         main_clause = (
             f"AlgoDesk Next {mode} session '{run_name}' executed on {date_str} IST. {start_clause}"
             f"Net P&L: ₹{net_pnl:.2f} (Gross: ₹{gross_pnl:.2f}, Charges: ₹{charges:.2f}) "
             f"across {closed_rt} closed round trips ({trade_count} trades) with "
             f"{win_rate:.1f}% win rate and max DD of {max_dd:.2f}%. Verdict: {verdict}. "
-            f"{fail_clause}{open_clause}"
+            f"{fail_clause}{open_clause}{reject_clause}"
         )
 
         if is_backtest:
@@ -563,12 +571,25 @@ class ResultsWriter:
                 f", screen {screen_name} ({screen_hash}), current index list used (survivorship)"
             )
 
+        rotation_note = ""
+        is_rotation = (
+            bool(screen_name)
+            or "screen_rotation" in getattr(self, "_effective_config_text", "")
+            or "rotation" in str(summary_info.get("run_name", "")).lower()
+            if summary_info
+            else False
+        )
+        if is_rotation:
+            rotation_note = (
+                ", weights not re-balanced between rotations (positions keep their drifted size)"
+            )
+
         surv_note = "survivorship note (point-in-time universe unadjusted)"
         return (
             f"Assumptions: fill model ({fill_model}), price basis (splits), "
             f"dividends not credited, {fee_clause}, data range ({d_range}), "
             f"universe coverage ({coverage_pct:.0f}%){trial_str}, "
-            f"out-of-sample ({oos_str}), {surv_note}{screen_clause}."
+            f"out-of-sample ({oos_str}), {surv_note}{screen_clause}{rotation_note}."
         )
 
     def _write_equity_daily_csv(self, equity_points: Sequence[Mapping[str, Any]]) -> None:
@@ -710,10 +731,19 @@ class ResultsWriter:
             "rebalance_date",
             "screen_result_hash",
             "selected_symbols",
-            "bought",
-            "sold",
+            "intended_sold",
+            "intended_bought",
+            "executed_sold",
+            "executed_bought",
+            "rejected",
         ]
         file_path = self.run_dir / "rebalances.csv"
+
+        def _fmt(val: Any) -> str:
+            if isinstance(val, (list, tuple)):
+                return ";".join(str(x) for x in val if x)
+            return str(val or "")
+
         try:
             self.run_dir.mkdir(parents=True, exist_ok=True)
             with open(file_path, "w", newline="", encoding="utf-8") as f:
@@ -722,11 +752,14 @@ class ResultsWriter:
                 for r in rebalances:
                     writer.writerow(
                         {
-                            "rebalance_date": str(r.get("rebalance_date", "")),
-                            "screen_result_hash": str(r.get("screen_result_hash", "")),
-                            "selected_symbols": str(r.get("selected_symbols", "")),
-                            "bought": str(r.get("bought", "")),
-                            "sold": str(r.get("sold", "")),
+                            "rebalance_date": _fmt(r.get("rebalance_date")),
+                            "screen_result_hash": _fmt(r.get("screen_result_hash")),
+                            "selected_symbols": _fmt(r.get("selected_symbols")),
+                            "intended_sold": _fmt(r.get("intended_sold", r.get("sold"))),
+                            "intended_bought": _fmt(r.get("intended_bought", r.get("bought"))),
+                            "executed_sold": _fmt(r.get("executed_sold")),
+                            "executed_bought": _fmt(r.get("executed_bought")),
+                            "rejected": _fmt(r.get("rejected")),
                         }
                     )
         except Exception as exc:

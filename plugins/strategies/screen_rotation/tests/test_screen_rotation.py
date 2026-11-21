@@ -242,17 +242,36 @@ def test_sell_departing_positions_and_keep_held() -> None:
     )
     intents3 = strat.on_bar(ctx2, _make_bar("NSE:EQ:A", datetime(2024, 1, 4, 10, 0, tzinfo=UTC)))
 
-    # Expect: SELL B, BUY C, KEEP A (no order for A)
+    # Step 1: SELL B emitted at rebalance bar, replacement BUY deferred until sell fills
     sells = [i for i in intents3 if isinstance(i, PlaceOrder) and i.spec.side == Side.SELL]
     buys = [i for i in intents3 if isinstance(i, PlaceOrder) and i.spec.side == Side.BUY]
 
     assert len(sells) == 1
     assert sells[0].spec.instrument == InstrumentId("NSE:EQ:B")
     assert sells[0].spec.qty == 100
+    assert len(buys) == 0
 
-    assert len(buys) == 1
-    assert buys[0].spec.instrument == InstrumentId("NSE:EQ:C")
-    assert buys[0].spec.qty == 100
+    # Fill the SELL of B
+    del positions["NSE:EQ:B"]
+    strat.on_fill(
+        ctx2,
+        Fill(
+            fill_id="f3",
+            client_ref="c3",
+            instrument=InstrumentId("NSE:EQ:B"),
+            side=Side.SELL,
+            qty=100,
+            price=Decimal("100"),
+            ts=datetime(2024, 1, 4, 10, 5, tzinfo=UTC),
+        ),
+    )
+
+    # Step 2: Next completed bar executes deferred replacement BUY of C
+    intents4 = strat.on_bar(ctx2, _make_bar("NSE:EQ:A", datetime(2024, 1, 4, 10, 10, tzinfo=UTC)))
+    buys_step2 = [i for i in intents4 if isinstance(i, PlaceOrder) and i.spec.side == Side.BUY]
+    assert len(buys_step2) == 1
+    assert buys_step2[0].spec.instrument == InstrumentId("NSE:EQ:C")
+    assert buys_step2[0].spec.qty == 100
 
 
 def test_state_serialization_and_restore() -> None:

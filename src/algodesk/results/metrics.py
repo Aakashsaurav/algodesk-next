@@ -94,18 +94,21 @@ def compute_sortino(
     daily_returns: Sequence[float],
     risk_free_rate_pct: float = 0.0,
     trading_days_per_year: int = 252,
-) -> float:
-    """Calculate annualized Sortino ratio with downside deviation below the risk-free rate."""
+) -> float | None:
+    """Calculate annualized Sortino ratio with downside deviation below the risk-free rate.
+
+    Returns None when downside deviation is zero (no downside periods) or returns count < 2.
+    """
     n = len(daily_returns)
     if n < 2:
-        return 0.0
+        return None
     daily_rf = (risk_free_rate_pct / 100.0) / trading_days_per_year
     mean_r = sum(daily_returns) / n
     downside_sq = [min(0.0, r - daily_rf) ** 2 for r in daily_returns]
     downside_var = sum(downside_sq) / (n - 1)
     downside_dev = math.sqrt(max(0.0, downside_var))
     if downside_dev == 0.0:
-        return 0.0
+        return None
     sortino = ((mean_r - daily_rf) / downside_dev) * math.sqrt(trading_days_per_year)
     return round(sortino, 4)
 

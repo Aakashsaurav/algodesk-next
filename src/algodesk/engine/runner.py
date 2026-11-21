@@ -793,7 +793,8 @@ class SessionRunner:
             )
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(strat_rt.dispatch_fill(fill))
+                task = loop.create_task(strat_rt.dispatch_fill(fill))
+                self._pending_bar_tasks.append(task)
             except RuntimeError:
                 pass
 
@@ -927,6 +928,8 @@ class SessionRunner:
         p_ctx: PluginContext,
     ) -> tuple[RiskEngine, KillSwitch, RiskMonitor]:
         ks_file = self.runtime.state.params_db.parent / "killswitch.json"
+        if self.mode == Mode.BACKTEST:
+            ks_file = self.runtime.paths.results / self.run_id / "killswitch.json"
         killswitch = KillSwitch(state_file=ks_file, journal=journal, clock=clock)
 
         risk_rules: list[Any] = []
@@ -1097,6 +1100,15 @@ class SessionRunner:
 
                 return _get_pos
 
+            merged_params: dict[str, Any] = {}
+            if self.runtime.params is not None and hasattr(self.runtime.params, "snapshot"):
+                _, p_dict = self.runtime.params.snapshot()
+                merged_params.update(p_dict)
+            if self.run_config and hasattr(self.run_config, "allocated_capital"):
+                merged_params["allocated_capital"] = float(self.run_config.allocated_capital)
+            if s_cfg.params:
+                merged_params.update(s_cfg.params)
+
             strat_ctx = build_strategy_context(
                 clock=clock,
                 instruments=inst_map,
@@ -1104,7 +1116,7 @@ class SessionRunner:
                 bar_buffer=buf,
                 position_fn=_make_pos_fn(target_prod),
                 portfolio_fn=lambda: ledger.snapshot(),
-                params=s_cfg.params,
+                params=merged_params,
                 risk_state={"killswitch": risk_engine.killswitch.is_active()},
                 screen_service=screen_svc,
                 mode=self.mode,
@@ -1626,9 +1638,12 @@ class SessionRunner:
                 self._latest_tick_ts[ev.instrument] = ev.exch_ts
                 self._latest_tick_mono[ev.instrument] = time.monotonic()
                 self._latest_tick_recv_time[ev.instrument] = clock.now()
+                if c.get("ledger") is not None:
+                    c["ledger"].mark(ev)
                 c["venue"].on_quote(ev)
                 self._latest_quotes[ev.instrument] = ev
                 await self._drain_venue_events(c)
+                await self._drain_pending_bar_tasks(c)
                 if getattr(ev, "exch_ts", None) and getattr(ev, "recv_ts", None):
                     fd = max(0.0, (ev.recv_ts - ev.exch_ts).total_seconds() * 1000.0)
                     self._feed_delays.append(fd)
@@ -2039,6 +2054,8 @@ class SessionRunner:
             "drawdown": compute_max_drawdown([p["equity"] for p in self._equity_curve] + [eq_val]),
         }
         self._equity_curve.append(pt_dict)
+        if hasattr(ledger, "set_start_of_day_baseline"):
+            ledger.set_start_of_day_baseline()
         journal.append(
             "portfolio.snapshot",
             {

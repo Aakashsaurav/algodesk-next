@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
+import math
 import random
 import shutil
 from collections.abc import Iterable
@@ -49,7 +50,8 @@ def _make_daily_bars(
     count: int,
     seed: int = 42,
     base_price: float = 1000.0,
-    trend: float = 0.0005,
+    multiplier: float = 1.0,
+    inst_index: int = 0,
 ) -> list[Bar]:
     rng = random.Random(seed)
     bars: list[Bar] = []
@@ -57,13 +59,17 @@ def _make_daily_bars(
 
     cur_d = start_date
     sessions_made = 0
+    daily_growth = (multiplier ** (1.0 / count)) - 1.0
+
     while sessions_made < count:
         if cur_d.weekday() < 5:  # Monday to Friday
-            change_pct = (rng.random() - 0.48) * 0.02 + trend
+            phase = math.sin((sessions_made / 60.0) + (inst_index * 0.7)) * 0.003
+            noise = (rng.random() - 0.48) * 0.003
+            change_pct = daily_growth + phase + noise
             open_p = round(price, 2)
             close_p = round(price * (1.0 + change_pct), 2)
-            high_p = round(max(open_p, close_p) * (1.0 + rng.random() * 0.005), 2)
-            low_p = round(min(open_p, close_p) * (1.0 - rng.random() * 0.005), 2)
+            high_p = round(max(open_p, close_p) * (1.0 + rng.random() * 0.002), 2)
+            low_p = round(min(open_p, close_p) * (1.0 - rng.random() * 0.002), 2)
             vol = rng.randint(5000, 50000)
 
             s_ts = datetime(cur_d.year, cur_d.month, cur_d.day, 3, 45, tzinfo=UTC)
@@ -130,14 +136,21 @@ def _setup_rotation_data(
 
     start_date = date(2023, 1, 2)
     symbols: list[str] = [f"NSE:EQ:SYM{i:02d}" for i in range(1, num_symbols + 1)]
+    multipliers = [5.0, 3.0, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 1.1, 1.4, 2.5, 0.7]
     bars_by_inst: dict[InstrumentId, list[Bar]] = {}
     flat_bars: list[Bar] = []
 
     for idx, sym in enumerate(symbols):
         inst_id = InstrumentId(sym)
-        # Vary trend and seed so ranking changes over time
-        trend = (idx - 6) * 0.0003
-        b_list = _make_daily_bars(inst_id, start_date, num_sessions, seed=seed + idx, trend=trend)
+        mult = multipliers[idx % len(multipliers)]
+        b_list = _make_daily_bars(
+            inst_id,
+            start_date,
+            num_sessions,
+            seed=seed + idx,
+            multiplier=mult,
+            inst_index=idx,
+        )
         bars_by_inst[inst_id] = b_list
         flat_bars.extend(b_list)
 
@@ -260,15 +273,17 @@ product = "CNC"
     with open_runtime(project_dir, ensure=True) as rt:
         eff = build_effective(rt.root, run_name=run_name)
         object.__setattr__(rt, "effective", eff)
-        runner = SessionRunner(
+        from algodesk.engine.backtest import BacktestRunner
+
+        bkt = BacktestRunner(
             runtime=rt,
             run_config=eff.run,
-            mode=Mode.BACKTEST,
+            run_name=run_name,
             run_id=actual_run_id,
             quiet=True,
         )
-        runner._data_service = ds
-        res_path = asyncio.run(runner.run())
+        bkt.session_runner._data_service = ds
+        res_path = bkt.run()
         return res_path
 
 
@@ -300,13 +315,32 @@ def test_rotation_integration_run_finishes_and_rebalances(tmp_path: Path) -> Non
     assert "screen_result_hashes" in manifest_data
     assert len(manifest_data["screen_result_hashes"]) == len(rebalances)
 
-    # Verify open positions never exceeded top_n (5)
+    # Verify closed round trips >= 3
+    metrics_data = json.loads((res_path1 / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics_data.get("closed_round_trips", 0) >= 3, (
+        f"Expected >= 3 closed round trips, got {metrics_data.get('closed_round_trips')}"
+    )
+
     # Check trades and position history
     trades_csv = res_path1 / "trades.csv"
     assert trades_csv.is_file()
     with open(trades_csv, newline="", encoding="utf-8") as f:
         trades = list(csv.DictReader(f))
     assert len(trades) > 0
+
+    # Verify executed_* rows in rebalances.csv equal the fills
+    executed_sells = []
+    executed_buys = []
+    for r in rebalances:
+        if r.get("executed_sold"):
+            executed_sells.extend([s for s in r["executed_sold"].split(";") if s])
+        if r.get("executed_bought"):
+            executed_buys.extend([s for s in r["executed_bought"].split(";") if s])
+
+    fill_sells = [t["instrument"] for t in trades if t["side"] == "SELL"]
+    fill_buys = [t["instrument"] for t in trades if t["side"] == "BUY"]
+    assert len(executed_sells) == len(fill_sells)
+    assert len(executed_buys) == len(fill_buys)
 
 
 def test_rotation_determinism_and_compare(tmp_path: Path) -> None:
@@ -398,8 +432,10 @@ def test_rotation_causality_garbage_after_k(tmp_path: Path) -> None:
     for idx in range(3):
         assert corrupt_reb[idx]["rebalance_date"] == base_reb[idx]["rebalance_date"]
         assert corrupt_reb[idx]["selected_symbols"] == base_reb[idx]["selected_symbols"]
-        assert corrupt_reb[idx]["bought"] == base_reb[idx]["bought"]
-        assert corrupt_reb[idx]["sold"] == base_reb[idx]["sold"]
+        assert corrupt_reb[idx]["intended_bought"] == base_reb[idx]["intended_bought"]
+        assert corrupt_reb[idx]["executed_bought"] == base_reb[idx]["executed_bought"]
+        assert corrupt_reb[idx]["intended_sold"] == base_reb[idx]["intended_sold"]
+        assert corrupt_reb[idx]["executed_sold"] == base_reb[idx]["executed_sold"]
 
 
 def test_rotation_properties_positions_bound_no_duplicate_buys(tmp_path: Path) -> None:

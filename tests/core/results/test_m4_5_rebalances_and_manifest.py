@@ -16,15 +16,21 @@ def test_write_rebalances_csv_header_and_rows(tmp_path: Path) -> None:
             "rebalance_date": "2024-01-02",
             "screen_result_hash": "hash_abc",
             "selected_symbols": "NSE:EQ:A:95.00;NSE:EQ:B:85.00",
-            "bought": "NSE:EQ:A;NSE:EQ:B",
-            "sold": "",
+            "intended_sold": "",
+            "intended_bought": "NSE:EQ:A;NSE:EQ:B",
+            "executed_sold": "",
+            "executed_bought": "NSE:EQ:A;NSE:EQ:B",
+            "rejected": "",
         },
         {
             "rebalance_date": "2024-02-01",
             "screen_result_hash": "hash_def",
             "selected_symbols": "NSE:EQ:A:96.00;NSE:EQ:C:88.00",
-            "bought": "NSE:EQ:C",
-            "sold": "NSE:EQ:B",
+            "intended_sold": "NSE:EQ:B",
+            "intended_bought": "NSE:EQ:C",
+            "executed_sold": "NSE:EQ:B",
+            "executed_bought": "NSE:EQ:C",
+            "rejected": "",
         },
     ]
 
@@ -40,14 +46,20 @@ def test_write_rebalances_csv_header_and_rows(tmp_path: Path) -> None:
     assert reader[0]["rebalance_date"] == "2024-01-02"
     assert reader[0]["screen_result_hash"] == "hash_abc"
     assert reader[0]["selected_symbols"] == "NSE:EQ:A:95.00;NSE:EQ:B:85.00"
-    assert reader[0]["bought"] == "NSE:EQ:A;NSE:EQ:B"
-    assert reader[0]["sold"] == ""
+    assert reader[0]["intended_bought"] == "NSE:EQ:A;NSE:EQ:B"
+    assert reader[0]["executed_bought"] == "NSE:EQ:A;NSE:EQ:B"
+    assert reader[0]["intended_sold"] == ""
+    assert reader[0]["executed_sold"] == ""
+    assert reader[0]["rejected"] == ""
 
     assert reader[1]["rebalance_date"] == "2024-02-01"
     assert reader[1]["screen_result_hash"] == "hash_def"
     assert reader[1]["selected_symbols"] == "NSE:EQ:A:96.00;NSE:EQ:C:88.00"
-    assert reader[1]["bought"] == "NSE:EQ:C"
-    assert reader[1]["sold"] == "NSE:EQ:B"
+    assert reader[1]["intended_bought"] == "NSE:EQ:C"
+    assert reader[1]["executed_bought"] == "NSE:EQ:C"
+    assert reader[1]["intended_sold"] == "NSE:EQ:B"
+    assert reader[1]["executed_sold"] == "NSE:EQ:B"
+    assert reader[1]["rejected"] == ""
 
 
 def test_write_rebalances_csv_empty(tmp_path: Path) -> None:
@@ -62,7 +74,16 @@ def test_write_rebalances_csv_empty(tmp_path: Path) -> None:
         header = next(reader)
         rows = list(reader)
 
-    assert header == ["rebalance_date", "screen_result_hash", "selected_symbols", "bought", "sold"]
+    assert header == [
+        "rebalance_date",
+        "screen_result_hash",
+        "selected_symbols",
+        "intended_sold",
+        "intended_bought",
+        "executed_sold",
+        "executed_bought",
+        "rejected",
+    ]
     assert rows == []
 
 
