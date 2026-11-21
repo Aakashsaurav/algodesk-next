@@ -4,41 +4,29 @@ Owner: Aakash · Version: 1.0 · Date: 30 October 2026
 
 ## Summary
 
-Milestones M0, M1, and M2 are complete. AlgoDesk Next provides a pluggable trading workbench for Indian markets with layered TOML configuration, parameter registry audit trails, hash-chained journaling, scrubbed JSON logging, deterministic execution engine, and bit-for-bit replay equivalence. Milestone M2 delivers the historical market data layer: RateLimiter, GapPlanner, Fetcher, BarStore, QuarantineManager, BarValidator, CorporateActions, Bhavcopy ingestion, contract-aware layout, accumulation, tick compare, trash-safe deletion, vendor file import, and smoke tests.
+Milestones M0-M3 complete; M4 in progress. AlgoDesk Next provides a pluggable trading workbench for Indian markets with layered TOML configuration, parameter registry audit trails, hash-chained journaling, scrubbed JSON logging, deterministic execution engine, and bit-for-bit replay equivalence. Milestone M2 delivers the historical market data layer: RateLimiter, GapPlanner, Fetcher, BarStore, QuarantineManager, BarValidator, CorporateActions, Bhavcopy ingestion, accumulation, tick compare, and vendor import.
 
 ## Milestones
 
 | M | Name | State |
 |---|---|---|
 | M0 | Foundations | Done |
-| M1 | Walking skeleton | Done (M1 checklist complete) |
-| M2 | Data layer | Done (M2 checklist complete) |
+| M1 | Walking skeleton | Done (checklist complete) |
+| M2 | Data layer | Done (checklist complete) |
 | M3 | Indicators and screens | Done |
-| M4 | Backtester and reports | In progress (M4-1, M4-1b, M4-2, M4-2b, M4-3, M4-1c, M4-1d, M4-4, M4-4b complete) |
+| M4 | Backtester and reports | In progress (M4-1 to M4-5 complete) |
 | M5 to M9 | Risk, Zerodha, remote, extended paper, live | Not started |
 
-## M1 acceptance checklist
+## Acceptance checklists
 
-- M1 accepted on sessions 054937 (`demo_paper_fast_paper_20261112_054937_6841fa`) and 081900 (`demo_paper_fast_paper_20261112_081900_3b424a`): both recorded paper sessions on a multi-session day replay `equal: True` to paper results with bit-identical signals, orders, fills, and metrics; replay tolerances proven safe against unintended differences.
-- Fee vectors verified by hand.
-- Measured numbers: tick-to-intent p95, memory, recorder rows/bytes, journal growth.
-- M1-15: Duplicate-entry prevention guard (`prevent_duplicate_entry`), square-off exit time entry restriction, unresolved open-at-stop reporting, unified net-of-charges win rate definition, and Quote-aware exact replay equivalence.
-
-## M2 acceptance checklist
-
-M2 design (section 1.4) success criteria mapped to commands and tests:
-1. **Identical get produces zero network calls**: `tests/core/data/test_m2_9_smoke.py`, `algodesk data smoke --symbols RELIANCE,TCS`.
-2. **Quarantine & crash resilience**: Corrupt bars quarantined; good data never overwritten; `tests/core/data/test_m2_validator_quarantine_verify.py`.
-3. **`data verify` clean on real cache**: `algodesk data verify`, `tests/core/data/test_manifest.py`.
-4. **5m/1h/1w rebuilt equals tick-built (FR-DAT-8)**: `tests/core/data/test_m2_9_compare.py`, `algodesk data compare --date 2026-11-04`.
-5. **Adjusted view matches source-adjusted; conflict refusal**: `tests/core/data/test_m2_adjusted_views.py`, `algodesk data actions audit RELIANCE --from 2026-01-01 --to 2026-11-01`.
-6. **Contract-aware partitions & rollover**: `tests/core/data/test_m2_3b_cp2_layout_migration.py`, `algodesk data migrate-ids --dry-run`.
-7. **Quality gates & budget pass**: `bash scripts/check.sh` -> `CHECK: PASS`.
+- **M1**: Accepted on recorded paper sessions with bit-identical signals, orders, fills, and metrics; replay tolerances proven safe; fee vectors verified by hand; p95 latency and memory measured.
+- **M2**: Zero-network identical get; quarantine resilience; `data verify` clean; rebuilt timeframes equal tick-built; corporate actions audit; contract partitions; quality gates pass.
+- **M4**: Multi-instrument backtest engine with exact replay equivalence, tick fidelity, causal determinism, registry governance, and point-in-time screen-driven rotation strategy (`screen_rotation`) with rebalances reporting (`rebalances.csv`), canonical manifest hashing, and survivorship disclosure (ADR-089).
 
 ## What exists
 
-Plugin contracts and manifests; parameter registry; append-only journal; scrubbed logging; full CLI; fee engine; order state machine; risk engine; simulated venue; session runner; deterministic replay; market data store, rate limiter, gap planner, corporate actions reconciler, calendar closures, and vendor importer plugin.
+Plugin contracts and manifests; parameter registry; append-only journal; scrubbed logging; full CLI; fee engine; order state machine; risk engine; simulated venue; session runner; deterministic replay; market data store, rate limiter, gap planner, corporate actions reconciler, calendar closures, vendor importer; screens runner, ranking, and point-in-time screen rotation strategy with rebalances reporting.
 
 ## Open decisions
 
-None blocking M2.
+None blocking.

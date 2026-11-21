@@ -60,6 +60,7 @@ class ResultsWriter:
         manifest_info: Mapping[str, Any],
         session_text: str | None = None,
         orders: Sequence[Mapping[str, Any]] | None = None,
+        rebalances: Sequence[Mapping[str, Any]] | None = None,
     ) -> Path:
         """Write all session artifacts. Writing succeeds even if partial failures occur."""
         try:
@@ -82,6 +83,7 @@ class ResultsWriter:
             self._write_round_trips_csv(round_trips)
             self._write_equity_daily_csv(equity_points)
             self._write_orders_csv(orders, trades)
+            self._write_rebalances_csv(rebalances or ())
 
         # 2. Enrich metrics for backtest
         enriched_metrics = dict(metrics)
@@ -108,6 +110,7 @@ class ResultsWriter:
 
         # 4. Manifest and Result Hash
         manifest_dict = dict(manifest_info)
+        self._last_manifest = manifest_dict
         if is_backtest:
             self._update_backtest_manifest(
                 manifest=manifest_dict,
@@ -351,6 +354,9 @@ class ResultsWriter:
             "price_tick": self._get_param(reg_params, "backtest.price_tick", 0.01),
         }
 
+        screen_hashes = list(manifest.get("screen_result_hashes") or [])
+        manifest["screen_result_hashes"] = screen_hashes
+
         # Canonical result_hash payload
         payload = {
             "universe_hash": manifest["universe_hash"],
@@ -361,6 +367,7 @@ class ResultsWriter:
             "strategy_parameters": manifest["strategy_parameters"],
             "registry_snapshot_hash": manifest["registry_snapshot_hash"],
             "model_settings": manifest["model_settings"],
+            "screen_result_hashes": manifest["screen_result_hashes"],
             "seed": manifest.get("seed"),
             "code_version": manifest.get("code_version", "0.1.0"),
         }
@@ -447,6 +454,7 @@ class ResultsWriter:
             body = " ".join(words[:145]) + "...\n"
 
         content = f"# Run Summary: {self.run_id}\n\n## Summary\n{body}"
+        self.run_dir.mkdir(parents=True, exist_ok=True)
         self._write_text_file("SUMMARY.md", content)
 
     def _resolve_fee_schedule_info(self, summary_info: Mapping[str, Any] | None) -> tuple[str, str]:
@@ -526,11 +534,41 @@ class ResultsWriter:
         else:
             fill_model = "bar synth with slippage"
 
+        screen_clause = ""
+        screen_name = summary_info.get("screen_name") if summary_info else None
+        if (
+            not screen_name
+            and hasattr(self, "_effective_config_text")
+            and self._effective_config_text
+        ):
+            for line in self._effective_config_text.splitlines():
+                if "=" in line and not line.startswith("[") and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    if k.strip() == "screen":
+                        screen_name = v.strip().strip('"').strip("'")
+                        break
+        if screen_name:
+            screen_hash = "none"
+            if readiness_data and "screen_hash" in readiness_data:
+                screen_hash = str(readiness_data["screen_hash"])
+            elif summary_info and summary_info.get("screen_hash"):
+                screen_hash = str(summary_info["screen_hash"])
+            elif (
+                hasattr(self, "_last_manifest")
+                and self._last_manifest
+                and self._last_manifest.get("screen_result_hashes")
+            ):
+                screen_hash = str(self._last_manifest["screen_result_hashes"][0])
+            screen_clause = (
+                f", screen {screen_name} ({screen_hash}), current index list used (survivorship)"
+            )
+
+        surv_note = "survivorship note (point-in-time universe unadjusted)"
         return (
             f"Assumptions: fill model ({fill_model}), price basis (splits), "
             f"dividends not credited, {fee_clause}, data range ({d_range}), "
             f"universe coverage ({coverage_pct:.0f}%){trial_str}, "
-            f"out-of-sample ({oos_str}), survivorship note (point-in-time universe unadjusted)."
+            f"out-of-sample ({oos_str}), {surv_note}{screen_clause}."
         )
 
     def _write_equity_daily_csv(self, equity_points: Sequence[Mapping[str, Any]]) -> None:
@@ -665,6 +703,34 @@ class ResultsWriter:
                     writer.writerow(row)
         except Exception as exc:
             logger.warning("Failed writing orders.csv: %s", exc)
+
+    def _write_rebalances_csv(self, rebalances: Sequence[Mapping[str, Any]]) -> None:
+        """Serialize portfolio rebalances to rebalances.csv."""
+        fieldnames = [
+            "rebalance_date",
+            "screen_result_hash",
+            "selected_symbols",
+            "bought",
+            "sold",
+        ]
+        file_path = self.run_dir / "rebalances.csv"
+        try:
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            with open(file_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for r in rebalances:
+                    writer.writerow(
+                        {
+                            "rebalance_date": str(r.get("rebalance_date", "")),
+                            "screen_result_hash": str(r.get("screen_result_hash", "")),
+                            "selected_symbols": str(r.get("selected_symbols", "")),
+                            "bought": str(r.get("bought", "")),
+                            "sold": str(r.get("sold", "")),
+                        }
+                    )
+        except Exception as exc:
+            logger.warning("Failed writing rebalances.csv: %s", exc)
 
     def _format_order_row(
         self,

@@ -30,6 +30,8 @@ from algodesk.api.screens import (
     ScreenRefusal,
     ScreenResult,
     ScreenRow,
+    ScreenSelection,
+    ScreenService,
     ScreenSpec,
     SkipReason,
     SymbolFeatureView,
@@ -125,6 +127,16 @@ class TradingSession:
 Session = TradingSession
 
 
+def _unsupported_screen(name: str, *, group: str | None = None) -> ScreenSelection:
+    from algodesk.api.errors import NotSupported
+
+    raise NotSupported(
+        what="Screen context call is not supported in this mode",
+        where="StrategyContext.screen",
+        fix="Use ctx.screen only in backtest mode",
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class StrategyContext:
     """Read-only context provided to strategies during execution."""
@@ -138,6 +150,7 @@ class StrategyContext:
     params: Mapping[str, Any] = field(default_factory=dict)
     risk_state: Mapping[str, Any] = field(default_factory=dict)
     log: Any = None
+    screen: Callable[..., ScreenSelection] = _unsupported_screen
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,6 +333,8 @@ __all__ = [
     "ScreenRefusal",
     "ScreenResult",
     "ScreenRow",
+    "ScreenSelection",
+    "ScreenService",
     "ScreenSpec",
     "SecretsProvider",
     "Session",

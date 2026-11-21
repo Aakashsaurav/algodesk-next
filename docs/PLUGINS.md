@@ -39,6 +39,7 @@ Plugins implement domain protocols defined in `algodesk.api.protocols` (re-expor
 | `risk_rules/builtin` | `risk_rule` | `pre_trade`, `limits`, `capital_checks` | Pre-trade risk rule plugin evaluating 9 safety controls (cash, exposure, orders/min, daily loss) from registry. |
 | `venues/sim` | `venue` | `market_orders`, `limit_orders`, `stop_orders`, `stop_market_orders`, `depth_matching`, `failure_injection` | Simulated execution venue with latency, seeded jitter, depth walking, trade-through limit fills, stop orders, slippage, and ambiguous bar tracking. |
 | `strategies/sma_cross` | `strategy` | `signals`, `lifecycle`, `intraday_exit`, `daily_1d` | Demo dual moving-average crossover strategy exercising bar processing, warmup, signals, exit timers, and daily 1d execution with Product CNC. |
+| `strategies/screen_rotation` | `strategy` | `screen_rotation`, `rebalances`, `daily_1d`, `ranking` | Long-only screen-driven rotation strategy evaluating quantitative screens point-in-time and rotating holdings into top N ranked symbols. |
 | `notifiers/telegram` | `notifier` | `alerts`, `heartbeats`, `rate_limiting` | Asynchronous Telegram operational notifier with leaky-bucket rate limiting, circuit breaking, and retry jitter. |
 
 ## Manifest (`plugin.toml`)

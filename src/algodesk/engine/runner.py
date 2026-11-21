@@ -328,6 +328,8 @@ class SessionRunner:
 
         self._tick_to_intent_latencies: list[float] = []
         self._feed_delays: list[float] = []
+        self._screen_result_hashes: list[str] = []
+        self._last_completed_session: date | None = None
         self._feed_delays_by_inst: dict[str, list[float]] = {}
         self._platform_latencies: list[float] = []
         self._timer_latencies: list[float] = []
@@ -734,6 +736,12 @@ class SessionRunner:
 
         fee_schedule = self._init_fees(p_ctx)
         fee_engine = FeeEngine()
+        if (
+            self.run_config
+            and self.run_config.fees
+            and getattr(self.run_config.fees, "fallback", None)
+        ):
+            FeeEngine.set_fallback(self.run_config.fees.fallback)
 
         starting_cash = Decimal(str(self.run_config.allocated_capital))
         ledger = PortfolioLedger(clock=clock, starting_cash=starting_cash)
@@ -803,7 +811,8 @@ class SessionRunner:
 
         bus.subscribe(OrderEventMsg, _on_order_event)
 
-        self._data_service = self._init_data_service(p_ctx, journal)
+        if getattr(self, "_data_service", None) is None:
+            self._data_service = self._init_data_service(p_ctx, journal)
 
         return {
             "venue": venue,
@@ -921,29 +930,21 @@ class SessionRunner:
         killswitch = KillSwitch(state_file=ks_file, journal=journal, clock=clock)
 
         risk_rules: list[Any] = []
-        rule_names = [
-            "max_order_value_pct",
-            "max_position_pct",
-            "max_open_positions",
-            "price_deviation_pct",
-            "stale_data_seconds",
-            "entry_window",
-            "daily_loss_limit_pct",
-            "max_orders_per_minute",
-            "max_daily_trades",
-        ]
-        profile = "conservative"
-        for r_name in rule_names:
-            try:
-                rule = self.runtime.plugins.create(
-                    PluginKind.RISK_RULE,
-                    "builtin",
-                    config={"rule": r_name, "profile": profile},
-                    ctx=p_ctx,
-                )
-                risk_rules.append(rule)
-            except Exception as exc:
-                logger.debug("Could not load risk rule %s: %s", r_name, exc)
+        try:
+            rule_plugin = self.runtime.plugins.create(
+                PluginKind.RISK_RULE,
+                "builtin",
+                config={},
+                ctx=p_ctx,
+            )
+            if self.mode == Mode.BACKTEST:
+                risk_rules.append(rule_plugin)
+            else:
+                for r in getattr(rule_plugin, "rules", []):
+                    if r.name != "duplicate_entry_guard":
+                        risk_rules.append(r)
+        except Exception as exc:
+            logger.debug("Could not load builtin risk rule plugin: %s", exc)
 
         risk_engine = RiskEngine(
             killswitch=killswitch,
@@ -952,6 +953,7 @@ class SessionRunner:
             observe=self.observe,
         )
 
+        profile = "conservative"
         monitor = RiskMonitor(
             killswitch=killswitch,
             portfolio=ledger,
@@ -1042,6 +1044,30 @@ class SessionRunner:
 
         inst_map: Mapping[InstrumentId | str, Instrument] = {k: v for k, v in instruments.items()}
         assert self.run_config is not None
+
+        screen_svc: Any = None
+        if self.mode == Mode.BACKTEST:
+            from algodesk.ops.screens import RuntimeScreenService, build_screen_runner
+
+            cal = getattr(self, "_calendar", None)
+            if cal is None and hasattr(self, "_data_service"):
+                cal = getattr(self._data_service, "_calendar", None)
+            screen_runner = build_screen_runner(
+                self.runtime,
+                data_service=self._data_service,
+                calendar=cal,
+            )
+            screen_svc = RuntimeScreenService(
+                runtime=self.runtime,
+                screen_runner=screen_runner,
+                clock=clock,
+                calendar=cal,
+                mode=self.mode,
+                journal=journal,
+                manifest_callback=lambda h: self._screen_result_hashes.append(h),
+                last_completed_session_fn=lambda: self._last_completed_session,
+            )
+
         for s_cfg in self.run_config.strategies:
             strat_prod_param = str(s_cfg.params.get("product", "")).upper()
             target_prod = (
@@ -1080,6 +1106,8 @@ class SessionRunner:
                 portfolio_fn=lambda: ledger.snapshot(),
                 params=s_cfg.params,
                 risk_state={"killswitch": risk_engine.killswitch.is_active()},
+                screen_service=screen_svc,
+                mode=self.mode,
             )
             strat_rt.load_strategy(s_cfg.plugin, s_cfg.params, strat_ctx, plugin_ctx=p_ctx)
 
@@ -1616,6 +1644,11 @@ class SessionRunner:
                 if hasattr(c["venue"], "record_bar"):
                     c["venue"].record_bar(ev)
                 self._bars_closed += 1
+                try:
+                    kolkata_tz = ZoneInfo("Asia/Kolkata")
+                    self._last_completed_session = ev.end_ts.astimezone(kolkata_tz).date()
+                except Exception:
+                    self._last_completed_session = ev.end_ts.date()
                 tf = str(getattr(ev, "timeframe", "1d"))
                 self._bars_by_tf[tf] = self._bars_by_tf.get(tf, 0) + 1
                 c["buf"].append(ev)
@@ -3129,6 +3162,25 @@ class SessionRunner:
             "fail_reason": fail_reason_str,
         }
 
+        screen_name_val: str | None = None
+        if self.run_config and self.run_config.strategies:
+            for s in self.run_config.strategies:
+                if s.params and "screen" in s.params:
+                    screen_name_val = str(s.params["screen"])
+                    break
+        if (
+            not screen_name_val
+            and self.run_config
+            and self.run_config.universe
+            and self.run_config.universe.screen
+        ):
+            screen_name_val = str(self.run_config.universe.screen)
+
+        if screen_name_val:
+            summary_info["screen_name"] = screen_name_val
+            if self._screen_result_hashes:
+                summary_info["screen_hash"] = self._screen_result_hashes[0]
+
         effective_text = getattr(self.runtime.effective, "raw_text", str(self.run_config))
         reg_snap: Mapping[str, Any]
         if self.runtime.params is not None and hasattr(self.runtime.params, "snapshot"):
@@ -3236,6 +3288,16 @@ class SessionRunner:
         if fail_reason_str:
             session_md_text += f"\nError: {fail_reason_str}\n"
 
+        if self._screen_result_hashes:
+            manifest_info["screen_result_hashes"] = list(self._screen_result_hashes)
+
+        rebalances: list[dict[str, Any]] = []
+        strat_rt_obj = c.get("strat_rt")
+        if strat_rt_obj is not None and hasattr(strat_rt_obj, "strategies"):
+            for strat in strat_rt_obj.strategies.values():
+                if hasattr(strat, "rebalances") and isinstance(strat.rebalances, list):
+                    rebalances.extend(strat.rebalances)
+
         res_path = writer.write(
             summary_info=summary_info,
             metrics=metrics,
@@ -3245,6 +3307,7 @@ class SessionRunner:
             registry_snapshot=reg_snap,
             manifest_info=manifest_info,
             session_text=session_md_text,
+            rebalances=rebalances,
         )
 
         ind_mgr = c.get("ind_mgr")

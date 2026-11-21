@@ -826,6 +826,34 @@ Recorded paper sessions containing MCX commodity futures (e.g. `MCX:FUT:GOLD:202
 - Progress updates are emitted to stderr every `cli.progress_every` sessions (default: 25).
 - SIGINT (Ctrl-C) halts the benchmark measurement within 5 seconds, prints a partial report, and leaves no non-daemon threads or orphaned subprocesses behind.
 
+### 4. Rotation Backtest Execution and Verification
+A screen-driven portfolio rotation backtest rotates held assets at scheduled intervals (e.g. every 21 trading sessions) into the top $N$ assets ranked by a quantitative screen evaluated point-in-time on the last completed session.
+
+1. **Check data readiness**:
+   ```bash
+   algodesk backtest check rotation_1d_bt
+   ```
+   Verifies calendar coverage, price basis (`splits`), fee components (`zerodha_nse` fallback `earliest`), and screen definition across the universe.
+
+2. **Execute rotation backtest**:
+   ```bash
+   algodesk backtest run rotation_1d_bt
+   ```
+   The engine advances daily bars through `HistoricalFeed`. At scheduled rebalance intervals, `screen_rotation` invokes `ctx.screen("trend_rank_test")` as of the last completed session date. Holdings departing the top $N$ are liquidated via MARKET CNC sell orders, and incoming targets are entered with target weight allocations.
+
+3. **Inspect rebalances log**:
+   ```bash
+   head -n 10 results/<run_id>/rebalances.csv
+   ```
+   Each rebalance records `rebalance_date`, `screen_result_hash`, `selected_symbols` with percentile scores, `bought`, and `sold`.
+
+4. **Verify repeat determinism**:
+   ```bash
+   algodesk backtest run rotation_1d_bt
+   algodesk results compare <run1> <run2>
+   ```
+   Confirms bit-for-bit equivalence in trades, signals, fills, rebalances, and `manifest.json` `result_hash`.
+
 
 ## If something fails
 

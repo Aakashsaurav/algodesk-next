@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
-from algodesk.api.errors import NotSupported
+from algodesk.api.errors import ConfigError, NotSupported, SafetyViolation
 from algodesk.api.kinds import Mode, PluginKind
 from algodesk.api.market import InstrumentId, SeriesKey
-from algodesk.api.protocols import DataSource
+from algodesk.api.protocols import Calendar, Clock, DataSource, ScreenSelection, ScreenService
 from algodesk.api.screens import (
     IndicatorResolver,
     ScreenBars,
     ScreenDataReader,
     ScreenRefusal,
+    ScreenResult,
     SkipReason,
 )
 from algodesk.data.calendar_cache import CachedCalendar
@@ -397,3 +400,162 @@ def build_screen_runner(
         manifest=manifest,
         session_resolver=session_resolver,
     )
+
+
+class RuntimeScreenService(ScreenService):
+    """Execution implementation of ScreenService protocol in backtest mode."""
+
+    def __init__(
+        self,
+        runtime: Runtime,
+        screen_runner: ScreenRunner,
+        clock: Clock,
+        calendar: Calendar | None = None,
+        mode: Mode = Mode.BACKTEST,
+        journal: Any = None,
+        manifest_callback: Callable[[str], None] | None = None,
+        last_completed_session_fn: Callable[[], date | None] | None = None,
+        run_config: Any = None,
+    ) -> None:
+        self.runtime = runtime
+        self.screen_runner = screen_runner
+        self.clock = clock
+        self.calendar = calendar
+        self.mode = mode
+        self.journal = journal
+        self.manifest_callback = manifest_callback
+        self.last_completed_session_fn = last_completed_session_fn
+        self.run_config = run_config
+
+    def screen(self, name: str, *, group: str | None = None) -> ScreenSelection:
+        """Run named screen as of the last completed session."""
+        if self.mode != Mode.BACKTEST:
+            raise NotSupported(
+                what=f"Screen context call is not supported in {self.mode.value} mode",
+                where="ScreenService.screen",
+                fix="Screen context calls are only supported in backtest mode",
+            )
+
+        as_of: date | None = None
+        if self.last_completed_session_fn is not None:
+            as_of = self.last_completed_session_fn()
+        else:
+            now_dt = self.clock.now()
+            ist_now = now_dt.astimezone(ZoneInfo("Asia/Kolkata"))
+            cur_date = ist_now.date()
+            if ist_now.time() >= time(15, 30) and (
+                self.calendar is None or self.calendar.is_trading_day(cur_date)
+            ):
+                as_of = cur_date
+            elif self.calendar is not None:
+                walk_date = cur_date - timedelta(days=1)
+                for _ in range(30):
+                    try:
+                        if self.calendar.is_trading_day(walk_date):
+                            as_of = walk_date
+                            break
+                    except Exception:
+                        pass
+                    walk_date -= timedelta(days=1)
+
+        if as_of is None:
+            raise SafetyViolation(
+                what="No trading session completed yet",
+                where="ScreenService.screen",
+                fix="Call screen only after at least one trading session has completed",
+            )
+
+        # 1. Load screen definition
+        cfg_screens_dir = self.runtime.root / "config" / "screens"
+        toml_path = cfg_screens_dir / f"{name}.toml"
+        screen_obj: Any = None
+        screen_file_hash: str | None = None
+        if toml_path.is_file():
+            from algodesk.screens.models import load_toml_screen
+
+            screen_obj = load_toml_screen(toml_path)
+            screen_file_hash = hashlib.sha256(toml_path.read_bytes()).hexdigest()
+        else:
+            try:
+                p_ctx = build_context(Mode.RESEARCH, run_id=f"screen_{name}")
+                plugin = self.runtime.plugins.create(PluginKind.SCREEN, name, config={}, ctx=p_ctx)
+                p_info = self.runtime.plugins.info(PluginKind.SCREEN, name)
+                screen_obj = plugin
+                screen_file_hash = getattr(p_info, "code_hash", None)
+            except Exception:
+                pass
+
+        if screen_obj is None:
+            raise ConfigError(
+                what=f"Screen '{name}' not found",
+                where="ScreenService.screen",
+                fix=f"Ensure config/screens/{name}.toml exists or install screen plugin '{name}'",
+            )
+
+        # 2. Resolve universe symbols
+        from algodesk.data.groups import load_groups
+
+        sym_list: list[str] = []
+        groups_map = load_groups(self.runtime.root / "config" / "groups")
+        target_group = (
+            group
+            or getattr(screen_obj, "universe", None)
+            or getattr(getattr(self.run_config, "universe", None), "group", None)
+        )
+        if target_group and target_group in groups_map:
+            sym_list = list(groups_map[target_group])
+        elif group:
+            raise ConfigError(
+                what=f"Group '{group}' not found",
+                where="ScreenService.screen",
+                fix=f"Specify one of the available groups: {', '.join(sorted(groups_map.keys()))}",
+            )
+        else:
+            if "nifty50" in groups_map:
+                sym_list = list(groups_map["nifty50"])
+            elif "demo5" in groups_map:
+                sym_list = list(groups_map["demo5"])
+            elif groups_map:
+                sym_list = list(next(iter(groups_map.values())))
+            else:
+                sym_list = []
+
+        # 3. Execute screen runner
+        res: ScreenResult = self.screen_runner.run(
+            screen=screen_obj,
+            symbols=sym_list,
+            as_of=as_of,
+            group=target_group,
+            adjust=getattr(screen_obj, "adjust", "splits"),
+            screen_file_hash=screen_file_hash,
+        )
+
+        passed_symbols = tuple(r.symbol for r in res.rows if r.passed)
+        scores = {r.symbol: float(r.score) for r in res.rows if r.passed}
+
+        # 4. Journal universe.frozen (name, as_of, hash, count)
+        if self.journal is not None and hasattr(self.journal, "append"):
+            try:
+                self.journal.append(
+                    "universe.frozen",
+                    {
+                        "name": name,
+                        "as_of": str(as_of),
+                        "hash": res.result_hash,
+                        "count": len(passed_symbols),
+                        "symbols": list(passed_symbols),
+                    },
+                )
+            except Exception:
+                pass
+
+        # 5. Record result hash via manifest callback
+        if self.manifest_callback is not None:
+            self.manifest_callback(res.result_hash)
+
+        return ScreenSelection(
+            symbols=passed_symbols,
+            scores=scores,
+            as_of=as_of,
+            result_hash=res.result_hash,
+        )

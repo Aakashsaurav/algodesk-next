@@ -68,6 +68,8 @@ ALLOWED_NON_PARAM_NAMES = {
     "report.json": "Quarantine validation report filename",
     "session.md": "Telegram session markdown summary filename",
     "trades.csv": "Executed trades CSV filename",
+    "rebalances.csv": "Executed rotation rebalances CSV filename",
+    "ctx.screen": "Strategy context method for running screen",
     "events.jsonl": "Execution results events newline-delimited JSON filename",
     "feed.auth_failed": "Journal event type for feed authentication failure",
     "feed.gap": "Journal event type for feed gap during market hours",

@@ -66,6 +66,25 @@ class ScreenResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ScreenSelection:
+    """Read-only screen evaluation output for strategy consumption."""
+
+    symbols: tuple[str, ...]
+    scores: Mapping[str, float]
+    as_of: date
+    result_hash: str
+
+
+@runtime_checkable
+class ScreenService(Protocol):
+    """Protocol for evaluating screens from strategy context."""
+
+    def screen(self, name: str, *, group: str | None = None) -> ScreenSelection:
+        """Run named screen as of the last completed session."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
 class ScreenBars:
     """Historical bars and provenance returned by a ScreenDataReader."""
 

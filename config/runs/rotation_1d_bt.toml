@@ -1,0 +1,41 @@
+# config/runs/rotation_1d_bt.toml — Backtest run configuration for screen-driven rotation
+# Group nifty50, screen_rotation strategy, conservative risk profile
+
+allocated_capital = 1000000
+
+[run]
+name = "rotation_1d_bt"
+mode = "backtest"
+
+[backtest]
+start = "2024-01-02"
+end = "2026-11-13"
+fidelity = "bar"
+timeframe = "1d"
+study = "rotation_nifty50"
+
+[data_source]
+plugin = "upstox"
+
+[execution_venue]
+plugin = "sim"
+seed = 7
+
+[fees]
+schedule = "zerodha_nse"
+fallback = "earliest"
+
+[[calendars]]
+plugin = "exchange"
+exchange = "nse"
+
+[secrets]
+plugin = "keychain"
+
+[universe]
+group = "nifty50"
+
+[[strategies]]
+plugin = "screen_rotation"
+risk_profile = "conservative"
+params = { screen = "trend_rank_test", top_n = 5, weight_pct = 15.0, rebalance_every = 21, timeframe = "1d", product = "CNC" }

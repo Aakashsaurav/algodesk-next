@@ -1,0 +1,18 @@
+# config/screens/trend_rank_test.toml — Test screen for rotation backtest
+# SMA(50) > SMA(200) on 1d with adjust = "splits", ranked by percentile of rate of change over 126 bars (min 0)
+# Note: This is our definition, not a vendor relative-strength rating.
+
+name = "trend_rank_test"
+description = "SMA(50) > SMA(200) on 1d with adjust = 'splits', ranked by percentile of rate of change over 126 bars (min 0) (our definition, not a vendor relative-strength rating)"
+timeframe = "1d"
+adjust = "splits"
+
+[[require]]
+left = { ind = "sma", n = 50 }
+op = ">"
+right = { ind = "sma", n = 200 }
+
+[rank]
+by = { ind = "roc", n = 126 }
+method = "percentile"
+min = 0.0

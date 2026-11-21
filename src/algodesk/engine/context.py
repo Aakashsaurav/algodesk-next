@@ -11,8 +11,10 @@ from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any
 
+from algodesk.api.errors import NotSupported
+from algodesk.api.kinds import Mode
 from algodesk.api.market import Bar, Instrument, InstrumentId
-from algodesk.api.protocols import Clock, StrategyContext
+from algodesk.api.protocols import Clock, ScreenSelection, ScreenService, StrategyContext
 from algodesk.api.trading import Position
 from algodesk.engine.indicator_manager import IndicatorManager
 
@@ -58,6 +60,8 @@ def build_strategy_context(
     params: Mapping[str, Any] | None = None,
     risk_state: Mapping[str, Any] | None = None,
     logger: logging.Logger | Any | None = None,
+    screen_service: ScreenService | None = None,
+    mode: Mode | None = None,
 ) -> StrategyContext:
     """Build a StrategyContext with read-only mappings and callable accessors."""
     inst_dict: dict[InstrumentId, Instrument] = {
@@ -90,6 +94,21 @@ def build_strategy_context(
             return position_fn(instrument)
         return None
 
+    def _screen(name: str, *, group: str | None = None) -> ScreenSelection:
+        if mode is not None and mode != Mode.BACKTEST:
+            raise NotSupported(
+                what=f"Screen context call is not supported in {mode.value} mode",
+                where="StrategyContext.screen",
+                fix="Use ctx.screen only in backtest mode",
+            )
+        if screen_service is None:
+            raise NotSupported(
+                what="Screen service is not configured for strategy context",
+                where="StrategyContext.screen",
+                fix="Provide a ScreenService in backtest mode",
+            )
+        return screen_service.screen(name, group=group)
+
     portfolio_obj = portfolio_fn() if callable(portfolio_fn) else portfolio_fn
 
     log_inst = logger or logging.getLogger("algodesk.strategy")
@@ -104,4 +123,5 @@ def build_strategy_context(
         params=readonly_params,
         risk_state=readonly_risk_state,
         log=log_inst,
+        screen=_screen,
     )
