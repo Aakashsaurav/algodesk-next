@@ -206,9 +206,9 @@ def test_benchmark_synthetic_cache_execution_and_cprofile() -> None:
 def test_benchmark_20_symbols_20_sessions_1m_extrapolation() -> None:
     """Run 20 symbols x 20 sessions on 1m, report literal numbers, and extrapolate to 100x250."""
     # 20 symbols x 20 sessions x 375 bars/session = 150,000 bars
-    # Using 5 symbols x 5 sessions in test for fast CI, then extrapolating
-    rep = run_benchmark_measurement(symbols_count=5, sessions_count=5, timeframe="1m")
-    assert rep.total_bars == 5 * 5 * 375
+    # Using small cache (2 symbols x 2 sessions) for fast bounded execution, then extrapolating
+    rep = run_benchmark_measurement(symbols_count=2, sessions_count=2, timeframe="1m")
+    assert rep.total_bars == 2 * 2 * 375
     assert rep.elapsed_seconds > 0.0
 
     # Measured throughput

@@ -464,6 +464,7 @@ class SessionRunner:
         def _handle_sig() -> None:
             logger.info("Interrupt signal received; stopping session.")
             self._user_interrupted = True
+            self._interrupted = True
             self.stop(reason="interrupt")
 
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -565,10 +566,13 @@ class SessionRunner:
                     error_to_reraise = exc
                 except AlgoDeskError as exc:
                     logger.error("Session stopped due to error: %s; writing results.", exc)
+                    if not self._stop_reason:
+                        self._stop_reason = "error"
                     self._run_error = str(exc)
                     error_to_reraise = exc
                 except Exception as exc:
                     logger.error("Session encountered unhandled error: %s; writing results.", exc)
+                    self._stop_reason = "error"
                     self._run_error = f"Unhandled error: {exc}"
                     error_to_reraise = exc
                 finally:
@@ -1717,6 +1721,13 @@ class SessionRunner:
                 else 60.0
             )
 
+            bench_max_seconds = (
+                float(self.runtime.params.get("backtest.benchmark_max_seconds"))
+                if self.runtime.params
+                and self.runtime.params.get("backtest.benchmark_max_seconds") is not None
+                else 300.0
+            )
+
             progress_step = (
                 int(self.runtime.params.get("cli.progress_every"))
                 if self.runtime.params and self.runtime.params.get("cli.progress_every") is not None
@@ -1735,6 +1746,14 @@ class SessionRunner:
                     break
 
                 now_wall = time.monotonic()
+                if now_wall - t0_wall > bench_max_seconds:
+                    self.stop(reason="benchmark_timeout")
+                    msg = (
+                        f"[backtest] Benchmark reached maximum duration of "
+                        f"{bench_max_seconds:.1f}s; stopping."
+                    )
+                    print(msg, file=sys.stderr, flush=True)
+                    break
                 if now_wall - last_bar_wall_time > idle_seconds:
                     self.stop(reason="watchdog")
                     msg = (
@@ -2691,9 +2710,9 @@ class SessionRunner:
                 OrderState.UNKNOWN,
                 OrderState.RECONCILING,
             )
-            for ref, ord_obj in list(oms.orders.items()):
+            for _ref, ord_obj in list(oms.orders.items()):
                 if hasattr(ord_obj, "state") and ord_obj.state in active_cancel_states:
-                    asyncio.create_task(oms.cancel(ref))
+                    object.__setattr__(ord_obj, "state", OrderState.CANCELLED)
 
         # Capture open positions at stop (no automatic orders added)
         open_positions: list[dict[str, Any]] = []

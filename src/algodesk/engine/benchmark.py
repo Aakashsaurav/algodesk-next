@@ -234,7 +234,7 @@ params = {{ timeframe = "{timeframe}", fast = 5, slow = 15, qty = 1, product = "
                 runtime=rt,
                 run_config=rt.effective.run,
                 mode=Mode.BACKTEST,
-                quiet=True,
+                quiet=False,
             )
             runner._data_service = ds
 
@@ -245,7 +245,10 @@ params = {{ timeframe = "{timeframe}", fast = 5, slow = 15, qty = 1, product = "
             t0 = time.perf_counter()
             prof.enable()
 
-            asyncio.run(runner.run())
+            try:
+                asyncio.run(runner.run())
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                pass
 
             prof.disable()
             t1 = time.perf_counter()
@@ -253,7 +256,16 @@ params = {{ timeframe = "{timeframe}", fast = 5, slow = 15, qty = 1, product = "
             tracemalloc.stop()
 
             elapsed = max(0.001, t1 - t0)
-            bars_per_sec = total_bars_count / elapsed
+            actual_bars = getattr(runner, "_bars_closed", 0)
+            is_stopped_early = bool(
+                getattr(runner, "_interrupted", False)
+                or getattr(runner, "_user_interrupted", False)
+                or getattr(runner, "_stop_reason", "") in ("interrupt", "benchmark_timeout")
+            )
+            bars_processed = (
+                actual_bars if (is_stopped_early and actual_bars > 0) else total_bars_count
+            )
+            bars_per_sec = bars_processed / elapsed
             peak_mb = peak_bytes / (1024 * 1024)
 
             s_buf = io.StringIO()
@@ -267,7 +279,7 @@ params = {{ timeframe = "{timeframe}", fast = 5, slow = 15, qty = 1, product = "
                 symbols=symbols_count,
                 sessions=sessions_count,
                 timeframe=timeframe,
-                total_bars=total_bars_count,
+                total_bars=bars_processed,
                 elapsed_seconds=elapsed,
                 bars_per_second=bars_per_sec,
                 peak_memory_mb=peak_mb,

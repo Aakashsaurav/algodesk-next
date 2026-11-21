@@ -801,6 +801,32 @@ algodesk backtest benchmark --symbols 20 --sessions 20 --timeframe 1m
 Generates synthetic bar caches in an isolated temporary directory, runs the full runner pipeline, and outputs throughput in bars/s, peak memory in MB, and top 10 functions by cumulative time via `cProfile`.
 
 
+## Backtest equivalence, calibrate, benchmark: errors and limits
+
+### 1. Robust Error Termination and Results Closure
+Any unhandled exception encountered during `backtest run`, `backtest equivalence`, or `backtest calibrate` cleanly finalizes the session run with `verdict = FAIL` and `stop_reason = error`:
+- The results directory is written with final metrics, orders, and manifest before exit.
+- Lingering active orders are transitioned to `OrderState.CANCELLED` synchronously in memory without queuing un-awaited coroutines on closing loops, eliminating secondary `JournalError: Cannot append event: no active run` warnings.
+- The CLI emits a standardized three-line error message:
+  ```text
+  ERROR: <what went wrong>
+  WHERE: <location>
+  FIX: <suggested remediation>
+  ```
+- Exits with returncode 1 without raw stack tracebacks dumped to stderr.
+
+### 2. MCX Commodity Support & Fee Schedule Consistency
+Recorded paper sessions containing MCX commodity futures (e.g. `MCX:FUT:GOLD:2026-12-04`) are evaluated identically across paper, backtest equivalence, slippage calibration, and tick fidelity:
+- All execution paths use algodesk.fees.mapping resolve_fee_segment_and_product to resolve canonical `(segment, product)`.
+- If the configured fee schedule lacks MCX schedule components, charges are recorded as zero without inventing rates.
+- The `SUMMARY.md` assumptions line and `metrics.json` explicitly disclose: `MCX charges not modelled`.
+
+### 3. Benchmark Bounds and SIGINT Responsiveness
+- `algodesk backtest benchmark` execution duration is capped by `backtest.benchmark_max_seconds` (default: 300.0s in `config/params/backtest.toml`). Upon reaching the limit, the benchmark halts cleanly and emits partial throughput and profiling metrics.
+- Progress updates are emitted to stderr every `cli.progress_every` sessions (default: 25).
+- SIGINT (Ctrl-C) halts the benchmark measurement within 5 seconds, prints a partial report, and leaves no non-daemon threads or orphaned subprocesses behind.
+
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |

@@ -85,6 +85,12 @@ class ResultsWriter:
 
         # 2. Enrich metrics for backtest
         enriched_metrics = dict(metrics)
+        mcx_traded = any(
+            str(t.get("instrument", "")).startswith("MCX") for t in trades if isinstance(t, Mapping)
+        )
+        if mcx_traded:
+            enriched_metrics["assumptions"] = "MCX charges not modelled"
+
         if is_backtest:
             enriched_metrics = self._enrich_backtest_metrics(
                 metrics=enriched_metrics,
@@ -94,6 +100,8 @@ class ResultsWriter:
                 summary_info=summary_info,
                 registry_snapshot=registry_snapshot,
             )
+            if mcx_traded:
+                enriched_metrics["assumptions"] = "MCX charges not modelled"
 
         # 3. Read readiness.json if present
         readiness_data = self._read_readiness_json()
@@ -501,9 +509,15 @@ class ResultsWriter:
             oos_str = f"Net ₹{oos_net:.2f}"
 
         fee_sch, verified_on = self._resolve_fee_schedule_info(summary_info)
+        fee_extra = ""
+        if metrics.get("assumptions") == "MCX charges not modelled" or (
+            summary_info and summary_info.get("mcx_traded")
+        ):
+            fee_extra = "; MCX charges not modelled"
+
         fee_clause = (
             f"fee schedule ({fee_sch}, rates verified on {verified_on} applied to all dates; "
-            "effective_from before that is declared, not independently verified)"
+            f"effective_from before that is declared, not independently verified{fee_extra})"
         )
 
         fidelity = (summary_info.get("fidelity") or "bar") if summary_info else "bar"

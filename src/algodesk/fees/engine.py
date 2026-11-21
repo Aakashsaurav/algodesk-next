@@ -11,6 +11,7 @@ from algodesk.api.errors import ConfigError
 from algodesk.api.market import parse_id
 from algodesk.api.trading import Charges, Fill, Product, Side
 from algodesk.fees.errors import FeeScheduleError
+from algodesk.fees.mapping import resolve_fee_segment_and_product
 from algodesk.fees.models import Schedule
 
 
@@ -186,26 +187,7 @@ def _resolve_fill_attributes(
     """Resolve side, product, segment, symbol, exchange, instrument_type for a fill."""
     side = fill.side
     product = fill.product
-    segment = "eq"
     symbol = "DEFAULT"
-    exchange = "nse"
-    itype: str | None = None
-
-    if fill.instrument:
-        try:
-            parts = parse_id(fill.instrument)
-            exchange = parts.exchange.lower()
-            segment = parts.segment.lower()
-            symbol = parts.symbol.upper()
-            if segment == "fno":
-                if "FUT" in symbol:
-                    itype = "fut"
-                elif "CE" in symbol or "PE" in symbol:
-                    itype = "opt"
-                else:
-                    itype = "fut"
-        except Exception:
-            symbol = str(fill.instrument).upper()
 
     if orders and fill.client_ref in orders:
         ord_info = orders[fill.client_ref]
@@ -218,9 +200,18 @@ def _resolve_fill_attributes(
         elif product is None and hasattr(ord_info, "spec"):
             product = ord_info.spec.product
 
+    segment, prod_str, exchange, itype = resolve_fee_segment_and_product(fill.instrument, product)
+    if fill.instrument:
+        try:
+            parts = parse_id(fill.instrument)
+            symbol = parts.symbol.upper()
+        except Exception:
+            symbol = str(fill.instrument).upper()
+
+    final_prod = product if product is not None else getattr(Product, prod_str, Product.CNC)
     return (
         side if side is not None else Side.BUY,
-        product if product is not None else Product.CNC,
+        final_prod,
         segment,
         symbol,
         exchange,
@@ -265,6 +256,7 @@ class FeeEngine:
         *,
         exchange: str = "nse",
         instrument_type: str | None = None,
+        instrument: Any = None,
         is_exercise: bool = False,
         is_first_scrip_day: bool = True,
         fallback: str | None = None,
@@ -284,13 +276,36 @@ class FeeEngine:
 
         sch = _coerce_schedule(schedule)
         side_str = (side.value if hasattr(side, "value") else str(side)).lower()
-        prod_str = (product.value if hasattr(product, "value") else str(product)).upper()
-        seg_str = segment.lower()
-        exch_str = exchange.lower()
-        itype = (
-            instrument_type.lower() if instrument_type else ("fut" if seg_str == "fno" else None)
-        )
+
+        if instrument is not None:
+            seg_str, prod_str, exch_str, itype = resolve_fee_segment_and_product(
+                instrument, product, default_exchange=exchange
+            )
+        else:
+            seg_candidate = segment.lower()
+            if seg_candidate in ("fut", "opt"):
+                seg_str = "fno"
+                itype = instrument_type.lower() if instrument_type else seg_candidate
+            else:
+                seg_str = seg_candidate
+                itype = (
+                    instrument_type.lower()
+                    if instrument_type
+                    else ("fut" if seg_str == "fno" else None)
+                )
+            prod_str = (product.value if hasattr(product, "value") else str(product)).upper()
+            exch_str = exchange.lower()
+
         fallback_mode = fallback or cls.fallback
+
+        # If MCX instrument traded and no MCX schedule components exist, charges are not modelled
+        if exch_str == "mcx" and not any(
+            getattr(c, "exchange", None) == "mcx" for c in sch.components
+        ):
+            return Charges(
+                total=Decimal("0.00"),
+                items={},
+            )
 
         # Filter candidate components for segment/product/exchange/instrument_type
         relevant = [

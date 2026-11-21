@@ -108,16 +108,22 @@ class OrderManager:
         now_ts = self.clock.now()
 
         if hasattr(self.journal, "append"):
-            self.journal.append(
-                "order.event",
-                {
-                    "client_ref": order.client_ref,
-                    "from_state": from_state.value,
-                    "to_state": to_state.value,
-                    "ts": now_ts.isoformat(),
-                    "reason": reason,
-                },
-            )
+            try:
+                self.journal.append(
+                    "order.event",
+                    {
+                        "client_ref": order.client_ref,
+                        "from_state": from_state.value,
+                        "to_state": to_state.value,
+                        "ts": now_ts.isoformat(),
+                        "reason": reason,
+                    },
+                )
+            except Exception:
+                if not getattr(self.journal, "_active_run_id", None):
+                    pass
+                else:
+                    raise
 
         if self.bus is not None and hasattr(self.bus, "publish"):
             evt = OrderEvent(
@@ -304,21 +310,34 @@ class OrderManager:
             fill_ts = gf.ts if gf is not None else event.ts
 
             # Calculate charges with fee engine
-            segment = "eq"
-            if ":" in str(order.spec.instrument):
-                parts = str(order.spec.instrument).split(":")
-                if len(parts) >= 2:
-                    segment = parts[1].lower()
+            from algodesk.fees.mapping import resolve_fee_segment_and_product
+
+            segment, product, exchange, itype = resolve_fee_segment_and_product(
+                order.spec.instrument, order.spec.product
+            )
 
             turnover = Decimal(fill_qty) * fill_price
-            charges = self.fee_engine.calculate_trade_charges(
-                turnover=turnover,
-                side=order.spec.side,
-                segment=segment,
-                product=order.spec.product,
-                trade_date=fill_ts.date(),
-                schedule=self.schedule,
-            )
+            try:
+                charges = self.fee_engine.calculate_trade_charges(
+                    turnover=turnover,
+                    side=order.spec.side,
+                    segment=segment,
+                    product=product,
+                    trade_date=fill_ts.date(),
+                    schedule=self.schedule,
+                    exchange=exchange,
+                    instrument_type=itype,
+                    instrument=order.spec.instrument,
+                )
+            except TypeError:
+                charges = self.fee_engine.calculate_trade_charges(
+                    turnover=turnover,
+                    side=order.spec.side,
+                    segment=segment,
+                    product=product,
+                    trade_date=fill_ts.date(),
+                    schedule=self.schedule,
+                )
 
             fill = Fill(
                 fill_id=fill_id,

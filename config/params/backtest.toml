@@ -89,3 +89,15 @@ tighten = "down"
 description = "Simulated venue order placement latency in milliseconds for backtest bar mode"
 owner = "engine"
 
+[[param]]
+name = "backtest.benchmark_max_seconds"
+type = "float"
+default = 300.0
+min = 1.0
+max = 3600.0
+scope = "global"
+tighten = "down"
+description = "Maximum execution duration in seconds for backtest benchmark before stopping with partial report"
+owner = "engine"
+
+
