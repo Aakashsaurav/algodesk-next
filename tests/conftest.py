@@ -136,6 +136,12 @@ def snapshot_guarded_hashes(root: Path) -> dict[str, str]:
                     hashes[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
                 except OSError:
                     pass
+    ks_path = root / "data" / "state" / "killswitch.json"
+    if ks_path.is_file():
+        try:
+            hashes["data/state/killswitch.json"] = hashlib.sha256(ks_path.read_bytes()).hexdigest()
+        except OSError:
+            pass
     return hashes
 
 

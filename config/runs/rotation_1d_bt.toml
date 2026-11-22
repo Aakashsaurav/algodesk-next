@@ -37,5 +37,5 @@ group = "nifty50"
 
 [[strategies]]
 plugin = "screen_rotation"
-risk_profile = "conservative"
+risk_profile = "swing"
 params = { screen = "trend_rank_test", top_n = 5, weight_pct = 15.0, rebalance_every = 21, timeframe = "1d", product = "CNC" }

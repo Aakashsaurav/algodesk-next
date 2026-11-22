@@ -55,9 +55,16 @@ class RiskMonitor:
         max_loss = (Decimal(str(limit_pct)) / Decimal("100")) * capital
 
         if loss >= max_loss:
+            compared_vals = {
+                "loss": float(loss),
+                "limit": float(max_loss),
+                "limit_pct": float(limit_pct),
+            }
             self.killswitch.trip(
                 reason=f"Daily loss ₹{loss} reached or breached limit ₹{max_loss} ({limit_pct}%)",
                 by="risk_monitor",
+                rule="daily_loss_limit_pct",
+                values=compared_vals,
             )
             return True
 

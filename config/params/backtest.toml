@@ -100,4 +100,14 @@ tighten = "down"
 description = "Maximum execution duration in seconds for backtest benchmark before stopping with partial report"
 owner = "engine"
 
+[[param]]
+name = "backtest.on_kill_switch"
+type = "str"
+default = "continue"
+scope = "global"
+tighten = "none"
+description = "Action when kill-switch is tripped in backtest: continue blocks new entries and marks positions; stop halts immediately"
+owner = "engine"
+
+
 

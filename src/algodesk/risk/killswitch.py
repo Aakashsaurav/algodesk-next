@@ -28,7 +28,14 @@ class KillSwitch:
         self.journal = journal
         self.clock = clock or SystemClock()
         self._last_mtime: int | None = None
-        self._cached_state: dict[str, Any] = {"active": False, "reason": "", "by": "", "ts": None}
+        self._cached_state: dict[str, Any] = {
+            "active": False,
+            "reason": "",
+            "by": "",
+            "rule": "",
+            "values": {},
+            "ts": None,
+        }
         self._sync()
 
     def _sync(self) -> None:
@@ -38,7 +45,14 @@ class KillSwitch:
             if self._cached_state.get("active"):
                 self._cached_state["reason"] = "Kill-switch file deleted while active (fail-closed)"
                 return
-            self._cached_state = {"active": False, "reason": "", "by": "", "ts": None}
+            self._cached_state = {
+                "active": False,
+                "reason": "",
+                "by": "",
+                "rule": "",
+                "values": {},
+                "ts": None,
+            }
             return
 
         try:
@@ -81,13 +95,21 @@ class KillSwitch:
         self._sync()
         return dict(self._cached_state)
 
-    def trip(self, reason: str, by: str = "manual") -> None:
+    def trip(
+        self,
+        reason: str,
+        by: str = "manual",
+        rule: str = "",
+        values: dict[str, Any] | None = None,
+    ) -> None:
         """Trip the kill-switch and record durable journal event."""
         now_ts = self.clock.now()
         data = {
             "active": True,
             "reason": reason,
             "by": by,
+            "rule": rule,
+            "values": values or {},
             "ts": now_ts.isoformat(),
         }
         self._write_atomic(data)
@@ -99,6 +121,8 @@ class KillSwitch:
                     "active": True,
                     "reason": reason,
                     "by": by,
+                    "rule": rule,
+                    "values": values or {},
                     "ts": now_ts.isoformat(),
                 },
                 durable=True,

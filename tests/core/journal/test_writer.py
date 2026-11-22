@@ -191,6 +191,7 @@ def test_backpressure_error_raises_and_warns_without_dropping(
                 j.append("test.event", {"idx": 4})
 
         stall_event.set()
+        time.sleep(0.05)
 
 
 # Backward-compatible alias for test discovery/historical references

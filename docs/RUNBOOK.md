@@ -81,6 +81,15 @@ Emergency trading halt controls backed by atomic state file `data/state/killswit
 - Clear kill-switch: `algodesk killswitch off --reason "<why>"`
 - Cross-process effect: any process checking `is_active()` reloads instantly when mtime changes. Every transition is journaled with `durable=True`.
 
+### Backtest and the kill-switch
+1. **State Isolation**: In backtest mode, the kill-switch operates on an isolated, run-local state file inside the run directory (`results/<run_id>/killswitch.json`). A backtest never inspects or modifies `data/state/killswitch.json`: an armed project switch will not halt a backtest, and a breach in a backtest leaves the project switch file byte-identical.
+2. **Breach Policy (`backtest.on_kill_switch`)**:
+   - `continue` (default): when a daily loss limit or risk rule trips the kill-switch, new entry orders are blocked for the rest of the run, while reducing orders (exits of existing positions) continue to execute. The simulation marks daily positions and completes through the end of historical data with verdict `PASS`.
+   - `stop`: the simulation stops immediately upon breach with stop reason `"kill-switch tripped"` and verdict `PASS`.
+   - In both policies, `metrics.json` records `kill_switch_tripped_date`, `kill_switch_rule`, and `kill_switch_values`. `SUMMARY.md` displays `"KILL-SWITCH tripped on <IST date>: <rule>, <values>; no new entries after this date"` as its first line. Backtest results omit "Feed halted".
+3. **Risk Profile "swing"**: Multi-day and swing strategies configure `risk_profile = "swing"`, with parameters `risk.swing.daily_loss_limit_pct = 4.0`, `risk.swing.weekly_loss_limit_pct = 8.0`, and `risk.swing.drawdown_halt_pct = 15.0`.
+
+
 
 ## Upstox authentication & login ceremony
 

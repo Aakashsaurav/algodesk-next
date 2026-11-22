@@ -313,6 +313,24 @@ class SessionRunner:
         self._interrupted = False
         self._user_interrupted = False
         self._killswitch_tripped = False
+        self._kill_switch_tripped_date: str | None = None
+        self._kill_switch_rule: str | None = None
+        self._kill_switch_values: dict[str, Any] | None = None
+        self._on_kill_switch: str = "continue"
+        if self.runtime.params is not None and hasattr(self.runtime.params, "get"):
+            val = self.runtime.params.get("backtest.on_kill_switch")
+            if val is not None:
+                self._on_kill_switch = str(getattr(val, "value", val)).lower()
+        ks_state_dir = (
+            self.runtime.state.params_db.parent
+            if hasattr(self.runtime, "state") and getattr(self.runtime, "state", None) is not None
+            else getattr(self.runtime, "root", Path(".")) / "data" / "state"
+        )
+        self.killswitch_file: Path = (
+            self.runtime.paths.results / self.run_id / "killswitch.json"
+            if self.mode == Mode.BACKTEST
+            else ks_state_dir / "killswitch.json"
+        )
         self._feed_halted = False
         self._run_error: str | None = None
         self._last_feed_gap_alert_time: datetime = datetime.min.replace(tzinfo=UTC)
@@ -780,7 +798,15 @@ class SessionRunner:
             self._fills.append(fill)
             ledger.apply_fill(fill)
             notify.notify_fill(fill)
-            monitor.on_fill(fe)
+            if monitor.on_fill(fe):
+                if self._kill_switch_tripped_date is None:
+                    ks_st = killswitch.status()
+                    now_dt = clock.now()
+                    self._kill_switch_tripped_date = format_ist(now_dt)[:10]
+                    self._kill_switch_rule = ks_st.get("rule") or "daily_loss_limit_pct"
+                    self._kill_switch_values = ks_st.get("values") or {}
+                    self._killswitch_tripped = True
+                    self._killswitch_events += 1
             logger.info(
                 "Fill received: fill_id=%s client_ref=%s %s %s qty=%s price=%.2f charges=%.2f",
                 fill.fill_id,
@@ -927,10 +953,7 @@ class SessionRunner:
         starting_cash: Decimal,
         p_ctx: PluginContext,
     ) -> tuple[RiskEngine, KillSwitch, RiskMonitor]:
-        ks_file = self.runtime.state.params_db.parent / "killswitch.json"
-        if self.mode == Mode.BACKTEST:
-            ks_file = self.runtime.paths.results / self.run_id / "killswitch.json"
-        killswitch = KillSwitch(state_file=ks_file, journal=journal, clock=clock)
+        killswitch = KillSwitch(state_file=self.killswitch_file, journal=journal, clock=clock)
 
         risk_rules: list[Any] = []
         try:
@@ -949,14 +972,21 @@ class SessionRunner:
         except Exception as exc:
             logger.debug("Could not load builtin risk rule plugin: %s", exc)
 
+        profile = "conservative"
+        if self.run_config and self.run_config.strategies:
+            profile = self.run_config.strategies[0].risk_profile
+
+        allow_reducing_on_killswitch = (
+            self.mode == Mode.BACKTEST and self._on_kill_switch == "continue"
+        )
         risk_engine = RiskEngine(
             killswitch=killswitch,
             rules=risk_rules,
             journal=journal,
             observe=self.observe,
+            allow_reducing_on_killswitch=allow_reducing_on_killswitch,
         )
 
-        profile = "conservative"
         monitor = RiskMonitor(
             killswitch=killswitch,
             portfolio=ledger,
@@ -1019,6 +1049,12 @@ class SessionRunner:
                 o for o in oms.orders.values() if getattr(o, "state", None) in active_states
             ]
             current_positions = {f"{k[0]}:{k[1].value}": pos for k, pos in ledger.positions.items()}
+            strat_profile = "conservative"
+            if self.run_config and self.run_config.strategies:
+                for s in self.run_config.strategies:
+                    if not strategy or s.plugin == strategy or getattr(s, "name", "") == strategy:
+                        strat_profile = s.risk_profile
+                        break
             return RiskViewContext(
                 portfolio=ledger.snapshot(),
                 positions=current_positions,
@@ -1029,6 +1065,7 @@ class SessionRunner:
                 clock=clock,
                 instruments=instruments,
                 allocated_capital=Decimal(str(self.run_config.allocated_capital)),
+                profile=strat_profile,
                 strategy=strategy,
             )
 
@@ -1790,8 +1827,22 @@ class SessionRunner:
                 if self._stop_event.is_set():
                     break
                 if c.get("killswitch") is not None and c["killswitch"].is_active():
-                    self.stop(reason="kill switch")
-                    break
+                    if self._kill_switch_tripped_date is None:
+                        ks_st = c["killswitch"].status()
+                        now_dt = clock.now()
+                        self._kill_switch_tripped_date = format_ist(now_dt)[:10]
+                        self._kill_switch_rule = ks_st.get("rule") or "daily_loss_limit_pct"
+                        self._kill_switch_values = ks_st.get("values") or {}
+                        self._killswitch_tripped = True
+                        self._killswitch_events += 1
+                    if self.mode == Mode.BACKTEST and self._on_kill_switch == "continue":
+                        pass
+                    else:
+                        stop_reason = (
+                            "kill-switch tripped" if self.mode == Mode.BACKTEST else "kill switch"
+                        )
+                        self.stop(reason=stop_reason)
+                        break
 
                 now_wall = time.monotonic()
                 if now_wall - t0_wall > bench_max_seconds:
@@ -1893,8 +1944,22 @@ class SessionRunner:
                 if self._stop_event.is_set():
                     break
                 if c.get("killswitch") is not None and c["killswitch"].is_active():
-                    self.stop(reason="kill switch")
-                    break
+                    if self._kill_switch_tripped_date is None:
+                        ks_st = c["killswitch"].status()
+                        now_dt = clock.now()
+                        self._kill_switch_tripped_date = format_ist(now_dt)[:10]
+                        self._kill_switch_rule = ks_st.get("rule") or "daily_loss_limit_pct"
+                        self._kill_switch_values = ks_st.get("values") or {}
+                        self._killswitch_tripped = True
+                        self._killswitch_events += 1
+                    if self.mode == Mode.BACKTEST and self._on_kill_switch == "continue":
+                        pass
+                    else:
+                        stop_reason = (
+                            "kill-switch tripped" if self.mode == Mode.BACKTEST else "kill switch"
+                        )
+                        self.stop(reason=stop_reason)
+                        break
                 await _dispatch_market_event(ev_item)
                 if (
                     self._recorded_stop_seq is not None
@@ -3002,15 +3067,36 @@ class SessionRunner:
 
         ks_obj = c.get("killswitch")
         ks_active = bool(ks_obj is not None and hasattr(ks_obj, "is_active") and ks_obj.is_active())
+        if (ks_active or self._killswitch_tripped) and self._kill_switch_tripped_date is None:
+            ks_st = ks_obj.status() if ks_obj is not None and hasattr(ks_obj, "status") else {}
+            now_dt = clock.now()
+            self._kill_switch_tripped_date = format_ist(now_dt)[:10]
+            self._kill_switch_rule = ks_st.get("rule") or "daily_loss_limit_pct"
+            self._kill_switch_values = ks_st.get("values") or {}
+
         if self._stop_reason == "feed_auth":
             stop_reason = "feed_auth"
             is_fail = True
         elif self._stop_reason == "watchdog":
             stop_reason = "watchdog"
             is_fail = True
-        elif self._killswitch_tripped or ks_active or self._killswitch_events > 0:
-            stop_reason = "kill switch"
+        elif bool(self._run_error):
+            stop_reason = "error"
             is_fail = True
+        elif self._stop_reason == "kill-switch tripped":
+            stop_reason = "kill-switch tripped"
+            is_fail = False
+        elif self._killswitch_tripped or ks_active or self._killswitch_events > 0:
+            if self.mode == Mode.BACKTEST:
+                if self._on_kill_switch == "continue":
+                    stop_reason = self._stop_reason or "end of data"
+                    is_fail = False
+                else:
+                    stop_reason = "kill-switch tripped"
+                    is_fail = False
+            else:
+                stop_reason = "kill switch"
+                is_fail = True
         elif self._stop_reason == "end of data":
             stop_reason = "end of data"
             is_fail = False
@@ -3094,7 +3180,11 @@ class SessionRunner:
         fail_reason_str = (
             str(self._run_error)
             if is_fail and self._run_error
-            else ("Feed halted / risk breach" if is_fail else None)
+            else (
+                None
+                if self.mode == Mode.BACKTEST
+                else ("Feed halted / risk breach" if is_fail else None)
+            )
         )
         if c.get("risk_engine") is not None and hasattr(c["risk_engine"], "rejects_by_rule"):
             for r, count in c["risk_engine"].rejects_by_rule.items():
@@ -3119,6 +3209,9 @@ class SessionRunner:
             "ticks_per_instrument": self._tick_stats,
             "feed_gaps": self._feed_gaps,
             "killswitch_events": self._killswitch_events,
+            "kill_switch_tripped_date": self._kill_switch_tripped_date,
+            "kill_switch_rule": self._kill_switch_rule,
+            "kill_switch_values": self._kill_switch_values,
             "first_tick_ist": first_tick_ist_str,
             "last_tick_ist": last_tick_ist_str,
             "first_tick_utc": self._first_tick_ts.isoformat() if self._first_tick_ts else None,

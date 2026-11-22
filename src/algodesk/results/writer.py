@@ -93,9 +93,7 @@ class ResultsWriter:
             if isinstance(t, Mapping) and str(t.get("instrument", "")).startswith("MCX")
         ]
         mcx_unmodelled = (
-            any(float(t.get("charges", 0.0)) == 0.0 for t in mcx_trades)
-            if mcx_trades
-            else False
+            any(float(t.get("charges", 0.0)) == 0.0 for t in mcx_trades) if mcx_trades else False
         )
         if mcx_unmodelled:
             enriched_metrics["assumptions"] = "MCX charges not modelled"
@@ -463,12 +461,32 @@ class ResultsWriter:
         lead_str = (" ".join(lead_parts) + " ") if lead_parts else ""
         body = f"{lead_str}{main_clause}{disclaimer}"
 
-        # Word limit check (enforce <= 150 words)
-        words = body.split()
-        if len(words) > 150:
-            body = " ".join(words[:145]) + "...\n"
+        ks_date = metrics.get("kill_switch_tripped_date")
+        ks_header = ""
+        if ks_date:
+            ks_rule = metrics.get("kill_switch_rule", "daily_loss_limit_pct")
+            ks_vals = metrics.get("kill_switch_values", {})
+            if isinstance(ks_vals, dict) and "loss" in ks_vals and "limit" in ks_vals:
+                loss_str = f"₹{Decimal(str(ks_vals['loss'])):.2f}"
+                lim_str = f"₹{Decimal(str(ks_vals['limit'])):.2f}"
+                pct_str = f" ({ks_vals['limit_pct']}%)" if "limit_pct" in ks_vals else ""
+                vals_str = f"loss={loss_str}, limit={lim_str}{pct_str}"
+            elif isinstance(ks_vals, dict):
+                vals_str = ", ".join(f"{k}={v}" for k, v in sorted(ks_vals.items()))
+            else:
+                vals_str = str(ks_vals)
+            ks_header = (
+                f"KILL-SWITCH tripped on {ks_date}: {ks_rule}, {vals_str}; "
+                f"no new entries after this date\n\n"
+            )
 
-        content = f"# Run Summary: {self.run_id}\n\n## Summary\n{body}"
+        full_body = f"{ks_header}{body}"
+        # Word limit check (enforce <= 150 words)
+        words = full_body.split()
+        if len(words) > 150:
+            full_body = " ".join(words[:145]) + "...\n"
+
+        content = f"# Run Summary: {self.run_id}\n\n## Summary\n{full_body}"
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._write_text_file("SUMMARY.md", content)
 

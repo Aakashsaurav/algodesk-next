@@ -43,9 +43,9 @@ def is_reducing_intent(intent: Intent, view: RiskViewContext) -> bool:
         p_inst = str(pos.instrument)
         p_prod = pos.product.value if isinstance(pos.product, Product) else str(pos.product)
         if p_inst == inst_str and p_prod == prod_val:
-            if pos.qty > 0 and spec.side == Side.SELL:
+            if pos.qty > 0 and spec.side == Side.SELL and spec.qty <= pos.qty:
                 return True
-            if pos.qty < 0 and spec.side == Side.BUY:
+            if pos.qty < 0 and spec.side == Side.BUY and spec.qty <= abs(pos.qty):
                 return True
 
     return False
@@ -60,11 +60,13 @@ class RiskEngine:
         rules: Sequence[RiskRule] = (),
         journal: JournalWriter | Any | None = None,
         observe: bool = False,
+        allow_reducing_on_killswitch: bool = False,
     ) -> None:
         self.killswitch = killswitch
         self.rules = list(rules)
         self.journal = journal
         self.observe = observe
+        self.allow_reducing_on_killswitch = allow_reducing_on_killswitch
         self.rejects_by_rule: dict[str, int] = {}
 
     def add_rule(self, rule: RiskRule) -> None:
@@ -75,18 +77,29 @@ class RiskEngine:
         """Evaluate an intent against safety controls and all loaded risk rules."""
         intent_id = getattr(intent, "intent_id", "")
 
+        # Check reducing intent
+        reducing = is_reducing_intent(intent, view)
+
         # (a) Kill-switch check
         if self.killswitch.is_active():
-            ks_status = self.killswitch.status()
-            reason = ks_status.get("reason", "Kill-switch engaged")
-            decision = RiskDecision(
-                allow=False,
-                rule="killswitch",
-                reason=f"Kill-switch active: {reason}",
-                values={"active": True, "reason": reason},
-            )
-            self._journal_decision(intent_id, decision)
-            return decision
+            if not (self.allow_reducing_on_killswitch and reducing):
+                ks_status = self.killswitch.status()
+                reason = ks_status.get("reason", "Kill-switch engaged")
+                rule_name = ks_status.get("rule") or "killswitch"
+                ks_vals = ks_status.get("values") or {}
+                decision = RiskDecision(
+                    allow=False,
+                    rule="killswitch",
+                    reason=f"Kill-switch active: {reason}",
+                    values={
+                        "active": True,
+                        "reason": reason,
+                        "tripped_rule": rule_name,
+                        **ks_vals,
+                    },
+                )
+                self._journal_decision(intent_id, decision)
+                return decision
 
         # CancelOrder does not require market quote or trading session check
         if isinstance(intent, CancelOrder):
