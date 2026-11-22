@@ -21,7 +21,7 @@ Milestones M0-M3 complete; M4 in progress. AlgoDesk Next provides a pluggable tr
 
 - **M1**: Accepted on recorded paper sessions with bit-identical signals, orders, fills, and metrics; replay tolerances proven safe; fee vectors verified by hand; p95 latency and memory measured.
 - **M2**: Zero-network identical get; quarantine resilience; `data verify` clean; rebuilt timeframes equal tick-built; corporate actions audit; contract partitions; quality gates pass.
-- **M4**: Multi-instrument backtest engine with exact replay equivalence, tick fidelity, causal determinism, registry governance, point-in-time screen-driven rotation strategy (`screen_rotation`) with two-step rebalance, fill-verified rebalances reporting (`rebalances.csv`), daily mark-to-market equity curve, hardened risk-adjusted metrics, canonical manifest hashing, and survivorship disclosure (ADR-089, ADR-090).
+- **M4**: Multi-instrument backtest engine with exact replay equivalence, tick fidelity, causal determinism, registry governance, point-in-time screen-driven rotation strategy (`screen_rotation`) with two-step rebalance, fill-verified rebalances reporting (`rebalances.csv`), daily mark-to-market equity curve, hardened risk-adjusted metrics, canonical manifest hashing, survivorship disclosure, multiset equivalence with order counting, order-identity calibration pairing, and isolated profile benchmarking with fixed vs per-bar cost separation (ADR-089, ADR-090, ADR-091).
 
 ## What exists
 

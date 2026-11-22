@@ -51,7 +51,13 @@ def _record_session_for_calibration(
     inst_str: str = "NSE:EQ:INFY",
 ) -> Path:
     """Record a real session with trade fills for calibration testing."""
-    inst = InstrumentId(inst_str)
+    target_insts = [
+        InstrumentId("NSE:EQ:INFY"),
+        InstrumentId("NSE:EQ:TCS"),
+        InstrumentId("NSE:EQ:RELIANCE"),
+        InstrumentId("NSE:EQ:HDFCBANK"),
+        InstrumentId("NSE:EQ:ICICIBANK"),
+    ]
     start_ts = datetime(2026, 11, 19, 9, 30, tzinfo=UTC)
 
     cfg_file = project_dir / "config" / "runs" / "demo_paper_fast.toml"
@@ -59,7 +65,24 @@ def _record_session_for_calibration(
     cfg_text = cfg_text.replace("fast = 3, slow = 8", "fast = 2, slow = 4")
     cfg_file.write_text(cfg_text, encoding="utf-8")
 
-    prices = [100.0, 100.0, 100.0, 100.0, 90.0, 80.0, 120.0, 120.0]
+    prices = [
+        100.0,
+        100.0,
+        100.0,
+        100.0,
+        70.0,
+        70.0,
+        130.0,
+        130.0,
+        70.0,
+        70.0,
+        130.0,
+        130.0,
+        70.0,
+        70.0,
+        130.0,
+        130.0,
+    ]
 
     with open_runtime(project_dir, run="demo_paper_fast", ensure=True) as rt:
         clk = SimClock(start_ts)
@@ -77,24 +100,28 @@ def _record_session_for_calibration(
                 t_m = start_ts + timedelta(minutes=m)
                 for s in (15, 35, 58):
                     t_s = t_m + timedelta(seconds=s)
-                    tick = Tick(instrument=inst, exch_ts=t_s, recv_ts=t_s, ltp=p, ltq=1, volume=100)
-                    quote = Quote(
-                        instrument=inst,
-                        exch_ts=t_s,
-                        recv_ts=t_s,
-                        bids=(Level(price=p - 0.05, qty=100, orders=1),),
-                        asks=(Level(price=p + 0.05, qty=100, orders=1),),
-                        ltp=p,
-                        volume=100,
-                    )
                     cl.set_time(t_s)
-                    yield tick
-                    await asyncio.sleep(0)
-                    yield quote
-                    await asyncio.sleep(0)
+                    for inst in target_insts:
+                        tick = Tick(
+                            instrument=inst, exch_ts=t_s, recv_ts=t_s, ltp=p, ltq=1, volume=100
+                        )
+                        quote = Quote(
+                            instrument=inst,
+                            exch_ts=t_s,
+                            recv_ts=t_s,
+                            bids=(Level(price=p - 0.05, qty=100, orders=1),),
+                            asks=(Level(price=p + 0.05, qty=100, orders=1),),
+                            ltp=p,
+                            volume=100,
+                        )
+                        yield tick
+                        await asyncio.sleep(0)
+                        yield quote
+                        await asyncio.sleep(0)
                 t_end = t_m + timedelta(minutes=1)
                 cl.set_time(t_end)
-                c["bar_builder"].close_bar_timer(str(inst), "1m", t_end)
+                for inst in target_insts:
+                    c["bar_builder"].close_bar_timer(str(inst), "1m", t_end)
                 if runner_obj._pending_bar_tasks:
                     await asyncio.gather(*runner_obj._pending_bar_tasks)
                     runner_obj._pending_bar_tasks.clear()
@@ -239,7 +266,7 @@ def test_benchmark_cli_command(tmp_path: Path) -> None:
         assert "=== Backtest Benchmark ===" in res.output
         assert "Throughput:" in res.output
         assert "bars/s" in res.output
-        assert "Top 10 functions by cumulative time:" in res.output
+        assert "Top 10 functions" in res.output
     finally:
         os.chdir(old_cwd)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,8 @@ class TickBarFeed:
         timeframe: str = "1m",
         instruments: Sequence[InstrumentId | str] | None = None,
         calendar: Any = None,
+        calendars: Mapping[str, Any] | None = None,
+        session_manager: Any = None,
         synth: BarQuoteSynth | None = None,
         tick_window: tuple[datetime, datetime] | None = None,
     ) -> None:
@@ -45,6 +47,8 @@ class TickBarFeed:
         self.timeframe = timeframe
         self.instruments = [str(i) for i in instruments] if instruments else None
         self.calendar = calendar
+        self.calendars = calendars
+        self._session_manager = session_manager
         self.synth = synth or BarQuoteSynth(calendar=calendar)
         self.tick_window = tick_window
 
@@ -130,16 +134,19 @@ class TickBarFeed:
             if m_path.is_file():
                 try:
                     m_data = json.loads(m_path.read_text(encoding="utf-8"))
-                    if m_data.get("first_tick_recv_utc") and m_data.get("last_tick_recv_utc"):
-                        w_start = datetime.fromisoformat(m_data["first_tick_recv_utc"])
-                        w_end = datetime.fromisoformat(m_data["last_tick_recv_utc"])
-                    elif m_data.get("first_tick_utc") and m_data.get("last_tick_utc"):
+                    if m_data.get("first_tick_utc") and m_data.get("last_tick_utc"):
                         w_start = datetime.fromisoformat(m_data["first_tick_utc"])
                         w_end = datetime.fromisoformat(m_data["last_tick_utc"])
+                    elif m_data.get("first_tick_recv_utc") and m_data.get("last_tick_recv_utc"):
+                        w_start = datetime.fromisoformat(m_data["first_tick_recv_utc"])
+                        w_end = datetime.fromisoformat(m_data["last_tick_recv_utc"])
                 except Exception:
                     pass
 
-        # 5. Stream ticks through BarBuilder honoring timer closes
+        # 5. Resolve session manager
+        session_mgr = self._session_manager
+
+        # 6. Stream ticks through BarBuilder honoring timer closes
         closed_bars: list[Bar] = []
 
         def _on_closed(b: Bar) -> None:
@@ -151,6 +158,7 @@ class TickBarFeed:
         bar_builder_cls = import_module("algodesk.engine.bars").BarBuilder
         bar_builder = bar_builder_cls(
             timeframes=[self.timeframe],
+            session_manager=session_mgr,
             fill_empty_bars=False,
             on_bar_closed=_on_closed,
         )
@@ -164,6 +172,14 @@ class TickBarFeed:
             )
 
             for ev, seq in feed.iter_with_seq():
+                if not isinstance(ev, (Tick, Quote)):
+                    continue
+                # Strictly filter ticks to recorded window bounds if known
+                if w_start is not None and ev.exch_ts < w_start:
+                    continue
+                if w_end is not None and ev.exch_ts > w_end:
+                    continue
+
                 # Feed tick first
                 if isinstance(ev, Tick):
                     bar_builder.on_tick(ev)
@@ -180,7 +196,7 @@ class TickBarFeed:
                                 end_dt = datetime.fromisoformat(end_ts_val)
                                 bar_builder.close_bar_timer(inst_str, tf, end_dt)
 
-        # Flush any remaining timer closes
+        # Flush any remaining timer closes that occurred after last tick
         for seq_key in sorted(timer_closes_by_seq.keys()):
             for tc in timer_closes_by_seq[seq_key]:
                 inst_str = tc.get("instrument")
@@ -190,11 +206,8 @@ class TickBarFeed:
                     end_dt = datetime.fromisoformat(end_ts_val)
                     bar_builder.close_bar_timer(inst_str, tf, end_dt)
 
-        # Flush any remaining active bars in BarBuilder
-        for k in list(bar_builder._active_bars.keys()):
-            act = bar_builder._active_bars.get(k)
-            if act:
-                bar_builder.close_bar_timer(k[0], k[1], act.end_ts)
+        # Note: Do not forcibly close incomplete unclosed active bars at session end,
+        # preserving exact equivalence with paper mode where incomplete bars are not emitted.
 
         # Sort bars by (start_ts, instrument)
         closed_bars.sort(key=lambda b: (b.start_ts, str(b.instrument)))

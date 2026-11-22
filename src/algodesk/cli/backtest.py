@@ -188,6 +188,32 @@ def backtest_check_cmd(
             )
 
 
+def _check_sim_fee_hashes(rt: Any, sess_dir: Path, run_config: Any) -> None:
+    """Print note if sim or fee plugin code hash differs from recorded paper run."""
+    manifest_path = sess_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return
+    try:
+        man = json.loads(manifest_path.read_text(encoding="utf-8"))
+        pv_sess = man.get("plugin_versions") or {}
+        curr_plugins = {p.name: p for p in rt.plugins.list()}
+        sim_name = getattr(getattr(run_config, "execution_venue", None), "plugin", "sim")
+        fee_name = getattr(getattr(run_config, "fees", None), "schedule", "zerodha_nse")
+        for p_chk in (sim_name, fee_name, "sim", "zerodha_nse"):
+            rec_info = pv_sess.get(p_chk)
+            curr_p = curr_plugins.get(p_chk)
+            if rec_info and curr_p:
+                rec_hash = rec_info.get("hash")
+                if rec_hash and curr_p.code_hash != rec_hash:
+                    typer.echo(
+                        "Note: Sim or fee plugin code hash differs from recorded paper run; "
+                        "fills and charges can legitimately differ."
+                    )
+                    break
+    except Exception:
+        pass
+
+
 @backtest_app.command("run")
 @handle_cli_errors
 def backtest_run_cmd(
@@ -246,6 +272,8 @@ def backtest_run_cmd(
             run_config, session_warnings = load_recorded_session_config(sess_dir, rt)
             for w in session_warnings:
                 typer.echo(f"Warning: {w}")
+
+            _check_sim_fee_hashes(rt, sess_dir, run_config)
 
             snap_file = sess_dir / "registry.snapshot.json"
             if snap_file.is_file() and rt.params is not None:
@@ -411,9 +439,22 @@ def backtest_equivalence_cmd(
             f"Paper signals: {res.paper_signals_count}, "
             f"Backtest signals: {res.backtest_signals_count}"
         )
-        if not res.signals_equal and res.differences:
-            typer.echo("Differences (first 3):")
-            for d in res.differences[:3]:
+        if res.only_in_paper:
+            typer.echo(f"Only in paper ({len(res.only_in_paper)}):")
+            for item in res.only_in_paper:
+                typer.echo(f"  {item.get('formatted', str(item))}")
+        if res.only_in_backtest:
+            typer.echo(f"Only in backtest ({len(res.only_in_backtest)}):")
+            for item in res.only_in_backtest:
+                typer.echo(f"  {item.get('formatted', str(item))}")
+        if (
+            not res.signals_equal
+            and not res.only_in_paper
+            and not res.only_in_backtest
+            and res.differences
+        ):
+            typer.echo("Differences:")
+            for d in res.differences:
                 typer.echo(f"  {d.index + 1}. [{d.classification}] {d.description}")
         typer.echo(
             f"Paper orders: {res.paper_orders_count}, Backtest orders: {res.backtest_orders_count}"
@@ -437,8 +478,21 @@ def backtest_calibrate_cmd(
 
     with _open_rt(ctx, ensure=True) as rt:
         res = run_slippage_calibration(rt, session)
+        if res.refused:
+            typer.echo(f"=== Slippage Calibration: {res.session_id} ===")
+            typer.echo(f"Refused: {res.refusal_reason}")
+            typer.echo(f"Fills compared: {res.fills_compared}")
+            typer.echo(f"Unpaired paper fills: {res.unpaired_paper_fills}")
+            typer.echo(f"Unpaired backtest fills: {res.unpaired_backtest_fills}")
+            return
+
         typer.echo(f"=== Slippage Calibration: {res.session_id} ===")
         typer.echo(f"Fills compared: {res.fills_compared}")
+        typer.echo(f"Adverse pairs count: {res.adverse_pairs_count}")
+        typer.echo(
+            f"Unpaired fills: {res.unpaired_paper_fills} paper, "
+            f"{res.unpaired_backtest_fills} backtest"
+        )
         typer.echo("Adverse slippage (bps):")
         typer.echo(f"  Mean:   {res.mean_adverse_bps:.2f} bps")
         typer.echo(f"  Median: {res.median_adverse_bps:.2f} bps")
@@ -446,7 +500,7 @@ def backtest_calibrate_cmd(
         typer.echo("Net P&L difference per trade:")
         typer.echo(f"  Mean:   ₹{res.mean_pnl_diff:.2f}")
         typer.echo(f"  Median: ₹{res.median_pnl_diff:.2f}")
-        typer.echo(f"\nSUGGESTED backtest.slippage_bps: {res.suggested_slippage_bps}")
+        typer.echo(f"\nSUGGESTED backtest.slippage_bps: {res.suggested_slippage_bps} (advisory)")
         typer.echo(f"Wrote: {res.calibration_file}")
         typer.echo("Note: Parameter registry was not changed.")
 
@@ -472,6 +526,9 @@ def backtest_benchmark_cmd(
     typer.echo(f"Total bars: {rep.total_bars:,}")
     typer.echo(f"Elapsed time: {rep.elapsed_seconds:.2f}s")
     typer.echo(f"Throughput: {rep.bars_per_second:,.0f} bars/s")
+    typer.echo(f"Fixed cost: {rep.fixed_cost_seconds:.3f}s")
+    per_bar_us = rep.per_bar_cost_seconds * 1_000_000
+    typer.echo(f"Per-bar cost: {per_bar_us:.1f} µs/bar ({rep.per_bar_cost_seconds:.6f} s/bar)")
     typer.echo(f"Peak memory: {rep.peak_memory_mb:.1f} MB")
-    typer.echo("\nTop 10 functions by cumulative time:")
+    typer.echo("\nTop 10 functions by internal time (tottime):")
     typer.echo(rep.profile_stats_text.strip())

@@ -875,6 +875,26 @@ A screen-driven portfolio rotation backtest rotates held assets at scheduled int
    ```
    Confirms bit-for-bit equivalence in trades, signals, fills, rebalances, and `manifest.json` `result_hash`.
 
+### 5. Equivalence, Calibration and Benchmark: How to Read Them
+
+#### Reading `backtest equivalence` Output
+`algodesk backtest equivalence --session <paper_run_id>` verifies that reconstructed 1m bars from recorded ticks reproduce the exact same trading signals as paper trading.
+- **Signals Equal**: Evaluated as a multiset (Counter) of `(timestamp_floored_to_second, instrument, side)`. Ordering of signals occurring within the same second is ignored because real-time tick streaming and sequential feed iteration order ties differently without impacting trading logic.
+- **Order Counts**: Counts unique orders using unique `client_ref` identifiers from journal order events (`order`, `order.created`, `intent`), ensuring single orders with multiple lifecycle entries are not double-counted.
+- **Diff Rows**: If signals differ, itemized rows are printed under `Only in paper` and `Only in backtest`. Each row includes the timestamp, instrument, side, triggering bar OHLCV, and the bar's source (`tick-built` vs `timer-closed`).
+
+#### Reading `backtest calibrate` Output
+`algodesk backtest calibrate --session <paper_run_id>` evaluates execution slippage between reconstructed bar backtests and recorded tick-fidelity paper fills.
+- **Order Identity Pairing**: Fills are paired strictly by `(instrument, side, decision_ts_floored)`. Unpaired fills (e.g. from divergent orders) are tracked and listed separately, preventing cross-instrument mispairing.
+- **Adverse Slippage**: Signed slippage in basis points where positive values represent worse execution prices for the trader. Mean, median, and 95th percentile metrics are reported for adverse pairs.
+- **Refusal Threshold**: If fewer than 10 fill pairs exist, calibration refuses with an explicit diagnostic (`Fewer than 10 fill pairs found`), preventing volatile or misleading calibration from small sample sizes.
+- **Suggested Slippage**: Reported as `SUGGESTED backtest.slippage_bps: <val> (advisory)`. The parameter registry is never modified automatically.
+
+#### Reading `backtest benchmark` Output
+`algodesk backtest benchmark [--symbols N] [--sessions N] [--timeframe 1d|1m]` measures backtest runner throughput and memory consumption.
+- **Cost Separation**: Fixed startup cost (runtime initialization, registry loading, doctor checks, journal setup) and per-bar execution cost (event dispatch, indicator update, order matching) are reported separately by subtracting a baseline run.
+- **Internal Time Profile**: cProfile output filters strictly to project code (`src/algodesk` and `plugins`), sorted by internal function time (`tottime`), isolating real execution hotspots rather than asynchronous framework coroutines.
+
 
 ## If something fails
 

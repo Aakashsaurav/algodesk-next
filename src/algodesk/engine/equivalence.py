@@ -45,8 +45,17 @@ def run_backtest_equivalence(rt: Any, session_id: str) -> EquivalenceResult:
     if snap_file.is_file() and rt.params is not None:
         apply_recorded_registry_snapshot(snap_file, rt.params)
 
-    # 3. Build TickBarFeed
-    feed = TickBarFeed(session_dir=sess_dir, data_dir=rt.paths.data, timeframe="1m")
+    # 3. Build TickBarFeed with session calendars
+    from algodesk.engine.sessions import SessionManager
+
+    cals = getattr(rt, "calendars", None)
+    sm = SessionManager(calendars=cals) if cals else None
+    feed = TickBarFeed(
+        session_dir=sess_dir,
+        data_dir=rt.paths.data,
+        timeframe="1m",
+        session_manager=sm,
+    )
 
     # 4. Run bar-fidelity backtest
     bt_run_id = f"{session_id}_bt_eq"
@@ -65,4 +74,4 @@ def run_backtest_equivalence(rt: Any, session_id: str) -> EquivalenceResult:
     bt_events = load_journal_events(bt_res_path)
 
     # 6. Compare equivalence and return result
-    return compare_equivalence_events(paper_events, bt_events, bt_res_path)
+    return compare_equivalence_events(paper_events, bt_events, bt_res_path, bars=feed.bars)
