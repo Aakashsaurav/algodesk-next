@@ -799,6 +799,40 @@ Every historical backtest produces an immutable, comprehensive results bundle un
      ```
 
 
+## Trials and out-of-sample
+
+### Configuring Studies and Out-of-Sample Split
+Backtest configurations in `config/runs/<run>.toml` support study grouping and out-of-sample (OOS) performance partitioning:
+```toml
+[backtest]
+start = "2024-01-02"
+end = "2026-11-13"
+fidelity = "bar"
+timeframe = "1d"
+study = "rotation_nifty50"
+oos_from = "2025-07-01"
+```
+
+1. **Study Trial Counting**:
+   - When `study` is configured, `SessionRunner` queries the SQLite results index (`ResultsIndex.count_study_trials(study)`) to determine the current trial count before writing the results bundle.
+   - The first run of study `rotation_nifty50` receives `trial_number = 1`, the second receives `trial_number = 2`, etc.
+   - Both `metrics.json` and `manifest.json` record `"study"` and `"trial_number"`.
+   - Inspection commands such as `algodesk results show <run>` or `algodesk results list` do not mutate the index or increment the trial counter.
+   - `SUMMARY.md` explicitly includes `trial n of study S` in its assumptions line (bounded within the 150-word budget).
+
+2. **Out-of-Sample Split and Reporting**:
+   - Setting `oos_from = "YYYY-MM-DD"` partitions metrics into `in_sample` and `out_of_sample` blocks in `metrics.json` using the identical metric schema (net P&L, trades, closed round trips, win rate, profit factor, max drawdown, Sharpe).
+   - `SUMMARY.md` leads with the out-of-sample performance:
+     `Out-of-sample (from YYYY-MM-DD): Net P&L: ₹<net>, max DD: <dd>%, trades: <n>.`
+   - If an out-of-sample or in-sample window contains zero executed trades, submetrics report zero trades and closed round trips cleanly without errors while still tracking equity trajectory and drawdowns.
+
+3. **Daily-Loss Baseline Behavior in Backtests**:
+   - Risk rules such as `daily_loss_limit_pct` measure losses against the start-of-day equity baseline (`_start_of_day_equity`).
+   - In backtest mode, the baseline is reset upon detecting a date change on any market event (Quotes or Bars) before opening orders fill, locking in the previous session's closing mark-to-market equity.
+   - This ensures that backtest risk evaluation reflects single-day P&L rather than multi-day accumulated drawdowns, preventing spurious kill-switch breaches.
+   - Paper and live trading continue relying on the 15:30 IST session close snapshot timer.
+
+
 ## Backtest speed and equivalence
 
 ### Incremental Drawdown State Tracking

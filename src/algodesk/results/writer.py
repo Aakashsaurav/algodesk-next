@@ -185,19 +185,34 @@ class ResultsWriter:
 
         self._calc_exposure_and_turnover(res, daily_pts, trades, start_eq, trading_days)
 
-        oos_from_str = summary_info.get("oos_from")
+        oos_from_str = summary_info.get("oos_from") or metrics.get("oos_from")
         if oos_from_str:
             if trades or daily_pts:
                 self._apply_oos_split(
                     res, str(oos_from_str), trades, daily_pts, trading_days, rf_pct
                 )
-            else:
+            elif "out_of_sample" in metrics:
                 res["oos_from"] = str(oos_from_str)
+                res["out_of_sample"] = dict(metrics["out_of_sample"])
+                if "in_sample" in metrics:
+                    res["in_sample"] = dict(metrics["in_sample"])
+            else:
+                self._apply_oos_split(
+                    res, str(oos_from_str), trades, daily_pts, trading_days, rf_pct
+                )
 
-        study_name = summary_info.get("study")
+        study_name = summary_info.get("study") or metrics.get("study")
         if study_name:
             res["study"] = str(study_name)
-            res["trial"] = int(summary_info.get("trial", 1))
+            t_num = int(
+                summary_info.get("trial_number")
+                or summary_info.get("trial")
+                or metrics.get("trial_number")
+                or metrics.get("trial")
+                or 1
+            )
+            res["trial"] = t_num
+            res["trial_number"] = t_num
 
         return res
 
@@ -415,6 +430,21 @@ class ResultsWriter:
             open_clause = f"Open at stop: {pos_summary}. "
 
         lead_parts: list[str] = []
+        if is_backtest and "out_of_sample" in metrics:
+            oos = metrics["out_of_sample"]
+            oos_date = metrics.get("oos_from", "N/A")
+            if "max_drawdown" in oos and "trades" in oos:
+                lead_parts.append(
+                    f"Out-of-sample (from {oos_date}): Net P&L: ₹{oos.get('net_pnl', 0.0):.2f}, "
+                    f"max DD: {oos.get('max_drawdown', 0.0):.2f}%, trades: {oos.get('trades', 0)}."
+                )
+            else:
+                lead_parts.append(
+                    f"Out-of-sample (from {oos_date}): Net P&L: ₹{oos.get('net_pnl', 0.0):.2f}, "
+                    f"win rate: {oos.get('win_rate', 0.0):.1f}%, "
+                    f"Sharpe: {oos.get('sharpe', 0.0):.2f}."
+                )
+
         reg_params = (registry_snapshot or {}).get("params", {})
         trades_floor = reg_params.get("report.min_trades")
         if trades_floor is None and self.params is not None:
@@ -424,14 +454,6 @@ class ResultsWriter:
         required_trades = int(trades_floor)
         if is_backtest and required_trades > 0 and trade_count < required_trades:
             lead_parts.append("Statistics are not statistically meaningful due to low trade count.")
-
-        if is_backtest and "out_of_sample" in metrics:
-            oos = metrics["out_of_sample"]
-            oos_date = metrics.get("oos_from", "N/A")
-            lead_parts.append(
-                f"Out-of-sample (from {oos_date}): Net P&L: ₹{oos.get('net_pnl', 0.0):.2f}, "
-                f"win rate: {oos.get('win_rate', 0.0):.1f}%, Sharpe: {oos.get('sharpe', 0.0):.2f}."
-            )
 
         date_str = summary_info.get("date", "2026-10-26")
         rejects = metrics.get("rejects_by_rule", {})
@@ -454,7 +476,7 @@ class ResultsWriter:
             assumptions = self._build_backtest_assumptions(
                 metrics, readiness_data, summary_info=summary_info
             )
-            disclaimer = f"Note: {open_note}{assumptions}\n"
+            disclaimer = f"Note: {assumptions}\n"
         else:
             disclaimer = f"Note: {open_note}Simulated paper fills assume zero impact.\n"
 
@@ -541,8 +563,16 @@ class ResultsWriter:
                 d_range = f"{rng['start']} to {rng['end']}"
 
         trial_str = ""
-        if "trial" in metrics:
-            trial_str = f", trial {metrics['trial']} of study {metrics.get('study', 'default')}"
+        trial_val = metrics.get("trial_number") or metrics.get("trial")
+        if trial_val is None and summary_info:
+            trial_val = summary_info.get("trial_number") or summary_info.get("trial")
+        if trial_val is not None:
+            study_name = (
+                metrics.get("study")
+                or (summary_info.get("study") if summary_info else None)
+                or "default"
+            )
+            trial_str = f", trial {trial_val} of study {study_name}"
 
         oos_str = "none"
         if "out_of_sample" in metrics:

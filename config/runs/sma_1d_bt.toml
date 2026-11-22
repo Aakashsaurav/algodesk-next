@@ -12,6 +12,8 @@ start = "2024-11-10"
 end = "2026-11-13"
 fidelity = "bar"
 timeframe = "1d"
+study = "sma_cross_demo5"
+oos_from = "2025-07-01"
 
 [data_source]
 plugin = "upstox"

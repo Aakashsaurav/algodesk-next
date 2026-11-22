@@ -13,6 +13,7 @@ end = "2026-11-13"
 fidelity = "bar"
 timeframe = "1d"
 study = "rotation_nifty50"
+oos_from = "2025-07-01"
 
 [data_source]
 plugin = "upstox"

@@ -1667,6 +1667,8 @@ class SessionRunner:
                         clock.set_time(ev.recv_ts)
                     except ValueError:
                         pass
+                if self.mode == Mode.BACKTEST and not self._is_replay:
+                    self._on_backtest_market_event(c, clock, journal, is_bar=False)
                 if self._first_tick_ts is None:
                     self._first_tick_ts = ev.exch_ts
                 self._last_tick_ts = ev.exch_ts
@@ -1710,7 +1712,7 @@ class SessionRunner:
                 await self._drain_pending_bar_tasks(c)
                 await self._drain_venue_events(c)
                 if self.mode == Mode.BACKTEST and not self._is_replay:
-                    self._snapshot_portfolio_direct(c, clock, journal)
+                    self._on_backtest_market_event(c, clock, journal, is_bar=True)
             elif isinstance(ev, Tick):
                 if self._first_tick_ts is None:
                     self._first_tick_ts = ev.exch_ts
@@ -2103,6 +2105,13 @@ class SessionRunner:
         if self.mode != Mode.BACKTEST:
             await asyncio.sleep(0)
         await self._drain_venue_events(c)
+
+    def _on_backtest_market_event(
+        self, c: dict[str, Any], clock: Clock, journal: Any, is_bar: bool = False
+    ) -> None:
+        """Hook called on market event arrivals in backtest mode."""
+        if is_bar:
+            self._snapshot_portfolio_direct(c, clock, journal)
 
     def _snapshot_portfolio_direct(self, c: dict[str, Any], clock: Clock, journal: Journal) -> None:
         ledger = c.get("ledger")
@@ -3264,6 +3273,24 @@ class SessionRunner:
 
         # 5. Write results
         writer = ResultsWriter(self.run_id, results_dir=self.runtime.paths.results)
+        study_val: str | None = None
+        trial_val: int = 1
+        oos_from_val: str | None = None
+        bt_cfg = getattr(self.run_config, "backtest", None) if self.run_config else None
+        if self.mode == Mode.BACKTEST and bt_cfg is not None:
+            if bt_cfg.study:
+                study_val = str(bt_cfg.study)
+                try:
+                    from algodesk.results.index import ResultsIndex
+
+                    db_path = self.runtime.root / "data" / "state" / "results_index.db"
+                    idx = ResultsIndex(db_path)
+                    trial_val = idx.count_study_trials(study_val) + 1
+                except Exception:
+                    trial_val = 1
+            if bt_cfg.oos_from:
+                oos_from_val = str(bt_cfg.oos_from)
+
         summary_info = {
             "run_name": self.run_name,
             "mode": mode_str,
@@ -3273,6 +3300,12 @@ class SessionRunner:
             "is_partial": is_partial,
             "fail_reason": fail_reason_str,
         }
+        if study_val:
+            summary_info["study"] = study_val
+            summary_info["trial"] = trial_val
+            summary_info["trial_number"] = trial_val
+        if oos_from_val:
+            summary_info["oos_from"] = oos_from_val
 
         screen_name_val: str | None = None
         if self.run_config and self.run_config.strategies:
@@ -3376,6 +3409,12 @@ class SessionRunner:
             "stop_reason": stop_reason,
             "verdict": verdict,
         }
+        if study_val:
+            manifest_info["study"] = study_val
+            manifest_info["trial"] = trial_val
+            manifest_info["trial_number"] = trial_val
+        if oos_from_val:
+            manifest_info["oos_from"] = oos_from_val
         if self.warmup_source is not None:
             manifest_info["warmup_override"] = self.warmup_source
             summary_info["warmup_override"] = self.warmup_source

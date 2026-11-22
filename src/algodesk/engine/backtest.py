@@ -90,7 +90,7 @@ class BacktestRunner:
             }
             sr._equity_curve.append(pt_dict)
             if hasattr(ledger, "set_start_of_day_baseline"):
-                ledger.set_start_of_day_baseline()
+                ledger.set_start_of_day_baseline(snap.equity)
             if journal is not None and hasattr(journal, "append"):
                 journal.append(
                     "portfolio.snapshot",
@@ -104,7 +104,9 @@ class BacktestRunner:
                     },
                 )
 
-        def _daily_mark(c: dict[str, Any], clock: Clock, journal: Any) -> None:
+        def _handle_event(
+            c: dict[str, Any], clock: Clock, journal: Any, is_bar: bool = False
+        ) -> None:
             from algodesk.logs.formatting import format_ist
 
             now_ts = clock.now()
@@ -115,7 +117,8 @@ class BacktestRunner:
                     _record_snapshot(p_c, p_ts, p_j, p_quotes)
                     pending_mark[0] = None
             current_date[0] = d_str
-            pending_mark[0] = (c, now_ts, journal, dict(sr._latest_quotes))
+            if is_bar or pending_mark[0] is None:
+                pending_mark[0] = (c, now_ts, journal, dict(sr._latest_quotes))
 
         orig_stop = sr.stop
 
@@ -126,7 +129,11 @@ class BacktestRunner:
                 pending_mark[0] = None
             orig_stop(*args, **kwargs)
 
-        sr._snapshot_portfolio_direct = _daily_mark  # type: ignore[method-assign]
+        def _direct_snap(c: dict[str, Any], clock: Clock, journal: Any) -> None:
+            _handle_event(c, clock, journal, is_bar=True)
+
+        sr._on_backtest_market_event = _handle_event  # type: ignore[method-assign]
+        sr._snapshot_portfolio_direct = _direct_snap  # type: ignore[method-assign]
         sr.stop = _stop_and_flush  # type: ignore[method-assign]
 
     @property
