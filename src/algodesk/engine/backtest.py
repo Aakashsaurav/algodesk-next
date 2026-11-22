@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,11 @@ class BacktestRunner:
                 ledger.mark(q)
             snap = ledger.snapshot()
             eq_val = float(snap.equity)
+            tracker = getattr(sr, "_drawdown_tracker", None)
+            if tracker is not None:
+                max_dd, _, _ = tracker.update(eq_val, ts if isinstance(ts, datetime) else None)
+            else:
+                max_dd = compute_max_drawdown([p["equity"] for p in sr._equity_curve] + [eq_val])
             pt_dict = {
                 "ts": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
                 "ts_ist": format_ist(ts),
@@ -80,9 +86,7 @@ class BacktestRunner:
                 "cash": float(snap.cash),
                 "unrealized": float(ledger.unrealized),
                 "realized": float(ledger.realized),
-                "drawdown": compute_max_drawdown(
-                    [p["equity"] for p in sr._equity_curve] + [eq_val]
-                ),
+                "drawdown": max_dd,
             }
             sr._equity_curve.append(pt_dict)
             if hasattr(ledger, "set_start_of_day_baseline"):

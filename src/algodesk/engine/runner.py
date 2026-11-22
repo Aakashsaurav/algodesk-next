@@ -73,8 +73,9 @@ from algodesk.ops.context import build_context
 from algodesk.ops.doctor import DoctorRegistry
 from algodesk.ops.runtime import Runtime
 from algodesk.portfolio.ledger import PortfolioLedger
+from algodesk.results.metrics import DrawdownTracker
 from algodesk.results.roundtrips import compute_round_trip_metrics
-from algodesk.results.writer import ResultsWriter, compute_max_drawdown
+from algodesk.results.writer import ResultsWriter
 from algodesk.risk.engine import RiskEngine
 from algodesk.risk.killswitch import KillSwitch
 from algodesk.risk.monitor import RiskMonitor
@@ -342,6 +343,7 @@ class SessionRunner:
         self._rejects_by_rule: dict[str, int] = {}
         self._pending_bar_tasks: list[asyncio.Task[Any]] = []
         self._equity_curve: list[dict[str, Any]] = []
+        self._drawdown_tracker: DrawdownTracker = DrawdownTracker()
         self._latest_quotes: dict[InstrumentId, Quote] = {}
 
         self._tick_to_intent_latencies: list[float] = []
@@ -1549,6 +1551,7 @@ class SessionRunner:
                 if ledger is not None:
                     snap = ledger.snapshot()
                     eq_val = float(snap.equity)
+                    max_dd, curr_dd, dd_dur = self._drawdown_tracker.update(eq_val, clock.now())
                     pt_dict = {
                         "ts": clock.now().isoformat(),
                         "ts_ist": format_ist(clock.now()),
@@ -1556,9 +1559,7 @@ class SessionRunner:
                         "cash": float(snap.cash),
                         "unrealized": float(ledger.unrealized),
                         "realized": float(ledger.realized),
-                        "drawdown": compute_max_drawdown(
-                            [pt["equity"] for pt in self._equity_curve] + [eq_val]
-                        ),
+                        "drawdown": max_dd,
                     }
                     self._equity_curve.append(pt_dict)
                     journal.append(
@@ -2109,6 +2110,7 @@ class SessionRunner:
             return
         snap = ledger.snapshot()
         eq_val = float(snap.equity)
+        max_dd, curr_dd, dd_dur = self._drawdown_tracker.update(eq_val, clock.now())
         pt_dict = {
             "ts": clock.now().isoformat(),
             "ts_ist": format_ist(clock.now()),
@@ -2116,7 +2118,7 @@ class SessionRunner:
             "cash": float(snap.cash),
             "unrealized": float(ledger.unrealized),
             "realized": float(ledger.realized),
-            "drawdown": compute_max_drawdown([p["equity"] for p in self._equity_curve] + [eq_val]),
+            "drawdown": max_dd,
         }
         self._equity_curve.append(pt_dict)
         if hasattr(ledger, "set_start_of_day_baseline"):
@@ -2880,7 +2882,7 @@ class SessionRunner:
                 "cash": cash_val,
                 "unrealized": unrealized_val,
                 "realized": realized_val,
-                "drawdown": compute_max_drawdown([p["equity"] for p in self._equity_curve]),
+                "drawdown": self._drawdown_tracker.max_drawdown,
             }
         )
 
@@ -2907,7 +2909,7 @@ class SessionRunner:
         rt_metrics = compute_round_trip_metrics(fills)
         win_rate = rt_metrics["win_rate"]
         gross_win_rate = rt_metrics["gross_win_rate"]
-        max_dd = compute_max_drawdown([p["equity"] for p in self._equity_curve])
+        max_dd = self._drawdown_tracker.max_drawdown
 
         date_str = clock.now().strftime("%Y-%m-%d")
         mode_str = self.mode_name

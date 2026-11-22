@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -113,6 +113,116 @@ def compute_sortino(
     return round(sortino, 4)
 
 
+class DrawdownTracker:
+    """Maintains drawdown metrics incrementally with constant O(1) work per snapshot."""
+
+    __slots__ = (
+        "_current_dd_pct",
+        "_current_duration_days",
+        "_current_idx",
+        "_in_drawdown",
+        "_max_dd_pct",
+        "_max_duration_days",
+        "_peak",
+        "_peak_idx",
+        "_peak_ts",
+    )
+
+    def __init__(self) -> None:
+        self._peak: float | None = None
+        self._peak_idx: int = 0
+        self._peak_ts: datetime | None = None
+        self._current_idx: int = 0
+        self._in_drawdown: bool = False
+        self._max_dd_pct: float = 0.0
+        self._max_duration_days: int = 0
+        self._current_dd_pct: float = 0.0
+        self._current_duration_days: int = 0
+
+    @property
+    def max_drawdown(self) -> float:
+        return round(self._max_dd_pct, 4)
+
+    @property
+    def current_drawdown(self) -> float:
+        return round(self._current_dd_pct, 4)
+
+    @property
+    def max_duration(self) -> int:
+        return self._max_duration_days
+
+    @property
+    def current_duration(self) -> int:
+        return self._current_duration_days
+
+    def update(
+        self,
+        equity: Decimal | float,
+        timestamp: datetime | None = None,
+    ) -> tuple[float, float, int]:
+        """Update tracker with an equity point in O(1) time.
+
+        Returns (max_drawdown, current_drawdown, max_duration).
+        """
+        eq = float(equity)
+        if self._peak is None:
+            self._peak = eq
+            self._peak_idx = 0
+            self._peak_ts = timestamp
+            self._current_idx = 0
+            self._in_drawdown = False
+            self._max_dd_pct = 0.0
+            self._max_duration_days = 0
+            self._current_dd_pct = 0.0
+            self._current_duration_days = 0
+            return (0.0, 0.0, 0)
+
+        self._current_idx += 1
+        i = self._current_idx
+
+        def _dur() -> int:
+            if self._peak_ts is not None and timestamp is not None:
+                d0 = self._peak_ts.date() if isinstance(self._peak_ts, datetime) else self._peak_ts
+                d1 = timestamp.date() if isinstance(timestamp, datetime) else timestamp
+                if isinstance(d0, date) and isinstance(d1, date):
+                    return max(0, (d1 - d0).days)
+            return max(0, i - self._peak_idx)
+
+        if eq > self._peak:
+            if self._in_drawdown:
+                d = _dur()
+                if d > self._max_duration_days:
+                    self._max_duration_days = d
+                self._in_drawdown = False
+            self._peak = eq
+            self._peak_idx = i
+            self._peak_ts = timestamp
+            self._current_dd_pct = 0.0
+            self._current_duration_days = 0
+        elif eq == self._peak:
+            if self._in_drawdown:
+                d = _dur()
+                if d > self._max_duration_days:
+                    self._max_duration_days = d
+                self._in_drawdown = False
+            self._peak_idx = i
+            self._peak_ts = timestamp
+            self._current_dd_pct = 0.0
+            self._current_duration_days = 0
+        else:
+            self._in_drawdown = True
+            dd = (self._peak - eq) / self._peak * 100.0 if self._peak > 0 else 0.0
+            self._current_dd_pct = dd
+            if dd > self._max_dd_pct:
+                self._max_dd_pct = dd
+            d = _dur()
+            self._current_duration_days = d
+            if d > self._max_duration_days:
+                self._max_duration_days = d
+
+        return (round(self._max_dd_pct, 4), round(self._current_dd_pct, 4), self._max_duration_days)
+
+
 def compute_drawdown_metrics(
     equity_series: Sequence[Decimal | float],
     timestamps: Sequence[datetime] | None = None,
@@ -123,39 +233,11 @@ def compute_drawdown_metrics(
     """
     if not equity_series:
         return 0.0, 0
-    equities = [float(x) for x in equity_series]
-    max_dd_pct = 0.0
-    peak = equities[0]
-    peak_idx = 0
-    in_drawdown = False
-    max_duration_days = 0
-
-    for i, eq in enumerate(equities):
-        if eq > peak:
-            if in_drawdown:
-                duration = _measure_duration(timestamps, peak_idx, i)
-                if duration > max_duration_days:
-                    max_duration_days = duration
-                in_drawdown = False
-            peak = eq
-            peak_idx = i
-        elif eq == peak:
-            if in_drawdown:
-                duration = _measure_duration(timestamps, peak_idx, i)
-                if duration > max_duration_days:
-                    max_duration_days = duration
-                in_drawdown = False
-            peak_idx = i
-        else:
-            in_drawdown = True
-            dd = (peak - eq) / peak * 100.0
-            if dd > max_dd_pct:
-                max_dd_pct = dd
-            duration = _measure_duration(timestamps, peak_idx, i)
-            if duration > max_duration_days:
-                max_duration_days = duration
-
-    return round(max_dd_pct, 4), max_duration_days
+    tracker = DrawdownTracker()
+    for i, eq in enumerate(equity_series):
+        ts = timestamps[i] if timestamps is not None and i < len(timestamps) else None
+        tracker.update(eq, ts)
+    return tracker.max_drawdown, tracker.max_duration
 
 
 def _measure_duration(

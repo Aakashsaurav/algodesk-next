@@ -57,6 +57,9 @@ class BarQuoteSynth:
 
     def _intraday_timestamps(self, bar: Bar) -> list[datetime]:
         """Compute 4 timestamps inside intraday bar period."""
+        if bar.timeframe == "1m":
+            s = bar.start_ts
+            return [s, s + timedelta(seconds=15), s + timedelta(seconds=30), bar.end_ts]
         duration = bar.end_ts - bar.start_ts
         if duration > timedelta(0):
             d_step = duration / 4
@@ -69,30 +72,43 @@ class BarQuoteSynth:
         For an up bar (close >= open): O, L, H, C.
         For a down bar (close < open): O, H, L, C.
         Depth equals backtest.participation_pct * bar.volume.
+        Quotes are built through an unchecked constructor after the source bar was validated.
         """
+        if bar.open <= 0 or bar.high < bar.low:
+            msg = f"Invalid bar parameters: open={bar.open}, high={bar.high}, low={bar.low}"
+            raise ValueError(msg)
+
         vol = max(1, int(bar.volume))
         depth = max(1, int(vol * self.participation_pct / 100.0))
 
         if bar.close >= bar.open:
-            prices = [bar.open, bar.low, bar.high, bar.close]
+            prices = (bar.open, bar.low, bar.high, bar.close)
         else:
-            prices = [bar.open, bar.high, bar.low, bar.close]
+            prices = (bar.open, bar.high, bar.low, bar.close)
 
         is_daily = (bar.timeframe == "1d") or ((bar.end_ts - bar.start_ts) >= timedelta(hours=20))
         timestamps = self._daily_timestamps(bar) if is_daily else self._intraday_timestamps(bar)
 
-        quotes: list[Quote] = []
-        for p, ts in zip(prices, timestamps, strict=True):
-            p_flt = round(float(p), 4)
-            q = Quote(
-                instrument=bar.instrument,
-                exch_ts=ts,
-                recv_ts=ts,
-                bids=(Level(price=p_flt, qty=depth),),
-                asks=(Level(price=p_flt, qty=depth),),
-                ltp=p_flt,
-                volume=vol,
-            )
-            quotes.append(q)
+        inst = bar.instrument
+        p0, p1, p2, p3 = (round(float(p), 4) for p in prices)
+        t0, t1, t2, t3 = timestamps
 
-        return (quotes[0], quotes[1], quotes[2], quotes[3])
+        lvl0 = (Level.create_unchecked(price=p0, qty=depth),)
+        lvl1 = (Level.create_unchecked(price=p1, qty=depth),)
+        lvl2 = (Level.create_unchecked(price=p2, qty=depth),)
+        lvl3 = (Level.create_unchecked(price=p3, qty=depth),)
+
+        q0 = Quote.create_unchecked(
+            instrument=inst, exch_ts=t0, recv_ts=t0, bids=lvl0, asks=lvl0, ltp=p0, volume=vol
+        )
+        q1 = Quote.create_unchecked(
+            instrument=inst, exch_ts=t1, recv_ts=t1, bids=lvl1, asks=lvl1, ltp=p1, volume=vol
+        )
+        q2 = Quote.create_unchecked(
+            instrument=inst, exch_ts=t2, recv_ts=t2, bids=lvl2, asks=lvl2, ltp=p2, volume=vol
+        )
+        q3 = Quote.create_unchecked(
+            instrument=inst, exch_ts=t3, recv_ts=t3, bids=lvl3, asks=lvl3, ltp=p3, volume=vol
+        )
+
+        return (q0, q1, q2, q3)

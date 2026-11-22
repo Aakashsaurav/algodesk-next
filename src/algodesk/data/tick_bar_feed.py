@@ -36,6 +36,8 @@ class TickBarFeed:
         session_manager: Any = None,
         synth: BarQuoteSynth | None = None,
         tick_window: tuple[datetime, datetime] | None = None,
+        fill_empty_bars: bool | None = None,
+        bar_close_grace_ms: int | None = None,
     ) -> None:
         self.session_dir = Path(session_dir)
         if data_dir is not None:
@@ -51,6 +53,10 @@ class TickBarFeed:
         self._session_manager = session_manager
         self.synth = synth or BarQuoteSynth(calendar=calendar)
         self.tick_window = tick_window
+        self._fill_empty_bars = fill_empty_bars
+        self._bar_close_grace_ms = bar_close_grace_ms
+        self.fill_empty_bars: bool = True
+        self.bar_close_grace_ms: int = 500
 
         self._warmup_bars: list[Bar] = []
         self._bars: list[Bar] = []
@@ -143,8 +149,46 @@ class TickBarFeed:
                 except Exception:
                     pass
 
-        # 5. Resolve session manager
+        # 5. Resolve session manager and BarBuilder settings from recorded run
         session_mgr = self._session_manager
+        fill_empty = self._fill_empty_bars
+        grace_ms = self._bar_close_grace_ms
+
+        snap_file = self.session_dir / "registry.snapshot.json"
+        if snap_file.is_file():
+            try:
+                snap_data = json.loads(snap_file.read_text(encoding="utf-8"))
+                p_map = snap_data.get("params", {})
+                if fill_empty is None and "engine.fill_empty_bars" in p_map:
+                    fill_empty = bool(p_map["engine.fill_empty_bars"])
+                if grace_ms is None and "engine.bar_close_grace_ms" in p_map:
+                    grace_ms = int(p_map["engine.bar_close_grace_ms"])
+            except Exception:
+                pass
+
+        if fill_empty is None:
+            eff_file = self.session_dir / "config.effective.txt"
+            if eff_file.is_file():
+                try:
+                    for line in eff_file.read_text(encoding="utf-8").splitlines():
+                        if "fill_empty_bars" in line:
+                            fill_empty = "true" in line.lower()
+                        if "bar_close_grace_ms" in line and grace_ms is None:
+                            import re
+
+                            m = re.search(r"bar_close_grace_ms\s*=\s*(\d+)", line)
+                            if m:
+                                grace_ms = int(m.group(1))
+                except Exception:
+                    pass
+
+        if fill_empty is None:
+            fill_empty = True
+        if grace_ms is None:
+            grace_ms = 500
+
+        self.fill_empty_bars = fill_empty
+        self.bar_close_grace_ms = grace_ms
 
         # 6. Stream ticks through BarBuilder honoring timer closes
         closed_bars: list[Bar] = []
@@ -159,7 +203,8 @@ class TickBarFeed:
         bar_builder = bar_builder_cls(
             timeframes=[self.timeframe],
             session_manager=session_mgr,
-            fill_empty_bars=False,
+            fill_empty_bars=fill_empty,
+            bar_close_grace_ms=grace_ms,
             on_bar_closed=_on_closed,
         )
 
@@ -180,7 +225,7 @@ class TickBarFeed:
                 if w_end is not None and ev.exch_ts > w_end:
                     continue
 
-                # Feed tick first
+                # Feed tick before dispatching timer closes at this sequence
                 if isinstance(ev, Tick):
                     bar_builder.on_tick(ev)
 

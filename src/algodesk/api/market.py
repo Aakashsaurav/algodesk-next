@@ -298,6 +298,15 @@ class Level:
         if self.orders < 0:
             raise ValueError(f"orders cannot be negative: {self.orders}")
 
+    @classmethod
+    def create_unchecked(cls, price: float, qty: int, orders: int = 1) -> Level:
+        """Create a Level bypassing validation for internal synthetic usage."""
+        obj = object.__new__(cls)
+        object.__setattr__(obj, "price", price)
+        object.__setattr__(obj, "qty", qty)
+        object.__setattr__(obj, "orders", orders)
+        return obj
+
 
 @dataclass(frozen=True, slots=True)
 class Tick:
@@ -380,6 +389,28 @@ class Quote:
             raise ValueError(f"ltp cannot be negative: {self.ltp}")
         if self.volume < 0:
             raise ValueError(f"volume cannot be negative: {self.volume}")
+
+    @classmethod
+    def create_unchecked(
+        cls,
+        instrument: InstrumentId,
+        exch_ts: datetime,
+        recv_ts: datetime,
+        bids: tuple[Level, ...],
+        asks: tuple[Level, ...],
+        ltp: float,
+        volume: int,
+    ) -> Quote:
+        """Create a Quote bypassing validation for internal synthetic backtest usage."""
+        obj = object.__new__(cls)
+        object.__setattr__(obj, "instrument", instrument)
+        object.__setattr__(obj, "exch_ts", exch_ts)
+        object.__setattr__(obj, "recv_ts", recv_ts)
+        object.__setattr__(obj, "bids", bids)
+        object.__setattr__(obj, "asks", asks)
+        object.__setattr__(obj, "ltp", ltp)
+        object.__setattr__(obj, "volume", volume)
+        return obj
 
 
 @dataclass(frozen=True, slots=True)

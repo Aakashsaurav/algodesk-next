@@ -46,10 +46,23 @@ def run_backtest_equivalence(rt: Any, session_id: str) -> EquivalenceResult:
         apply_recorded_registry_snapshot(snap_file, rt.params)
 
     # 3. Build TickBarFeed with session calendars
+    from algodesk.api.kinds import PluginKind
     from algodesk.engine.sessions import SessionManager
+    from algodesk.ops.context import build_context
 
-    cals = getattr(rt, "calendars", None)
-    sm = SessionManager(calendars=cals) if cals else None
+    cal_plugins: dict[str, Any] = {}
+    if run_config and getattr(run_config, "calendars", None):
+        for c in run_config.calendars:
+            exch = getattr(c, "exchange", getattr(c, "name", "NSE"))
+            try:
+                p_ctx = build_context(Mode.BACKTEST, run_id=f"{session_id}_cals", params=rt.params)
+                cal = rt.plugins.create(
+                    PluginKind.CALENDAR, c.plugin, config={"exchange": exch}, ctx=p_ctx
+                )
+                cal_plugins[exch.upper()] = cal
+            except Exception:
+                pass
+    sm = SessionManager(calendars=cal_plugins) if cal_plugins else None
     feed = TickBarFeed(
         session_dir=sess_dir,
         data_dir=rt.paths.data,

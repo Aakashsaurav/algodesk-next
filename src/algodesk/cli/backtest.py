@@ -428,11 +428,23 @@ def backtest_run_cmd(
 def backtest_equivalence_cmd(
     ctx: typer.Context,
     session: str = typer.Option(..., "--session", help="Recorded paper session ID"),
+    explain: tuple[str, str] | None = typer.Option(
+        None,
+        "--explain",
+        help="Explain divergence for <instrument> <HH:MM> in UTC",
+    ),
 ) -> None:
     """Verify equivalence between paper session signals and reconstructed bar backtest."""
     from algodesk.engine.equivalence import run_backtest_equivalence
+    from algodesk.results.equivalence import explain_equivalence
 
     with _open_rt(ctx, ensure=True) as rt:
+        if explain is not None:
+            inst_arg, hhmm_arg = explain
+            output = explain_equivalence(rt, session, inst_arg, hhmm_arg)
+            typer.echo(output)
+            return
+
         res = run_backtest_equivalence(rt, session)
         typer.echo(f"signals equal: {res.signals_equal}")
         typer.echo(
@@ -443,10 +455,14 @@ def backtest_equivalence_cmd(
             typer.echo(f"Only in paper ({len(res.only_in_paper)}):")
             for item in res.only_in_paper:
                 typer.echo(f"  {item.get('formatted', str(item))}")
+                cause = item.get("cause", "bar missing in backtest")
+                typer.echo(f"  cause: {cause}")
         if res.only_in_backtest:
             typer.echo(f"Only in backtest ({len(res.only_in_backtest)}):")
             for item in res.only_in_backtest:
                 typer.echo(f"  {item.get('formatted', str(item))}")
+                cause = item.get("cause", "bar missing in paper")
+                typer.echo(f"  cause: {cause}")
         if (
             not res.signals_equal
             and not res.only_in_paper
@@ -456,6 +472,34 @@ def backtest_equivalence_cmd(
             typer.echo("Differences:")
             for d in res.differences:
                 typer.echo(f"  {d.index + 1}. [{d.classification}] {d.description}")
+                cause = getattr(d, "cause", None) or d.classification
+                typer.echo(f"  cause: {cause}")
+
+        if res.orders_only_in_paper:
+            typer.echo(f"Orders only in paper ({len(res.orders_only_in_paper)}):")
+            for item in res.orders_only_in_paper:
+                typer.echo(f"  {item.get('formatted', str(item))}")
+                cause = item.get("cause", "unknown")
+                typer.echo(f"  cause: {cause}")
+        if res.orders_only_in_backtest:
+            typer.echo(f"Orders only in backtest ({len(res.orders_only_in_backtest)}):")
+            for item in res.orders_only_in_backtest:
+                typer.echo(f"  {item.get('formatted', str(item))}")
+                cause = item.get("cause", "unknown")
+                typer.echo(f"  cause: {cause}")
+        if res.fills_only_in_paper:
+            typer.echo(f"Fills only in paper ({len(res.fills_only_in_paper)}):")
+            for item in res.fills_only_in_paper:
+                typer.echo(f"  {item.get('formatted', str(item))}")
+                cause = item.get("cause", "unknown")
+                typer.echo(f"  cause: {cause}")
+        if res.fills_only_in_backtest:
+            typer.echo(f"Fills only in backtest ({len(res.fills_only_in_backtest)}):")
+            for item in res.fills_only_in_backtest:
+                typer.echo(f"  {item.get('formatted', str(item))}")
+                cause = item.get("cause", "unknown")
+                typer.echo(f"  cause: {cause}")
+
         typer.echo(
             f"Paper orders: {res.paper_orders_count}, Backtest orders: {res.backtest_orders_count}"
         )

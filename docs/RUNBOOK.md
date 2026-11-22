@@ -799,6 +799,60 @@ Every historical backtest produces an immutable, comprehensive results bundle un
      ```
 
 
+## Backtest speed and equivalence
+
+### Incremental Drawdown State Tracking
+Backtest and replay portfolio snapshots track equity drawdowns incrementally using `DrawdownTracker` in `algodesk.results.metrics`.
+- Maintains running peak equity, current drawdown amount, current drawdown percentage, peak timestamp, and unrecovered duration in $O(1)$ constant time per snapshot.
+- Eliminates historical $O(N^2)$ quadratic scanning where snapshot loops re-evaluated full equity history.
+- Mathematically bit-for-bit identical to batch computation across random, monotonic, and flat equity trajectories.
+
+### Unchecked Synthetic Quote Construction
+When backtesting from historical bars via `fidelity = "bar"`, `BarQuoteSynth.synthesize` generates intraday synthetic quotes (Open, Low, High, Close) using `Quote.create_unchecked` and `Level.create_unchecked`:
+- The source bar is validated once upon ingestion.
+- Intraday synthetic quote objects bypass repetitive `__post_init__` order book and timestamp revalidation loops.
+- External feeds and paper trading feeds continue to enforce full dataclass validation (`Quote(...)`).
+
+### Feed Fidelity and Session Calendar Alignment
+`TickBarFeed` reconstructs 1-minute bars from recorded tick streams honoring real paper execution invariants:
+- **Calendar Alignment**: Reconstructs `SessionManager` from the recorded run configuration calendars. Ticks for unconfigured exchanges (e.g. MCX commodity futures when only NSE calendars are active) are dropped, exactly matching paper behavior.
+- **Sequence-Honoring Timer Closes**: Recorded `bar.timer_close` events are dispatched strictly at their recorded sequence position before processing subsequent ticks. Bars that paper never closed produce no backtest signal, and no synthetic flat bars are fabricated during illiquid minutes with no ticks.
+
+### Equivalence Divergence Classification
+When running `algodesk backtest equivalence --session <run_id>`, any signal discrepancies between paper and backtest are classified into one of seven canonical root causes:
+1. `bar content differs`: Bar OHLCV or completeness differs between paper and backtest.
+2. `bar missing in paper`: Backtest produced a bar for a minute paper omitted.
+3. `bar missing in backtest`: Paper produced a bar that backtest omitted.
+4. `timer close differs`: Discrepancy caused by timer-closed bar generation.
+5. `session start`: Differences arising from session start boundary conditions.
+6. `warm-up`: Differences during historical indicator warm-up phase.
+8. `unknown`: Unclassified divergence.
+
+### Equivalence: causes and --explain
+
+When validating backtest fidelity against recorded paper sessions (`algodesk backtest equivalence --session <run_id>`), orders and fills differences are matched by order identity `(instrument, side, decision_ts_floored)` and classified into five canonical causes:
+- `rejected in backtest (rule)`: Order intent was rejected in backtest by pre-trade risk or data integrity rules (e.g., data_integrity.stale_data triggered when synthetic quotes at scheduled timer events exceed the staleness threshold).
+- `no signal`: No matching strategy signal was emitted in backtest due to prior bar or indicator divergence.
+- `fill model (backtest unfilled or filled differently)`: Order was created identically in backtest but left unfilled or filled at different size/price by the simulated execution venue.
+- `session end`: Order occurred at the boundary of session termination before the backtest loop scheduled execution.
+- `unknown`: Difference cannot be classified automatically.
+
+#### Deep Minute Diagnosis with `--explain`
+To diagnose minute-level discrepancies on a phone-width screen (strictly $\le 25$ lines):
+```bash
+algodesk backtest equivalence --session <session_id> --explain <instrument> <HH:MM>
+```
+Example:
+```bash
+algodesk backtest equivalence --session demo_paper_fast_paper_20261119_083320_4f3d6a --explain NSE:EQ:INFY 09:51
+```
+The output displays:
+- Ticks in minute $M-1, M, M+1$ (count and price range)
+- Paper bar vs backtest bar OHLCV and synthetic flags
+- Timer-closed status for paper and backtest
+- Strategy signals produced by each run
+- Actionable diagnosis explaining whether divergence stemmed from timer close timing, flat bar synthesis, or risk rejection
+
 ## Backtest proof, tick fidelity and calibration
 
 ### Equivalence Verification
@@ -806,7 +860,7 @@ Verify that backtest strategy execution is causal and identical to paper trading
 ```bash
 algodesk backtest equivalence --session <paper_run_id>
 ```
-This loads recorded configuration, parameter registry snapshot, and warmup bars, reconstructs 1-minute bars using `TickBarFeed` honoring recorded timer close sequence positions, and compares signal sequences. If signals differ, the first 3 differences are printed and classified (`bar content differs`, `timer-closed bar differs`, `timer exit time differs`, `other`), exiting code 1 on mismatch.
+This loads recorded configuration, parameter registry snapshot, and warmup bars, reconstructs 1-minute bars using `TickBarFeed` honoring recorded timer close sequence positions, and compares signal sequences. If signals differ, each difference is itemized with its classified cause (`cause: <cause>`), and the command exits code 1 on mismatch.
 
 ### Tick Fidelity Backtest
 Execute a backtest driven by raw recorded ticks using the paper latency model:
