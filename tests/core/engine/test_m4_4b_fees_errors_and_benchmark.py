@@ -31,6 +31,7 @@ from algodesk.engine.equivalence import run_backtest_equivalence
 from algodesk.engine.runner import SessionRunner
 from algodesk.fees.engine import FeeEngine, _coerce_schedule
 from algodesk.fees.mapping import resolve_fee_segment_and_product
+from algodesk.fees.models import Schedule
 from algodesk.ops.runtime import open_runtime
 from algodesk.results.calibration import CalibrationResult
 from algodesk.results.equivalence import EquivalenceResult
@@ -173,14 +174,14 @@ def test_fee_call_mapping_paper_and_equivalence_identical() -> None:
 
     # 3. MCX Future (canonical format)
     seg, prod, exch, itype = resolve_fee_segment_and_product("MCX:FUT:GOLD:2026-12-04", "MIS")
-    assert seg == "fno"
+    assert seg == "com"
     assert prod == "MIS"
     assert exch == "mcx"
     assert itype == "fut"
 
     # 4. MCX Future (legacy format)
     seg, prod, exch, itype = resolve_fee_segment_and_product("MCX:FNO:GOLD FUT 04 DEC 26", "MIS")
-    assert seg == "fno"
+    assert seg == "com"
     assert prod == "MIS"
     assert exch == "mcx"
     assert itype == "fut"
@@ -199,7 +200,17 @@ def test_mcx_unmodelled_charges_in_fee_engine() -> None:
     """MCX instruments return zero charges when no schedule exists; do not invent rates."""
     root_dir = Path(__file__).resolve().parents[3]
     with open(root_dir / "plugins" / "fees" / "zerodha_nse" / "schedule.toml", "rb") as f:
-        sch = _coerce_schedule(tomli.load(f))
+        sch_data = tomli.load(f)
+
+    sch_without_mcx = Schedule(
+        meta=sch_data["meta"],
+        components=[
+            c
+            for c in _coerce_schedule(sch_data).components
+            if getattr(c, "exchange", None) != "mcx" and c.segment != "com"
+        ],
+        taxes=_coerce_schedule(sch_data).taxes,
+    )
 
     chg = FeeEngine.calculate_trade_charges(
         turnover=Decimal("500000.00"),
@@ -207,7 +218,7 @@ def test_mcx_unmodelled_charges_in_fee_engine() -> None:
         segment="fut",
         product="MIS",
         trade_date=date(2026, 11, 19),
-        schedule=sch,
+        schedule=sch_without_mcx,
         exchange="mcx",
         instrument_type="fut",
         instrument="MCX:FUT:GOLD:2026-12-04",

@@ -721,6 +721,154 @@ effective_from = 2020-01-01
 verified = true
 
 # ==============================================================================
+# Commodity Futures (segment: com, product: NRML & MIS, instrument_type: fut)
+# ==============================================================================
+
+[[component]]
+name = "brokerage"
+kind = "pct_capped"
+rate = 0.0003
+cap = 20.00
+segment = "com"
+product = "NRML"
+instrument_type = "fut"
+side = "both"
+effective_from = 2020-01-01
+source = "zerodha.com/charges commodities tab, copied by owner"
+verified_on = "2026-11-21"
+note = "declared; the page shows no effective dates; non-agri futures"
+verified = true
+
+[[component]]
+name = "brokerage"
+kind = "pct_capped"
+rate = 0.0003
+cap = 20.00
+segment = "com"
+product = "MIS"
+instrument_type = "fut"
+side = "both"
+effective_from = 2020-01-01
+source = "zerodha.com/charges commodities tab, copied by owner"
+verified_on = "2026-11-21"
+note = "declared; the page shows no effective dates; non-agri futures"
+verified = true
+
+[[component]]
+name = "ctt"
+kind = "pct"
+rate = 0.0001
+segment = "com"
+product = "NRML"
+instrument_type = "fut"
+side = "sell"
+effective_from = 2020-01-01
+source = "zerodha.com/charges commodities tab, copied by owner"
+verified_on = "2026-11-21"
+note = "declared; the page shows no effective dates; non-agri futures"
+verified = true
+
+[[component]]
+name = "ctt"
+kind = "pct"
+rate = 0.0001
+segment = "com"
+product = "MIS"
+instrument_type = "fut"
+side = "sell"
+effective_from = 2020-01-01
+source = "zerodha.com/charges commodities tab, copied by owner"
+verified_on = "2026-11-21"
+note = "declared; the page shows no effective dates; non-agri futures"
+verified = true
+
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.000021
+segment = "com"
+product = "NRML"
+instrument_type = "fut"
+side = "both"
+exchange = "mcx"
+effective_from = 2020-01-01
+source = "zerodha.com/charges commodities tab, copied by owner"
+verified_on = "2026-11-21"
+note = "declared; the page shows no effective dates; non-agri futures"
+verified = true
+
+[[component]]
+name = "exchange_txn"
+kind = "pct"
+rate = 0.000021
+segment = "com"
+product = "MIS"
+instrument_type = "fut"
+side = "both"
+exchange = "mcx"
+effective_from = 2020-01-01
+source = "zerodha.com/charges commodities tab, copied by owner"
+verified_on = "2026-11-21"
+note = "declared; the page shows no effective dates; non-agri futures"
+verified = true
+
+[[component]]
+name = "sebi"
+kind = "per_crore"
+rate = 10.0
+segment = "com"
+product = "NRML"
+instrument_type = "fut"
+side = "both"
+effective_from = 2020-01-01
+source = "zerodha.com/charges commodities tab, copied by owner"
+verified_on = "2026-11-21"
+note = "declared; the page shows no effective dates; non-agri Rs 10 per crore"
+verified = true
+
+[[component]]
+name = "sebi"
+kind = "per_crore"
+rate = 10.0
+segment = "com"
+product = "MIS"
+instrument_type = "fut"
+side = "both"
+effective_from = 2020-01-01
+source = "zerodha.com/charges commodities tab, copied by owner"
+verified_on = "2026-11-21"
+note = "declared; the page shows no effective dates; non-agri Rs 10 per crore"
+verified = true
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00002
+segment = "com"
+product = "NRML"
+instrument_type = "fut"
+side = "buy"
+effective_from = 2020-01-01
+source = "zerodha.com/charges commodities tab, copied by owner"
+verified_on = "2026-11-21"
+note = "declared; the page shows no effective dates; non-agri futures 0.002% on buy side"
+verified = true
+
+[[component]]
+name = "stamp"
+kind = "pct"
+rate = 0.00002
+segment = "com"
+product = "MIS"
+instrument_type = "fut"
+side = "buy"
+effective_from = 2020-01-01
+source = "zerodha.com/charges commodities tab, copied by owner"
+verified_on = "2026-11-21"
+note = "declared; the page shows no effective dates; non-agri futures 0.002% on buy side"
+verified = true
+
+# ==============================================================================
 # Taxes (applies to specified fee components)
 # ==============================================================================
 

@@ -14,7 +14,7 @@ Milestones M0-M3 complete; M4 in progress. AlgoDesk Next provides a pluggable tr
 | M1 | Walking skeleton | Done (checklist complete) |
 | M2 | Data layer | Done (checklist complete) |
 | M3 | Indicators and screens | Done |
-| M4 | Backtester and reports | In progress (M4-1 to M4-5b complete) |
+| M4 | Backtester and reports | In progress (M4-1 to M4-6 complete) |
 | M5 to M9 | Risk, Zerodha, remote, extended paper, live | Not started |
 
 ## Acceptance checklists

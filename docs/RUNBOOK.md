@@ -838,9 +838,14 @@ Any unhandled exception encountered during `backtest run`, `backtest equivalence
 
 ### 2. MCX Commodity Support & Fee Schedule Consistency
 Recorded paper sessions containing MCX commodity futures (e.g. `MCX:FUT:GOLD:2026-12-04`) are evaluated identically across paper, backtest equivalence, slippage calibration, and tick fidelity:
-- All execution paths use algodesk.fees.mapping resolve_fee_segment_and_product to resolve canonical `(segment, product)`.
-- If the configured fee schedule lacks MCX schedule components, charges are recorded as zero without inventing rates.
-- The `SUMMARY.md` assumptions line and `metrics.json` explicitly disclose: `MCX charges not modelled`.
+- All execution paths use `src/algodesk/fees/mapping.py` `resolve_fee_segment_and_product` to resolve canonical `(segment, product, exchange, instrument_type)`. MCX futures resolve to `segment = "com"`.
+- If the configured fee schedule lacks MCX schedule components, charges are recorded as zero without inventing rates, and `SUMMARY.md` assumptions line and `metrics.json` explicitly disclose: `MCX charges not modelled`.
+- When MCX charges are modelled (using declared rates from `zerodha.com/charges#tab-commodities`), charges are calculated with non-zero values (brokerage, CTT, MCX txn, SEBI, GST, stamp) and the caveat is removed.
+
+## MCX gold charges (declared rates)
+- **Declared rates**: Zerodha rates for MCX non-agri commodity futures (`MCX:FUT:GOLD:2026-12-04`) are declared effective from 2020-01-01 (copied 21 Nov 2026 from `zerodha.com/charges#tab-commodities`). Brokerage 0.03% (cap ₹20 flat), CTT 0.01% (sell), MCX txn 0.0021%, SEBI ₹10/crore, stamp 0.002% (buy), and 18% GST on (brokerage + MCX txn + SEBI).
+- **Replay gold divergence on pre-change sessions**: Replaying a session recorded before this card (e.g. `demo_paper_fast_paper_20261116_083920_e829a2` or `...20261119_083320_4f3d6a`) will differ only in gold charges (charges were 0.00 prior to M4-6, whereas replay on current code applies modelled rates).
+- **Paper-vs-replay proof**: A strict bit-equivalent paper-vs-replay proof requires recording a fresh paper session on current code.
 
 ### 3. Benchmark Bounds and SIGINT Responsiveness
 - `algodesk backtest benchmark` execution duration is capped by `backtest.benchmark_max_seconds` (default: 300.0s in `config/params/backtest.toml`). Upon reaching the limit, the benchmark halts cleanly and emits partial throughput and profiling metrics.

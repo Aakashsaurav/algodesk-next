@@ -75,7 +75,11 @@ def resolve_fee_segment_and_product(
     fee_exchange = exch.lower()
 
     # Resolve segment and instrument_type
-    if (
+    itype: str | None = None
+    if exch.lower() == "mcx" or seg in ("COM", "COMMODITY"):
+        fee_segment = "com"
+        itype = "fut"
+    elif (
         seg == "OPT"
         or opt_type in ("CE", "PE")
         or (
@@ -84,12 +88,9 @@ def resolve_fee_segment_and_product(
         )
     ):
         fee_segment = "fno"
-        itype: str | None = "opt"
+        itype = "opt"
     elif seg in ("FUT", "FNO") or "FUT" in sym or sym.endswith("FUT"):
         fee_segment = "fno"
-        itype = "fut"
-    elif seg in ("COM", "COMMODITY"):
-        fee_segment = "com"
         itype = "fut"
     else:
         fee_segment = "eq"
