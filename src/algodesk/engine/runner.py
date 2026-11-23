@@ -1779,6 +1779,8 @@ class SessionRunner:
             # 4. Advance scheduler timers
             c["scheduler"].advance_to(clock.now())
             c["scheduler"].fire_due()
+            if self._pending_bar_tasks:
+                await self._drain_pending_bar_tasks(c)
 
             # 5. Check OMS timeouts
             await c["oms"].check_timeouts()
@@ -1898,6 +1900,8 @@ class SessionRunner:
                             pass
                     c["scheduler"].advance_to(self._latest_bar_end_ts)
                     c["scheduler"].fire_due()
+                    if self._pending_bar_tasks:
+                        await self._drain_pending_bar_tasks(c)
 
                 for mk in universe_markets:
                     if session_mgr.state(mk) not in (

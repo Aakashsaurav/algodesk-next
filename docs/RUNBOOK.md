@@ -887,6 +887,15 @@ The output displays:
 - Strategy signals produced by each run
 - Actionable diagnosis explaining whether divergence stemmed from timer close timing, flat bar synthesis, or risk rejection
 
+### Synthetic quote timing
+
+In bar-fidelity backtests, `BarQuoteSynth` generates synthetic quotes from completed OHLCV bars. For intraday bars:
+- The open quote is emitted at bar `start_ts` (e.g. `09:44:00.000` UTC).
+- Intermediate quotes are spaced strictly inside the bar (for 1m bars at `+20s` and `+40s`).
+- The closing quote is placed at bar `end_ts` minus 1 ms (e.g. `09:44:59.999` UTC).
+
+This timing guarantees that whenever a scheduled boundary timer fires (such as intraday strategy exit at `exit_time = 15:15` IST / `09:45:00` UTC), the latest quote age in the risk engine is exactly 1 ms ($\le 1$ ms), strictly within `risk.*.stale_data_seconds = 5.0s`. Legitimate missing bars (where no bar is received for $\ge 60$ s) continue to trigger the data integrity stale data pre-trade order rejection. The order-arrival rule from ADR-085 remains invariant: orders decided at bar close fill from the open quote of the subsequent bar (`bar t+1`), and no fill uses quotes prior to arrival. Daily bars (`1d`) remain invariant with quotes at 09:15 and 15:30 IST.
+
 ## Backtest proof, tick fidelity and calibration
 
 ### Equivalence Verification

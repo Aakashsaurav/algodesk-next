@@ -56,15 +56,16 @@ class BarQuoteSynth:
         return [s_open, s_open, s_open, s_close]
 
     def _intraday_timestamps(self, bar: Bar) -> list[datetime]:
-        """Compute 4 timestamps inside intraday bar period."""
+        """Compute 4 timestamps inside intraday bar period: open, 2 mid, close (end - 1ms)."""
+        c = bar.end_ts - timedelta(milliseconds=1)
         if bar.timeframe == "1m":
             s = bar.start_ts
-            return [s, s + timedelta(seconds=15), s + timedelta(seconds=30), bar.end_ts]
-        duration = bar.end_ts - bar.start_ts
+            return [s, s + timedelta(seconds=20), s + timedelta(seconds=40), c]
+        duration = c - bar.start_ts
         if duration > timedelta(0):
-            d_step = duration / 4
-            return [bar.start_ts, bar.start_ts + d_step, bar.start_ts + d_step * 2, bar.end_ts]
-        return [bar.start_ts, bar.start_ts, bar.start_ts, bar.end_ts]
+            d_step = duration / 3
+            return [bar.start_ts, bar.start_ts + d_step, bar.start_ts + d_step * 2, c]
+        return [bar.start_ts, bar.start_ts, bar.start_ts, c]
 
     def synthesize(self, bar: Bar) -> tuple[Quote, Quote, Quote, Quote]:
         """Convert a single OHLCV bar into 4 quotes: O, then L/H or H/L, then C.

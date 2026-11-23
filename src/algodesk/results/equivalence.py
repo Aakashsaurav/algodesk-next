@@ -67,6 +67,13 @@ class EquivalenceResult:
     fills_only_in_backtest: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _normalize_dt_second(dt: datetime) -> datetime:
+    """Normalize timestamp to second, rounding up if within 10ms of next second (e.g. 59.999s)."""
+    if dt.microsecond >= 990000:
+        return (dt + timedelta(milliseconds=50)).replace(microsecond=0)
+    return dt.replace(microsecond=0)
+
+
 def _parse_signal_tuple(p: dict[str, Any]) -> tuple[datetime, str, str] | None:
     ts_val = p.get("ts")
     if not ts_val:
@@ -77,7 +84,7 @@ def _parse_signal_tuple(p: dict[str, Any]) -> tuple[datetime, str, str] | None:
             dt = dt.replace(tzinfo=UTC)
         else:
             dt = dt.astimezone(UTC)
-        floored_ts = dt.replace(microsecond=0)
+        floored_ts = _normalize_dt_second(dt)
         inst = str(p.get("instrument", ""))
         side = str(p.get("side", "")).upper()
         return (floored_ts, inst, side)
@@ -94,7 +101,7 @@ def _parse_event_dt(ts_val: Any) -> datetime | None:
             dt = dt.replace(tzinfo=UTC)
         else:
             dt = dt.astimezone(UTC)
-        return dt.replace(microsecond=0)
+        return _normalize_dt_second(dt)
     except Exception:
         return None
 
@@ -213,7 +220,7 @@ def compare_equivalence_events(
     if bars:
         for b in bars:
             b_end = b.end_ts if b.end_ts.tzinfo else b.end_ts.replace(tzinfo=UTC)
-            b_sec = b_end.astimezone(UTC).replace(microsecond=0)
+            b_sec = _normalize_dt_second(b_end.astimezone(UTC))
             bars_map[(str(b.instrument), b_sec)] = b
 
     for ev in paper_events:
@@ -247,7 +254,7 @@ def compare_equivalence_events(
                         tc_dt = tc_dt.replace(tzinfo=UTC)
                     else:
                         tc_dt = tc_dt.astimezone(UTC)
-                    paper_timer_closes_set.add((inst_str, tc_dt.replace(microsecond=0)))
+                    paper_timer_closes_set.add((inst_str, _normalize_dt_second(tc_dt)))
                 except Exception:
                     pass
         elif k == "timer.strategy":
@@ -255,7 +262,7 @@ def compare_equivalence_events(
             if t_str:
                 try:
                     paper_exit_timers.append(
-                        datetime.fromisoformat(t_str).astimezone(UTC).replace(microsecond=0)
+                        _normalize_dt_second(datetime.fromisoformat(t_str).astimezone(UTC))
                     )
                 except Exception:
                     pass

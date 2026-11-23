@@ -188,11 +188,15 @@ class HistoricalFeed:
                 all_events.append((q_1.recv_ts, 0, inst_str, q_1))
                 all_events.append((q_2.recv_ts, 0, inst_str, q_2))
                 all_events.append((q_close.recv_ts, 0, inst_str, q_close))
+                is_daily = (bar.timeframe == "1d") or (
+                    (bar.end_ts - bar.start_ts) >= timedelta(hours=12)
+                )
+                bar_end = q_close.recv_ts if is_daily else bar.end_ts
                 feed_bar = Bar(
                     instrument=bar.instrument,
                     timeframe=bar.timeframe,
                     start_ts=q_open.recv_ts,
-                    end_ts=q_close.recv_ts,
+                    end_ts=bar_end,
                     open=bar.open,
                     high=bar.high,
                     low=bar.low,
@@ -201,7 +205,7 @@ class HistoricalFeed:
                     complete=bar.complete,
                     synthetic=bar.synthetic,
                 )
-                all_events.append((q_close.recv_ts, 1, inst_str, feed_bar))
+                all_events.append((feed_bar.end_ts, 1, inst_str, feed_bar))
             else:
                 all_events.append((bar.end_ts, 1, str(bar.instrument), bar))
 

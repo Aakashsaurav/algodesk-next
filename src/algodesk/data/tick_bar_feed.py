@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator, Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -273,11 +273,15 @@ class TickBarFeed:
                 all_events.append((q_1.recv_ts, 0, inst_str, q_1))
                 all_events.append((q_2.recv_ts, 0, inst_str, q_2))
                 all_events.append((q_close.recv_ts, 0, inst_str, q_close))
+                is_daily = (bar.timeframe == "1d") or (
+                    (bar.end_ts - bar.start_ts) >= timedelta(hours=12)
+                )
+                bar_end = q_close.recv_ts if is_daily else bar.end_ts
                 feed_bar = Bar(
                     instrument=bar.instrument,
                     timeframe=bar.timeframe,
                     start_ts=q_open.recv_ts,
-                    end_ts=q_close.recv_ts,
+                    end_ts=bar_end,
                     open=bar.open,
                     high=bar.high,
                     low=bar.low,
