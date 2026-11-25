@@ -136,6 +136,13 @@ class ResultsWriter:
         self._write_json_file("manifest.json", manifest_dict)
         self._write_session_md(session_text, summary_info, enriched_metrics)
 
+        try:
+            from algodesk.results.index import index_finalized_run
+
+            index_finalized_run(self.run_dir)
+        except Exception as exc:
+            logger.warning("Failed to update results index for %s: %s", self.run_id, exc)
+
         return self.run_dir
 
     def _read_readiness_json(self) -> dict[str, Any] | None:

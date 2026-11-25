@@ -19,7 +19,7 @@ Milestones M0-M3 complete; M4 in progress. AlgoDesk Next provides a pluggable tr
 
 ## Acceptance checklists
 
-- **M1**: Accepted on recorded paper sessions with bit-identical signals, orders, fills, and metrics; replay tolerances proven safe; fee vectors verified by hand; p95 latency and memory measured; feed outage resilience, strategy error observability, and deterministic timer catch-up parity on sessions with feed gaps (ADR-099).
+- **M1**: Accepted on recorded paper sessions with bit-identical signals, orders, fills, and metrics; replay tolerances proven safe; fee vectors verified by hand; p95 latency and memory measured; feed outage resilience, strategy error observability, and deterministic timer catch-up parity on sessions with feed gaps (ADR-099); macOS power/sleep guard, process suspension detection, and automatic results indexing (ADR-100).
 - **M2**: Zero-network identical get; quarantine resilience; `data verify` clean; rebuilt timeframes equal tick-built; corporate actions audit; contract partitions; quality gates pass.
 - **M4**: Multi-instrument backtest engine with exact replay equivalence, tick fidelity, point-in-time screen rotation (`screen_rotation`), fill-verified `rebalances.csv`, daily mark-to-market equity, hardened metrics, multiset equivalence with order counting, order-identity calibration, isolated benchmarking (ADR-089-091), MCX commodity futures declared rates (ADR-092), continue kill-switch policy (ADR-093), linear-time drawdowns (ADR-094), feed settings parity & equivalence cause attribution (ADR-095), study trial counting & OOS reporting (ADR-096), and synthetic quote timing for timer alignment (ADR-097).
 

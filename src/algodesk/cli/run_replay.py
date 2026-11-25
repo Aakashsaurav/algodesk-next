@@ -411,6 +411,7 @@ def results_list_cmd(
         None, "--type", help="Filter by run type (backtest, paper, replay, screen)"
     ),
     study_opt: str | None = typer.Option(None, "--study", help="Filter by study name"),
+    limit_opt: int = typer.Option(20, "--limit", help="Maximum number of newest runs to show"),
 ) -> None:
     """List execution results folders and summary performance metrics."""
     with _open_rt(ctx, ensure=True) as rt:
@@ -423,11 +424,11 @@ def results_list_cmd(
 
         db_path = rt.root / "data" / "state" / "results_index.db"
         idx = ResultsIndex(db_path)
-        # Ensure index has records
-        if not db_path.is_file() or not idx.list_runs():
-            idx.rebuild(results_dir)
+        new_count = idx.sync_missing(results_dir)
+        if new_count > 0:
+            typer.echo(f"indexed {new_count} new runs")
 
-        runs = idx.list_runs(run_type=type_opt, study=study_opt)
+        runs = idx.list_runs(run_type=type_opt, study=study_opt, limit=limit_opt)
         if not runs:
             typer.echo("No results found under results/")
             return

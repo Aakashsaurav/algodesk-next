@@ -31,6 +31,13 @@ def write_screen_results(
     _write_config_effective_txt(run_dir / "config.effective.txt", effective_config_text)
     _write_metrics_json(run_dir / "metrics.json", result)
 
+    try:
+        from algodesk.results.index import index_finalized_run
+
+        index_finalized_run(run_dir)
+    except Exception as exc:
+        logger.warning("Failed to update results index for %s: %s", result.run_id, exc)
+
     return run_dir
 
 

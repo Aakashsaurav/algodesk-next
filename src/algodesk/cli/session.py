@@ -98,6 +98,9 @@ def _print_metrics_details(metrics: dict[str, Any]) -> None:
     typer.echo(f"Win Rate:             {win_rate:.1f}% (Gross: {gross_win_rate:.1f}%)")
     typer.echo(f"Closed Round Trips:   {closed_rt}")
     typer.echo(f"Feed Gaps:            {int(metrics.get('feed_gaps', 0))}")
+    susp_ev = int(metrics.get("suspended_events", 0))
+    susp_sec = float(metrics.get("suspended_seconds", 0.0))
+    typer.echo(f"Suspended:            {susp_ev} event(s), {susp_sec:.1f}s")
     bars_handled = int(
         metrics.get(
             "strategy_bars_handled",

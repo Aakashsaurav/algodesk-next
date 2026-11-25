@@ -4,12 +4,43 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("algodesk.results.index")
+
+_RUN_TS_RE = re.compile(r"(\d{8}_\d{6})")
+
+
+def _extract_run_ts(run_id: str) -> str:
+    """Extract YYYYMMDD_HHMMSS timestamp from a run_id for chronological sorting."""
+    m = _RUN_TS_RE.search(run_id)
+    return m.group(1) if m else ""
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def index_finalized_run(run_dir: Path) -> bool:
+    """Best-effort upsert of a finalised results directory into results_index.db."""
+    results_dir = run_dir.parent
+    if not results_dir.is_absolute():
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            if results_dir.resolve().is_relative_to(_REPO_ROOT):
+                return False
+        except Exception:
+            pass
+    if results_dir.name != "results" and not (results_dir.parent / "data").is_dir():
+        return False
+    db_path = results_dir.parent / "data" / "state" / "results_index.db"
+    idx = ResultsIndex(db_path)
+    return idx.upsert_run(run_dir)
 
 
 class ResultsIndex:
@@ -62,23 +93,40 @@ class ResultsIndex:
         m_data: dict[str, Any] = {}
         if m_file.is_file():
             try:
-                m_data = json.loads(m_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+                parsed_m = json.loads(m_file.read_text(encoding="utf-8"))
+                if not isinstance(parsed_m, dict):
+                    logger.warning(
+                        "Skipping corrupt results folder %s: metrics.json is not an object",
+                        run_dir,
+                    )
+                    return False
+                m_data = parsed_m
+            except Exception as exc:
+                logger.warning("Skipping corrupt results folder %s: %s", run_dir, exc)
+                return False
 
         man_data: dict[str, Any] = {}
         if man_file.is_file():
             try:
-                man_data = json.loads(man_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+                parsed_man = json.loads(man_file.read_text(encoding="utf-8"))
+                if not isinstance(parsed_man, dict):
+                    logger.warning(
+                        "Skipping corrupt results folder %s: manifest.json is not an object",
+                        run_dir,
+                    )
+                    return False
+                man_data = parsed_man
+            except Exception as exc:
+                logger.warning("Skipping corrupt results folder %s: %s", run_dir, exc)
+                return False
 
         r_id = run_dir.name
-        run_type = str(
-            m_data.get("mode")
-            or man_data.get("mode")
-            or ("backtest" if "backtest" in r_id else "paper")
-        ).lower()
+        inferred_type = (
+            "backtest"
+            if "backtest" in r_id
+            else ("replay" if "_replay_" in r_id else ("screen" if "screen" in r_id else "paper"))
+        )
+        run_type = str(m_data.get("mode") or man_data.get("mode") or inferred_type).lower()
         if m_data.get("run_type") == "screen":
             run_type = "screen"
 
@@ -93,12 +141,16 @@ class ResultsIndex:
         )[:10]
 
         res_hash = man_data.get("result_hash") or ""
-        trades = int(m_data.get("trades", 0)) if run_type != "screen" else 0
-        net_pnl = float(m_data.get("net_pnl", 0.0)) if run_type != "screen" else 0.0
-        win_rate = float(m_data.get("win_rate", 0.0)) if run_type != "screen" else 0.0
-        max_dd = float(m_data.get("max_drawdown", 0.0)) if run_type != "screen" else 0.0
-        cagr = float(m_data.get("cagr", 0.0))
-        sharpe = float(m_data.get("sharpe", 0.0))
+        try:
+            trades = int(m_data.get("trades", 0)) if run_type != "screen" else 0
+            net_pnl = float(m_data.get("net_pnl", 0.0)) if run_type != "screen" else 0.0
+            win_rate = float(m_data.get("win_rate", 0.0)) if run_type != "screen" else 0.0
+            max_dd = float(m_data.get("max_drawdown", 0.0)) if run_type != "screen" else 0.0
+            cagr = float(m_data.get("cagr", 0.0))
+            sharpe = float(m_data.get("sharpe", 0.0))
+        except (ValueError, TypeError) as exc:
+            logger.warning("Skipping corrupt results folder %s: %s", run_dir, exc)
+            return False
         verdict = self._extract_verdict(s_file, man_data, m_data)
 
         with sqlite3.connect(self.db_path) as conn:
@@ -181,12 +233,28 @@ class ResultsIndex:
                     count += 1
         return count
 
+    def sync_missing(self, results_dir: Path) -> int:
+        """Scan results directory for finished runs missing from the index and upsert them."""
+        if not results_dir.is_dir():
+            return 0
+        with sqlite3.connect(self.db_path) as conn:
+            existing = {
+                row[0] for row in conn.execute("SELECT run_id FROM results_index").fetchall()
+            }
+        count = 0
+        for p in sorted(results_dir.iterdir()):
+            if p.is_dir() and not p.name.startswith(".") and p.name not in existing:
+                if self.upsert_run(p):
+                    count += 1
+        return count
+
     def list_runs(
         self,
         run_type: str | None = None,
         study: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Query indexed runs with optional type and study filtering."""
+        """Query indexed runs with optional type, study, and newest-first limit filtering."""
         query = "SELECT * FROM results_index WHERE 1=1"
         params: list[Any] = []
         if run_type:
@@ -199,8 +267,18 @@ class ResultsIndex:
 
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(query, params).fetchall()
-            return [dict(r) for r in rows]
+            rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+        rows.sort(
+            key=lambda r: (
+                _extract_run_ts(str(r["run_id"])),
+                str(r.get("created_at") or ""),
+                str(r["run_id"]),
+            ),
+            reverse=True,
+        )
+        if limit is not None and limit > 0:
+            return rows[:limit]
+        return rows
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         """Fetch indexed record for a specific run ID."""

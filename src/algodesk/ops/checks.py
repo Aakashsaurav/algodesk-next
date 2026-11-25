@@ -915,7 +915,16 @@ def _build_data_doctor_checks(runtime: Runtime) -> list[DoctorCheck]:
 
 def build_core_checks(runtime: Runtime) -> list[DoctorCheck]:
     """Build all diagnostic doctor checks for the platform runtime (read-only)."""
+    from algodesk.ops.power import check_power
+
     checks = _build_env_checks(runtime)
+    checks.append(
+        DoctorCheck(
+            id="ops.power",
+            severity=Severity.WARNING,
+            run=lambda: check_power(runtime),
+        )
+    )
     checks.extend(registry_doctor_checks(runtime.plugins))
     checks.extend(_build_journal_and_disk_checks(runtime))
     checks.extend(_build_data_doctor_checks(runtime))
@@ -1143,6 +1152,16 @@ def build_run_checks(runtime: Runtime, run_name: str) -> list[DoctorCheck]:
             id="plugins.conformance",
             severity=Severity.CRITICAL,
             run=_check_plugins_conformance,
+        )
+    )
+
+    from algodesk.ops.power import check_power
+
+    checks.append(
+        DoctorCheck(
+            id="ops.power",
+            severity=Severity.WARNING,
+            run=lambda: check_power(runtime),
         )
     )
 

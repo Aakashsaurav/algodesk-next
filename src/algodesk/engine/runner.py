@@ -387,6 +387,8 @@ class SessionRunner:
         self._journal_growth_bytes: int = 0
         self._journal_events_count: int = 0
         self._is_partial: bool = False
+        self._keep_awake_proc: Any | None = None
+        self._suspend_watcher: Any | None = None
 
     @property
     def mode_name(self) -> str:
@@ -524,6 +526,35 @@ class SessionRunner:
                     "run.start",
                     {"run_id": self.run_id, "mode": self.mode_name, "run_name": self.run_name},
                 )
+                if self.mode in (Mode.PAPER, Mode.LIVE) and not self._is_replay:
+                    keep_awake_val = True
+                    if self.runtime.params is not None:
+                        try:
+                            v = self.runtime.params.get("ops.keep_awake")
+                            if v is not None:
+                                keep_awake_val = bool(v)
+                        except Exception:
+                            pass
+                    if keep_awake_val:
+                        from algodesk.ops.power import start_keep_awake
+
+                        ka_proc, ka_err = start_keep_awake(os.getpid())
+                        if ka_proc is not None:
+                            self._keep_awake_proc = ka_proc
+                            journal.append(
+                                "system.keep_awake",
+                                {
+                                    "status": "started",
+                                    "pid": getattr(ka_proc, "pid", None),
+                                    "target_pid": os.getpid(),
+                                },
+                            )
+                        elif ka_err is not None:
+                            logger.warning("Failed to start caffeinate: %s", ka_err)
+                            journal.append(
+                                "system.keep_awake",
+                                {"status": "failed", "error": ka_err},
+                            )
                 raw_cfg = getattr(self.runtime.effective, "raw_text", str(self.run_config))
                 cap = (
                     float(self.run_config.allocated_capital)
@@ -628,6 +659,11 @@ class SessionRunner:
                     pass
             if results_path is None:
                 results_path = self._finalize_session(components, clock, journal)
+            if self._keep_awake_proc is not None:
+                from algodesk.ops.power import stop_keep_awake
+
+                stop_keep_awake(self._keep_awake_proc)
+                self._keep_awake_proc = None
             if log_handle is not None:
                 log_handle.close()
 
@@ -2080,6 +2116,48 @@ class SessionRunner:
             feed_task = asyncio.create_task(_feed_worker())
             self._active_feed_task = feed_task
 
+            suspend_task: asyncio.Task[None] | None = None
+            if self.mode in (Mode.PAPER, Mode.LIVE) and not self._is_replay:
+                from algodesk.engine.suspend_watch import SuspendEvent, SuspendWatcher
+
+                thresh_sec = 30.0
+                if self.runtime.params is not None:
+                    try:
+                        v = self.runtime.params.get("engine.suspend_detect_seconds")
+                        if v is not None:
+                            thresh_sec = float(v)
+                    except Exception:
+                        pass
+
+                def _on_suspend(ev: SuspendEvent) -> None:
+                    journal.append(
+                        "system.suspended",
+                        {
+                            "seconds": ev.seconds,
+                            "wall_start": ev.wall_start,
+                            "wall_end": ev.wall_end,
+                        },
+                    )
+                    notify.notify_error(
+                        (
+                            f"Process suspended for {ev.seconds:.1f}s "
+                            f"({ev.wall_start} -> {ev.wall_end})"
+                        ),
+                        "system.suspended",
+                    )
+
+                self._suspend_watcher = SuspendWatcher(
+                    wall_fn=clock.now,
+                    mono_fn=time.monotonic,
+                    threshold_seconds=thresh_sec,
+                    on_suspend=_on_suspend,
+                )
+                suspend_task = asyncio.create_task(
+                    self._suspend_watcher.run_loop(
+                        interval_seconds=1.0, stop_event=self._stop_event
+                    )
+                )
+
             try:
                 while True:
                     if self._stop_event.is_set():
@@ -2142,6 +2220,12 @@ class SessionRunner:
                     raise feed_error
             finally:
                 self._stop_event.set()
+                if suspend_task is not None and not suspend_task.done():
+                    suspend_task.cancel()
+                    try:
+                        await suspend_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 if not feed_task.done():
                     feed_task.cancel()
                     try:
@@ -3345,6 +3429,14 @@ class SessionRunner:
             "rejects_by_rule": self._rejects_by_rule,
             "ticks_per_instrument": self._tick_stats,
             "feed_gaps": self._feed_gaps,
+            "suspended_events": (
+                self._suspend_watcher.suspended_events if self._suspend_watcher is not None else 0
+            ),
+            "suspended_seconds": (
+                round(self._suspend_watcher.suspended_seconds, 2)
+                if self._suspend_watcher is not None
+                else 0.0
+            ),
             "killswitch_events": self._killswitch_events,
             "kill_switch_tripped_date": self._kill_switch_tripped_date,
             "kill_switch_rule": self._kill_switch_rule,
@@ -3504,6 +3596,8 @@ class SessionRunner:
                     "timer_bar_delay_p50_ms",
                     "timer_bar_delay_p95_ms",
                     "timer_bar_delay_p95",
+                    "suspended_events",
+                    "suspended_seconds",
                 )
             },
             "trades": normalized_trades,

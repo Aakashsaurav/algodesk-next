@@ -1007,6 +1007,21 @@ A screen-driven portfolio rotation backtest rotates held assets at scheduled int
 - **Internal Time Profile**: cProfile output filters strictly to project code (`src/algodesk` and `plugins`), sorted by internal function time (`tottime`), isolating real execution hotspots rather than asynchronous framework coroutines.
 
 
+## Power and sleep: how to run a session
+
+Checklist before and during a paper or live session on macOS:
+
+- **Before starting (`--prepare` or `doctor`)**:
+  1. Run `uv run algodesk doctor --only ops.power` (or `uv run algodesk run <name> --prepare`).
+  2. If warned `on battery (NN%)` or critical below `ops.min_battery_pct` (50%), **plug in the charger**.
+  3. If `ops.keep_awake` is `false` and no sleep-prevention assertion is active, **run with `caffeinate -i`** or enable `ops.keep_awake = true` in `config/params/ops.toml`.
+- **During a paper or live session**:
+  1. When `ops.keep_awake = true`, `algodesk run` automatically spawns `caffeinate -i -w <pid>` and journals `system.keep_awake`.
+  2. `SuspendWatcher` compares wall vs monotonic clocks every 1 s; a jump above `engine.suspend_detect_seconds` (30 s) journals `system.suspended`, sends a Telegram alert, and records `suspended_events` / `suspended_seconds` in `metrics.json`.
+- **After a session**:
+  1. Run `uv run algodesk session report <run_id>` and check the `Suspended:` line.
+  2. Run `uv run algodesk results list --type paper` (automatically indexes any new runs without a manual rebuild).
+
 ## Feed outages: what the engine does and what to check
 
 Checklist for handling and verifying feed outages in live or paper trading:
