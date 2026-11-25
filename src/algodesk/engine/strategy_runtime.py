@@ -8,7 +8,6 @@ exceptions to keep the session alive, and handles state serialization.
 from __future__ import annotations
 
 import logging
-import traceback
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -38,6 +37,8 @@ class StrategyRuntime:
         notifier: Any | None = None,
         on_intent: Callable[..., None] | None = None,
         on_reject: Callable[[Any, Any | None, str], None] | None = None,
+        params: Any | None = None,
+        max_consecutive_errors: int | None = None,
     ) -> None:
         self._registry = registry
         self._order_manager = order_manager
@@ -50,10 +51,31 @@ class StrategyRuntime:
         self._on_intent: Callable[..., None] | None = on_intent
         self._on_reject = on_reject
 
+        consec_target = max_consecutive_errors
+        if consec_target is None and params is not None:
+            p_val = params.get("strategy.max_consecutive_errors")
+            if p_val is not None:
+                try:
+                    consec_target = int(getattr(p_val, "value", p_val))
+                except Exception:
+                    pass
+        if consec_target is None:
+            default_count = 3
+            consec_target = default_count
+        self._max_consecutive_errors = max(1, consec_target)
+
         self._strategies: dict[str, Strategy] = {}
         self._contexts: dict[str, StrategyContext] = {}
         self._halted: dict[str, bool] = {}
         self._params: dict[str, Any] = {}
+        self._consecutive_errors: dict[tuple[str, str], int] = {}
+        self._strategy_errors: int = 0
+        self._alerted_plugins: set[str] = set()
+
+    @property
+    def strategy_errors(self) -> int:
+        """Total count of strategy hook exceptions encountered."""
+        return self._strategy_errors
 
     @property
     def strategies(self) -> Mapping[str, Strategy]:
@@ -116,60 +138,131 @@ class StrategyRuntime:
         self._params[name] = validated_params
         return strat
 
-    def _handle_exception(self, name: str, hook: str, exc: Exception) -> None:
-        """Isolate strategy failure: halt strategy, journal error, alert, keep session running."""
-        self._halted[name] = True
+    def _handle_exception(
+        self,
+        name: str,
+        hook: str,
+        exc: Exception,
+        instrument: str = "",
+    ) -> None:
+        """Isolate strategy failure: journal strategy.error, alert once, halt after limit."""
+        from algodesk.api.protocols import Message
+        from algodesk.api.scrub import Scrubber
+
         now_ts = self._clock.now()
         err_msg = str(exc)
-        tb_str = traceback.format_exc()
 
-        logger.error(
-            "Strategy '%s' raised exception during %s: %s (halting strategy)",
-            name,
-            hook,
-            err_msg,
+        scrubber = Scrubber()
+        clean_msg = (
+            scrubber.scrub(err_msg).strip().splitlines()[0][:200] if err_msg else type(exc).__name__
         )
 
+        # 1. Increment error counters
+        key = (name, hook)
+        self._consecutive_errors[key] = self._consecutive_errors.get(key, 0) + 1
+        consec = self._consecutive_errors[key]
+        self._strategy_errors += 1
+
+        logger.error(
+            "Strategy '%s' raised exception during %s (consecutive=%d): %s",
+            name,
+            hook,
+            consec,
+            clean_msg,
+        )
+
+        # 2. Journal strategy.error event
         if self._journal is not None and hasattr(self._journal, "append"):
             self._journal.append(
-                "error",
+                "strategy.error",
                 {
-                    "strategy": name,
+                    "plugin": name,
                     "hook": hook,
-                    "what": f"Strategy {name} exception during {hook}: {err_msg}",
-                    "error_type": type(exc).__name__,
-                    "traceback": tb_str,
+                    "instrument": instrument,
+                    "exception_type": type(exc).__name__,
+                    "message": clean_msg,
+                    "consecutive_errors": consec,
+                    "ts": now_ts.isoformat(),
                 },
             )
 
+        # 3. Publish system event
         if self._bus is not None and hasattr(self._bus, "publish"):
             self._bus.publish(
                 SystemEvent(
                     kind="strategy.error",
-                    message=f"Strategy {name} halted in {hook}: {err_msg}",
+                    message=f"Strategy {name} error in {hook}: {clean_msg}",
                     ts=now_ts,
-                    details={"strategy": name, "hook": hook, "error": err_msg},
+                    details={
+                        "plugin": name,
+                        "hook": hook,
+                        "instrument": instrument,
+                        "error": clean_msg,
+                        "consecutive_errors": consec,
+                    },
                 )
             )
 
-        if self._notifier is not None and hasattr(self._notifier, "send"):
+        # 4. Telegram alert once per plugin per session
+        if (
+            name not in self._alerted_plugins
+            and self._notifier is not None
+            and hasattr(self._notifier, "send")
+        ):
             try:
-                from algodesk.api.protocols import Message
-
                 self._notifier.send(
                     Message(
-                        title=f"Strategy Halted: {name}",
+                        title=f"Strategy Error: {name}",
                         text=(
-                            f"Strategy {name} encountered error in {hook}: {err_msg}. "
-                            "Strategy halted; session continues."
+                            f"Strategy {name} encountered error in {hook}: {clean_msg}. "
+                            "Hook isolated; session continues."
                         ),
-                        severity="critical",
+                        severity="warning",
                         channel="alerts",
                         ts=now_ts,
                     )
                 )
+                self._alerted_plugins.add(name)
             except Exception:
                 pass
+
+        # 5. Halt strategy only if consecutive errors reached threshold
+        if consec >= self._max_consecutive_errors:
+            self._halted[name] = True
+            logger.error(
+                "Strategy '%s' reached max consecutive errors (%d) in %s; halting strategy",
+                name,
+                consec,
+                hook,
+            )
+            if self._journal is not None and hasattr(self._journal, "append"):
+                self._journal.append(
+                    "strategy.halted",
+                    {
+                        "plugin": name,
+                        "hook": hook,
+                        "instrument": instrument,
+                        "consecutive_errors": consec,
+                        "reason": f"Hook {hook} failed {consec} times in a row: {clean_msg}",
+                        "ts": now_ts.isoformat(),
+                    },
+                )
+            if self._notifier is not None and hasattr(self._notifier, "send"):
+                try:
+                    self._notifier.send(
+                        Message(
+                            title=f"Strategy Halted: {name}",
+                            text=(
+                                f"Strategy {name} halted after {consec} consecutive errors in "
+                                f"{hook}: {clean_msg}."
+                            ),
+                            severity="critical",
+                            channel="alerts",
+                            ts=now_ts,
+                        )
+                    )
+                except Exception:
+                    pass
 
     async def _process_intents(
         self,
@@ -253,8 +346,9 @@ class StrategyRuntime:
                     if callable(on_rej_fn):
                         try:
                             on_rej_fn(ctx, intent, decision)
+                            self._consecutive_errors[(name, "on_reject")] = 0
                         except Exception as exc:
-                            self._handle_exception(name, "on_reject", exc)
+                            self._handle_exception(name, "on_reject", exc, instrument=str(inst))
                 if self._on_reject is not None:
                     self._on_reject(intent, decision, "risk")
                 continue
@@ -291,47 +385,54 @@ class StrategyRuntime:
             ctx = self._contexts[name]
             try:
                 strat.on_start(ctx)
+                self._consecutive_errors[(name, "on_start")] = 0
             except Exception as exc:
                 self._handle_exception(name, "on_start", exc)
 
     async def dispatch_bar(self, bar: Bar) -> None:
         """Dispatch a completed bar to active strategies and process resulting intents."""
+        inst_str = str(bar.instrument)
         for name, strat in sorted(self._strategies.items(), key=lambda x: str(x[0])):
             if self._halted.get(name):
                 continue
             ctx = self._contexts[name]
             try:
                 intents = strat.on_bar(ctx, bar)
+                self._consecutive_errors[(name, "on_bar")] = 0
                 if intents:
                     await self._process_intents(name, intents, origin="bar")
             except Exception as exc:
-                self._handle_exception(name, "on_bar", exc)
+                self._handle_exception(name, "on_bar", exc, instrument=inst_str)
 
     async def dispatch_tick(self, tick: Tick) -> None:
         """Dispatch a market tick to active strategies and process resulting intents."""
+        inst_str = str(tick.instrument)
         for name, strat in sorted(self._strategies.items(), key=lambda x: str(x[0])):
             if self._halted.get(name):
                 continue
             ctx = self._contexts[name]
             try:
                 intents = strat.on_tick(ctx, tick)
+                self._consecutive_errors[(name, "on_tick")] = 0
                 if intents:
                     await self._process_intents(name, intents, origin="tick")
             except Exception as exc:
-                self._handle_exception(name, "on_tick", exc)
+                self._handle_exception(name, "on_tick", exc, instrument=inst_str)
 
     async def dispatch_fill(self, fill: Fill) -> None:
         """Dispatch trade fill to active strategies and process resulting intents."""
+        inst_str = str(fill.instrument)
         for name, strat in sorted(self._strategies.items(), key=lambda x: str(x[0])):
             if self._halted.get(name):
                 continue
             ctx = self._contexts[name]
             try:
                 intents = strat.on_fill(ctx, fill)
+                self._consecutive_errors[(name, "on_fill")] = 0
                 if intents:
                     await self._process_intents(name, intents, origin="fill")
             except Exception as exc:
-                self._handle_exception(name, "on_fill", exc)
+                self._handle_exception(name, "on_fill", exc, instrument=inst_str)
 
     async def dispatch_timer(self, timer_name: str) -> None:
         """Dispatch timer event to active strategies and process resulting intents."""
@@ -341,6 +442,7 @@ class StrategyRuntime:
             ctx = self._contexts[name]
             try:
                 intents = strat.on_timer(ctx, timer_name)
+                self._consecutive_errors[(name, "on_timer")] = 0
                 if intents:
                     await self._process_intents(name, intents, origin="timer")
             except Exception as exc:
@@ -354,6 +456,7 @@ class StrategyRuntime:
             ctx = self._contexts[name]
             try:
                 strat.on_stop(ctx)
+                self._consecutive_errors[(name, "on_stop")] = 0
             except Exception as exc:
                 self._handle_exception(name, "on_stop", exc)
 

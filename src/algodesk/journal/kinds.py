@@ -71,6 +71,9 @@ REGISTERED_EVENT_KINDS: set[str] = {
     "killswitch.clear",
     "timer",
     "error",
+    "strategy.error",
+    "strategy.halted",
+    "strategy.stats",
     # Recovery & data events
     "journal.run_recovered",
     "data.validation",

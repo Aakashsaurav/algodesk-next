@@ -129,19 +129,31 @@ async def test_strategy_runtime_exception_isolation() -> None:
         synthetic=False,
     )
 
-    # Dispatch bar: should NOT raise, but should halt strategy and send alerts
+    # Dispatch bar 1: should NOT raise, hook isolated, strategy NOT halted yet
     await runtime.dispatch_bar(bar)
-    assert runtime.is_halted("flaky")
+    assert not runtime.is_halted("flaky")
 
-    # Journal recorded error
-    recorded_errors = [c[0][1] for c in journal.append.call_args_list if c[0][0] == "error"]
-    assert any(err.get("strategy") == "flaky" for err in recorded_errors)
+    # Journal recorded strategy.error
+    recorded_errors = [
+        c[0][1] for c in journal.append.call_args_list if c[0][0] == "strategy.error"
+    ]
+    assert any(err.get("plugin") == "flaky" for err in recorded_errors)
 
     # Event bus published strategy.error
     assert bus.publish.called
 
     # Notifier sent alert
     assert notifier.send.called
+
+    # Dispatch bar 2: still isolated
+    await runtime.dispatch_bar(bar)
+    assert not runtime.is_halted("flaky")
+
+    # Dispatch bar 3: reaches limit (3) -> halts strategy and journals strategy.halted
+    await runtime.dispatch_bar(bar)
+    assert runtime.is_halted("flaky")
+    halted_events = [c[0][1] for c in journal.append.call_args_list if c[0][0] == "strategy.halted"]
+    assert len(halted_events) == 1
 
 
 @pytest.mark.anyio

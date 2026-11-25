@@ -139,6 +139,11 @@ class SMACrossStrategy(PluginBase):
         # 2. Stop-loss check (skipped for 1d daily crossover-only)
         if not is_daily and self._cfg.stop_pct is not None and current_qty > 0:
             entry_p = self._entry_prices.get(bar.instrument)
+            if entry_p is None and pos is not None and getattr(pos, "avg_price", None) is not None:
+                try:
+                    entry_p = float(pos.avg_price)
+                except Exception:
+                    pass
             if entry_p is not None and bar.close <= entry_p * (1.0 - self._cfg.stop_pct):
                 self._entry_prices.pop(bar.instrument, None)
                 return (
@@ -208,8 +213,23 @@ class SMACrossStrategy(PluginBase):
         return ()
 
     def on_fill(self, ctx: StrategyContext, fill: Fill) -> Sequence[Intent]:
-        """Trade fills recorded without reactive order generation."""
+        """Track entry prices on actual fills, not intents."""
+        if fill.side == Side.BUY:
+            self._entry_prices[fill.instrument] = float(fill.price)
+        elif fill.side == Side.SELL:
+            pos = ctx.position(fill.instrument) if ctx.position is not None else None
+            if pos is None or pos.qty <= 0:
+                self._entry_prices.pop(fill.instrument, None)
         return ()
+
+    def on_reject(self, ctx: StrategyContext, intent: Intent, decision: Any | None = None) -> None:
+        """Clear state if an intent is rejected and no position is open."""
+        spec = getattr(intent, "spec", None)
+        inst = getattr(spec, "instrument", None)
+        if inst is not None:
+            pos = ctx.position(inst) if ctx.position is not None else None
+            if pos is None or pos.qty <= 0:
+                self._entry_prices.pop(inst, None)
 
     def on_timer(self, ctx: StrategyContext, name: str) -> Sequence[Intent]:
         """Exit all open positions on intraday square-off timer (ignored for daily)."""

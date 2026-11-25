@@ -333,6 +333,9 @@ class SessionRunner:
             else ks_state_dir / "killswitch.json"
         )
         self._feed_halted = False
+        self._strategy_bars_handled = 0
+        self._strategy_bars_last_min: dict[str, int] = {}
+        self._strategy_signals_last_min: dict[str, int] = {}
         self._run_error: str | None = None
         self._last_feed_gap_alert_time: datetime = datetime.min.replace(tzinfo=UTC)
 
@@ -1071,6 +1074,10 @@ class SessionRunner:
                 strategy=strategy,
             )
 
+        params_dict: Mapping[str, Any] | None = None
+        if self.runtime.params is not None and hasattr(self.runtime.params, "snapshot"):
+            params_dict = self.runtime.params.snapshot()[1]
+
         strat_rt = StrategyRuntime(
             registry=self.runtime.plugins,
             order_manager=oms,
@@ -1082,6 +1089,7 @@ class SessionRunner:
             notifier=notify,
             on_intent=self._on_strategy_intent,
             on_reject=self._on_signal_rejected,
+            params=params_dict,
         )
 
         inst_map: Mapping[InstrumentId | str, Instrument] = {k: v for k, v in instruments.items()}
@@ -1214,8 +1222,24 @@ class SessionRunner:
         async def _on_bar_closed(bar: Any) -> None:
             buf.append(bar)
             ind_mgr.on_bar(bar)
-            if not self._feed_halted:
-                await strat_rt.dispatch_bar(bar)
+            self._strategy_bars_handled += 1
+            inst_str = str(getattr(bar, "instrument", ""))
+            if inst_str:
+                self._strategy_bars_last_min[inst_str] = (
+                    self._strategy_bars_last_min.get(inst_str, 0) + 1
+                )
+            pin_fn = getattr(self.clock, "pin_time", None)
+            bar_end = getattr(bar, "end_ts", None)
+            if pin_fn is not None and bar_end is not None and bar_end < self.clock.now():
+                pin_fn(bar_end)
+                try:
+                    if not self._feed_halted:
+                        await strat_rt.dispatch_bar(bar)
+                finally:
+                    pin_fn(None)
+            else:
+                if not self._feed_halted:
+                    await strat_rt.dispatch_bar(bar)
 
         def _on_bar_sync(bar: Bar) -> None:
             self._bars_closed += 1
@@ -1269,6 +1293,11 @@ class SessionRunner:
         intent: Any | None = None,
     ) -> None:
         self._signals_count += 1
+        inst_str = str(inst)
+        if inst_str:
+            self._strategy_signals_last_min[inst_str] = (
+                self._strategy_signals_last_min.get(inst_str, 0) + 1
+            )
         t_mono = time.monotonic()
         close_mono = self._last_bar_close_mono.get(inst, t_mono)
         lat = max(0.01, (t_mono - close_mono) * 1000.0)
@@ -1498,11 +1527,22 @@ class SessionRunner:
                 await self._drain_pending_bar_tasks(c)
             elif kind == "timer.strategy":
                 name = p.get("name", "exit_time")
-                journal.append(
-                    "timer.strategy", {"name": name, "seq": seq, "ts": clock.now().isoformat()}
-                )
-                await c["strat_rt"].dispatch_timer(name)
-                await self._drain_venue_events(c)
+                ts_rec = p.get("ts")
+                pin_fn = getattr(clock, "pin_time", None)
+                if pin_fn is not None and ts_rec:
+                    try:
+                        pin_fn(datetime.fromisoformat(ts_rec))
+                    except Exception:
+                        pass
+                try:
+                    journal.append(
+                        "timer.strategy", {"name": name, "seq": seq, "ts": clock.now().isoformat()}
+                    )
+                    await c["strat_rt"].dispatch_timer(name)
+                    await self._drain_venue_events(c)
+                finally:
+                    if pin_fn is not None:
+                        pin_fn(None)
             elif kind == "market.closing":
                 m = p.get("market")
                 if m and "session_mgr" in c:
@@ -1662,6 +1702,8 @@ class SessionRunner:
 
             # 2. Market event handling
             if isinstance(ev, Quote):
+                if self._feed_halted:
+                    self._feed_halted = False
                 if hasattr(clock, "set_time"):
                     try:
                         clock.set_time(ev.recv_ts)
@@ -1691,6 +1733,12 @@ class SessionRunner:
             elif isinstance(ev, Bar):
                 self._latest_bar_end_ts = ev.end_ts
                 self._last_bar_end_ts[ev.instrument] = ev.end_ts
+                self._strategy_bars_handled += 1
+                inst_str = str(getattr(ev, "instrument", ""))
+                if inst_str:
+                    self._strategy_bars_last_min[inst_str] = (
+                        self._strategy_bars_last_min.get(inst_str, 0) + 1
+                    )
                 if hasattr(clock, "set_time"):
                     try:
                         clock.set_time(ev.end_ts)
@@ -1714,6 +1762,8 @@ class SessionRunner:
                 if self.mode == Mode.BACKTEST and not self._is_replay:
                     self._on_backtest_market_event(c, clock, journal, is_bar=True)
             elif isinstance(ev, Tick):
+                if self._feed_halted:
+                    self._feed_halted = False
                 if self._first_tick_ts is None:
                     self._first_tick_ts = ev.exch_ts
                 self._last_tick_ts = ev.exch_ts
@@ -1764,6 +1814,7 @@ class SessionRunner:
             elif isinstance(ev, FeedStatus):
                 notify.notify_feed_status(ev)
                 if ev.state == "connected":
+                    self._feed_halted = False
                     logger.info("Feed connected: %s", ev.details)
                     journal.append("feed.connected", {"state": ev.state, "details": ev.details})
                 elif ev.state in ("disconnected", "gap"):
@@ -2200,6 +2251,7 @@ class SessionRunner:
                 start=now_dt + timedelta(seconds=snap_sec),
                 interval_seconds=snap_sec,
                 callback=_snapshot_portfolio,
+                collapse=True,
             )
 
         def _emit_proc_stats() -> None:
@@ -2245,6 +2297,46 @@ class SessionRunner:
                 },
             )
 
+        def _emit_strategy_stats() -> None:
+            inst_keys = set(self._strategy_bars_last_min.keys()) | set(
+                self._strategy_signals_last_min.keys()
+            )
+            for inst_obj in universe_insts:
+                inst_keys.add(str(getattr(inst_obj, "id", inst_obj)))
+            if self.run_config is not None and getattr(self.run_config, "strategies", None):
+                for s in self.run_config.strategies:
+                    strat_name = s.name if hasattr(s, "name") and s.name else s.plugin
+                    strat_halted = strat_rt.is_halted(strat_name)
+                    if not inst_keys:
+                        journal.append(
+                            "strategy.stats",
+                            {
+                                "strategy": strat_name,
+                                "instrument": "",
+                                "on_bar_calls": 0,
+                                "signals": 0,
+                                "halted": strat_halted,
+                                "ts": clock.now().isoformat(),
+                            },
+                        )
+                    else:
+                        for ik in sorted(inst_keys):
+                            bars_c = self._strategy_bars_last_min.get(ik, 0)
+                            sigs_c = self._strategy_signals_last_min.get(ik, 0)
+                            journal.append(
+                                "strategy.stats",
+                                {
+                                    "strategy": strat_name,
+                                    "instrument": ik,
+                                    "on_bar_calls": bars_c,
+                                    "signals": sigs_c,
+                                    "halted": strat_halted,
+                                    "ts": clock.now().isoformat(),
+                                },
+                            )
+            self._strategy_bars_last_min.clear()
+            self._strategy_signals_last_min.clear()
+
         stats_val = (
             self.runtime.params.get("run.stats_seconds")
             if self.runtime.params is not None
@@ -2258,6 +2350,7 @@ class SessionRunner:
                 start=now_dt + timedelta(seconds=stats_sec),
                 interval_seconds=stats_sec,
                 callback=_emit_proc_stats,
+                collapse=True,
             )
 
             scheduler.schedule_repeating(
@@ -2265,6 +2358,15 @@ class SessionRunner:
                 start=now_dt + timedelta(seconds=stats_sec),
                 interval_seconds=stats_sec,
                 callback=_emit_stats,
+                collapse=True,
+            )
+
+            scheduler.schedule_repeating(
+                "strategy_stats",
+                start=now_dt + timedelta(seconds=stats_sec),
+                interval_seconds=stats_sec,
+                callback=_emit_strategy_stats,
+                collapse=True,
             )
 
         # Periodic console status line
@@ -2318,6 +2420,7 @@ class SessionRunner:
                 start=now_dt + timedelta(seconds=status_sec),
                 interval_seconds=status_sec,
                 callback=_print_status_line,
+                collapse=True,
             )
 
         now_ist = clock.now().astimezone(IST)
@@ -2333,26 +2436,45 @@ class SessionRunner:
 
         if not replay_has_events:
             # Strategy exit timer
-            for s in self.run_config.strategies:
-                exit_time_str = s.params.get("exit_time", "15:15")
+            if self.run_config and self.run_config.strategies:
+                for s in self.run_config.strategies:
+                    exit_time_str = s.params.get("exit_time", "15:15")
                 try:
                     hh, mm = map(int, exit_time_str.split(":"))
                     exit_dt = datetime(
                         now_ist.year, now_ist.month, now_ist.day, hh, mm, tzinfo=IST
                     ).astimezone(UTC)
                     if exit_dt > clock.now():
+                        due_exit = exit_dt
 
-                        async def _fire_strat_exit() -> None:
-                            journal.append(
-                                "timer.strategy",
-                                {
-                                    "name": "exit_time",
-                                    "seq": self._tick_seq,
-                                    "ts": clock.now().isoformat(),
-                                },
-                            )
-                            await strat_rt.dispatch_timer("exit_time")
-                            await self._drain_venue_events(c)
+                        async def _fire_strat_exit(dt: datetime = due_exit) -> None:
+                            pin_fn = getattr(clock, "pin_time", None)
+                            if pin_fn is not None and dt < clock.now():
+                                pin_fn(dt)
+                                try:
+                                    journal.append(
+                                        "timer.strategy",
+                                        {
+                                            "name": "exit_time",
+                                            "seq": self._tick_seq,
+                                            "ts": clock.now().isoformat(),
+                                        },
+                                    )
+                                    await strat_rt.dispatch_timer("exit_time")
+                                    await self._drain_venue_events(c)
+                                finally:
+                                    pin_fn(None)
+                            else:
+                                journal.append(
+                                    "timer.strategy",
+                                    {
+                                        "name": "exit_time",
+                                        "seq": self._tick_seq,
+                                        "ts": clock.now().isoformat(),
+                                    },
+                                )
+                                await strat_rt.dispatch_timer("exit_time")
+                                await self._drain_venue_events(c)
 
                         scheduler.schedule_at(
                             "strategy_exit",
@@ -3273,6 +3395,11 @@ class SessionRunner:
             "journal_growth_bytes": journal_growth,
             "is_partial": is_partial,
             "fail_reason": fail_reason_str,
+            "strategy_errors": (
+                getattr(c.get("strat_rt"), "strategy_errors", 0) if c.get("strat_rt") else 0
+            ),
+            "strategy_bars_handled": self._strategy_bars_handled,
+            "strategy_signals": self._signals_count,
         }
 
         # 5. Write results
@@ -3442,6 +3569,14 @@ class SessionRunner:
             session_md_text += f"Verdict Note: Unresolved open positions at stop ({n_open})\n"
         if fail_reason_str:
             session_md_text += f"\nError: {fail_reason_str}\n"
+
+        strat_err_count = (
+            getattr(c.get("strat_rt"), "strategy_errors", 0) if c.get("strat_rt") else 0
+        )
+        session_md_text += (
+            f"Strategy: bars handled {self._strategy_bars_handled}, "
+            f"signals {self._signals_count}, errors {strat_err_count}\n"
+        )
 
         if self._screen_result_hashes:
             manifest_info["screen_result_hashes"] = list(self._screen_result_hashes)

@@ -98,6 +98,17 @@ def _print_metrics_details(metrics: dict[str, Any]) -> None:
     typer.echo(f"Win Rate:             {win_rate:.1f}% (Gross: {gross_win_rate:.1f}%)")
     typer.echo(f"Closed Round Trips:   {closed_rt}")
     typer.echo(f"Feed Gaps:            {int(metrics.get('feed_gaps', 0))}")
+    bars_handled = int(
+        metrics.get(
+            "strategy_bars_handled",
+            sum(metrics.get("bars_by_timeframe", {}).values()),
+        )
+    )
+    signals = int(metrics.get("strategy_signals", metrics.get("signals", 0)))
+    errors = int(metrics.get("strategy_errors", 0))
+    typer.echo(
+        f"Strategy:             bars handled {bars_handled}, signals {signals}, errors {errors}"
+    )
     typer.echo(f"Signals:              {int(metrics.get('signals', 0))}")
     typer.echo(f"Orders:               {int(metrics.get('orders', 0))}")
     typer.echo(f"Fills:                {int(metrics.get('trades', metrics.get('fills', 0)))}")

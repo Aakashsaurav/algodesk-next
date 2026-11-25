@@ -93,3 +93,14 @@ tighten = "down"
 description = "Timeout in milliseconds for polling market event queue during live session execution"
 owner = "engine"
 
+[[param]]
+name = "strategy.max_consecutive_errors"
+type = "int"
+default = 3
+min = 1
+max = 100
+scope = "global"
+tighten = "down"
+description = "Maximum consecutive errors in a strategy hook before the strategy is halted"
+owner = "engine"
+

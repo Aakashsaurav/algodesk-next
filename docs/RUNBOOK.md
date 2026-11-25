@@ -1007,6 +1007,24 @@ A screen-driven portfolio rotation backtest rotates held assets at scheduled int
 - **Internal Time Profile**: cProfile output filters strictly to project code (`src/algodesk` and `plugins`), sorted by internal function time (`tottime`), isolating real execution hotspots rather than asynchronous framework coroutines.
 
 
+## Feed outages: what the engine does and what to check
+
+Checklist for handling and verifying feed outages in live or paper trading:
+
+- **What the engine does on feed stall/disconnect**:
+  1. Detects tick inactivity exceeding `feed.stale_seconds` or WebSocket disconnection.
+  2. Journals `feed.gap` or `feed.disconnected` and alerts via Telegram (once per outage).
+  3. Pauses strategy bar dispatch while feed is down (`_feed_halted = True`).
+  4. On reconnect or new tick/quote arrival, clears halt (`_feed_halted = False`) and resumes bar processing immediately.
+  5. Catches up overdue bar-timer closes and strategy timers in time order with clock pinned to scheduled due timestamps.
+  6. Collapses repeating periodic stats timers (`proc.stats`, `tick.stats`, `strategy.stats`, `portfolio.snapshot`) to 1 event per kind instead of burst storms.
+- **What to check after an outage**:
+  1. Run `uv run algodesk session report <run_id>`:
+     - Check `Feed Gaps: N` to verify gap detection.
+     - Check `Strategy: bars handled N, signals N, errors N` to confirm bars continued processing after the gap.
+  2. Inspect journal events: `uv run algodesk journal tail <run_id> --kind feed.gap,feed.connected,strategy.stats`.
+  3. Verify deterministic parity: `uv run algodesk replay --session <run_id> --run <run_name>` then `uv run algodesk results compare <run_id> <replay_run_id>`.
+
 ## If something fails
 
 | Symptom | Likely cause | Fix |

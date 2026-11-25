@@ -28,6 +28,7 @@ class _TimerEntry:
     callback: Callable[..., Any] = field(compare=False)
     interval_s: float | None = field(compare=False, default=None)
     cancelled: bool = field(compare=False, default=False)
+    collapse: bool = field(compare=False, default=False)
 
 
 def _invoke_callback(callback: Callable[..., Any], name: str) -> None:
@@ -91,8 +92,14 @@ class Scheduler:
         start: datetime,
         interval_seconds: float,
         callback: Callable[..., Any],
+        *,
+        collapse: bool = False,
     ) -> None:
-        """Schedule a repeating timer starting at start."""
+        """Schedule a repeating timer starting at start.
+
+        If collapse is True, overdue intervals during a stalled loop are collapsed
+        to a single firing and the timer is advanced past ts.
+        """
         _validate_utc_ts(start, "start")
         if not name:
             raise ValueError("Timer name cannot be empty")
@@ -106,6 +113,7 @@ class Scheduler:
             name=name,
             callback=callback,
             interval_s=interval_seconds,
+            collapse=collapse,
         )
         self._timers[name] = entry
         heapq.heappush(self._heap, entry)
@@ -132,27 +140,40 @@ class Scheduler:
         _validate_utc_ts(ts, "ts")
         fired = 0
         set_time_fn = getattr(self._clock, "set_time", None)
+        pin_fn = getattr(self._clock, "pin_time", None)
 
         while self._heap and self._heap[0].due <= ts:
             entry = heapq.heappop(self._heap)
             if entry.cancelled:
                 continue
 
-            if set_time_fn is not None and self._clock.now() < entry.due:
+            if pin_fn is not None:
+                pin_fn(entry.due)
+            elif set_time_fn is not None and self._clock.now() < entry.due:
                 set_time_fn(entry.due)
 
-            _invoke_callback(entry.callback, entry.name)
+            try:
+                _invoke_callback(entry.callback, entry.name)
+            finally:
+                if pin_fn is not None:
+                    pin_fn(None)
+
             fired += 1
 
             if entry.interval_s is not None and not entry.cancelled:
                 self._seq += 1
                 next_due = entry.due + timedelta(seconds=entry.interval_s)
+                if entry.collapse and next_due <= ts:
+                    # Overdue intervals during a stall collapse to one firing; advance past ts
+                    missed = int((ts - next_due).total_seconds() // entry.interval_s) + 1
+                    next_due = next_due + timedelta(seconds=missed * entry.interval_s)
                 next_entry = _TimerEntry(
                     due=next_due,
                     sequence=self._seq,
                     name=entry.name,
                     callback=entry.callback,
                     interval_s=entry.interval_s,
+                    collapse=entry.collapse,
                 )
                 self._timers[entry.name] = next_entry
                 heapq.heappush(self._heap, next_entry)

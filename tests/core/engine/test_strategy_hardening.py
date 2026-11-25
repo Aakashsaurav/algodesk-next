@@ -169,6 +169,7 @@ def test_strategy_runtime_handler_exception_isolation(
             journal=journal,
             clock=clock,
             bus=bus,
+            max_consecutive_errors=1,
         )
 
         bad_strategy = MagicMock()
