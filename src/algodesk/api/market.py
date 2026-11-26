@@ -447,6 +447,36 @@ class Bar:
         if self.volume < 0:
             raise ValueError(f"volume cannot be negative: {self.volume}")
 
+    @classmethod
+    def create_unchecked(
+        cls,
+        instrument: InstrumentId,
+        timeframe: str,
+        start_ts: datetime,
+        end_ts: datetime,
+        open: float,
+        high: float,
+        low: float,
+        close: float,
+        volume: int,
+        complete: bool = False,
+        synthetic: bool = False,
+    ) -> Bar:
+        """Create a Bar bypassing validation for internal synthetic backtest usage."""
+        obj = object.__new__(cls)
+        object.__setattr__(obj, "instrument", instrument)
+        object.__setattr__(obj, "timeframe", timeframe)
+        object.__setattr__(obj, "start_ts", start_ts)
+        object.__setattr__(obj, "end_ts", end_ts)
+        object.__setattr__(obj, "open", open)
+        object.__setattr__(obj, "high", high)
+        object.__setattr__(obj, "low", low)
+        object.__setattr__(obj, "close", close)
+        object.__setattr__(obj, "volume", volume)
+        object.__setattr__(obj, "complete", complete)
+        object.__setattr__(obj, "synthetic", synthetic)
+        return obj
+
 
 @dataclass(frozen=True, slots=True)
 class FeedStatus:

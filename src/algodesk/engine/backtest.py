@@ -57,16 +57,19 @@ class BacktestRunner:
 
     def _install_daily_mark(self) -> None:
         """Ensure backtest records one mark-to-market equity row per session close."""
+        from datetime import timedelta
+
+        from algodesk.logs.formatting import format_ist
+        from algodesk.results.writer import compute_max_drawdown
+
         sr = self.session_runner
-        current_date: list[str | None] = [None]
-        pending_mark: list[tuple[dict[str, Any], Any, Any, dict[Any, Any]] | None] = [None]
+        ist_offset = timedelta(hours=5, minutes=30)
+        current_date: list[Any] = [None]
+        pending_mark: list[tuple[dict[str, Any], Any, Any] | None] = [None]
 
         def _record_snapshot(
             c: dict[str, Any], ts: Any, journal: Any, quotes: dict[Any, Any]
         ) -> None:
-            from algodesk.logs.formatting import format_ist
-            from algodesk.results.writer import compute_max_drawdown
-
             ledger = c.get("ledger")
             if ledger is None:
                 return
@@ -107,25 +110,23 @@ class BacktestRunner:
         def _handle_event(
             c: dict[str, Any], clock: Clock, journal: Any, is_bar: bool = False
         ) -> None:
-            from algodesk.logs.formatting import format_ist
-
             now_ts = clock.now()
-            d_str = format_ist(now_ts)[:10]
-            if current_date[0] is not None and d_str != current_date[0]:
+            d_val = (now_ts + ist_offset).date()
+            if current_date[0] is not None and d_val != current_date[0]:
                 if pending_mark[0] is not None:
-                    p_c, p_ts, p_j, p_quotes = pending_mark[0]
-                    _record_snapshot(p_c, p_ts, p_j, p_quotes)
+                    p_c, p_ts, p_j = pending_mark[0]
+                    _record_snapshot(p_c, p_ts, p_j, sr._latest_quotes)
                     pending_mark[0] = None
-            current_date[0] = d_str
+            current_date[0] = d_val
             if is_bar or pending_mark[0] is None:
-                pending_mark[0] = (c, now_ts, journal, dict(sr._latest_quotes))
+                pending_mark[0] = (c, now_ts, journal)
 
         orig_stop = sr.stop
 
         def _stop_and_flush(*args: Any, **kwargs: Any) -> None:
             if pending_mark[0] is not None:
-                p_c, p_ts, p_j, p_quotes = pending_mark[0]
-                _record_snapshot(p_c, p_ts, p_j, dict(sr._latest_quotes))
+                p_c, p_ts, p_j = pending_mark[0]
+                _record_snapshot(p_c, p_ts, p_j, sr._latest_quotes)
                 pending_mark[0] = None
             orig_stop(*args, **kwargs)
 

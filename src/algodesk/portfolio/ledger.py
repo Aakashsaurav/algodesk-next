@@ -37,9 +37,16 @@ class PortfolioLedger:
 
         # Key: (InstrumentId, Product)
         self._positions: dict[tuple[InstrumentId, Product], Position] = {}
+        self._keys_by_instrument: dict[InstrumentId, list[tuple[InstrumentId, Product]]] = {}
         self._total_realized = Decimal("0.00")
         self._total_charges = Decimal("0.00")
         self._latest_quotes: dict[InstrumentId, Quote] = {}
+        self._margin_used_cache: Decimal = Decimal("0.00")
+        self._margin_dirty: bool = False
+        self._unrealized_cache: Decimal = Decimal("0.00")
+        self._unrealized_dirty: bool = False
+        self._snapshot_positions_cache: dict[str, Position] | None = None
+        self._state_version: int = 0
 
         # Set up periodic snapshot timer if scheduler and journal provided
         if (
@@ -90,7 +97,12 @@ class PortfolioLedger:
     @property
     def unrealized_pnl(self) -> Decimal:
         """Sum of unrealized P&L across all positions marked to market."""
-        return sum((p.unrealized for p in self._positions.values()), Decimal("0.00"))
+        if self._unrealized_dirty:
+            self._unrealized_cache = sum(
+                (p.unrealized for p in self._positions.values()), Decimal("0.00")
+            )
+            self._unrealized_dirty = False
+        return self._unrealized_cache
 
     @property
     def unrealized(self) -> Decimal:
@@ -109,13 +121,15 @@ class PortfolioLedger:
 
     @property
     def margin_used(self) -> Decimal:
-        """Margin used for currently open positions."""
-        # Cash-only accounting in M1 (leverage = 1)
-        used = Decimal("0.00")
-        for pos in self._positions.values():
-            if pos.qty != 0:
-                used += abs(Decimal(pos.qty)) * pos.avg_price
-        return used
+        """Margin used for currently open positions (cached between fills)."""
+        if self._margin_dirty:
+            used = Decimal("0.00")
+            for pos in self._positions.values():
+                if pos.qty != 0:
+                    used += abs(Decimal(pos.qty)) * pos.avg_price
+            self._margin_used_cache = used
+            self._margin_dirty = False
+        return self._margin_used_cache
 
     def set_start_of_day_baseline(self, baseline: Decimal | None = None) -> None:
         """Set or reset the start-of-day baseline equity."""
@@ -199,16 +213,24 @@ class PortfolioLedger:
             unrealized=new_unrealized,
         )
         self._positions[key] = pos
+        if key not in self._keys_by_instrument.setdefault(fill.instrument, []):
+            self._keys_by_instrument[fill.instrument].append(key)
+        self._margin_dirty = True
+        self._unrealized_dirty = True
+        self._snapshot_positions_cache = None
+        self._state_version += 1
         return pos
 
     def mark(self, quote: Quote) -> None:
         """Mark positions to market: longs at best bid, shorts at best ask."""
         self._latest_quotes[quote.instrument] = quote
+        keys = self._keys_by_instrument.get(quote.instrument)
+        if not keys:
+            return
 
-        for (inst, prod), pos in list(self._positions.items()):
-            if inst != quote.instrument:
-                continue
-
+        marked_any = False
+        for key in keys:
+            pos = self._positions[key]
             if pos.qty > 0:
                 # Longs mark at best bid
                 mark_price = (
@@ -224,7 +246,7 @@ class PortfolioLedger:
             else:
                 unrealized = Decimal("0.00")
 
-            self._positions[(inst, prod)] = Position(
+            self._positions[key] = Position(
                 instrument=pos.instrument,
                 product=pos.product,
                 qty=pos.qty,
@@ -232,15 +254,23 @@ class PortfolioLedger:
                 realized=pos.realized,
                 unrealized=unrealized,
             )
+            marked_any = True
+
+        if marked_any:
+            self._unrealized_dirty = True
+            self._snapshot_positions_cache = None
+            self._state_version += 1
 
     def snapshot(self) -> ApiPortfolio:
         """Return the api Portfolio snapshot."""
+        if self._snapshot_positions_cache is None:
+            self._snapshot_positions_cache = {
+                f"{pos.instrument}:{pos.product.value}": pos for pos in self._positions.values()
+            }
         return ApiPortfolio(
             cash=self.cash,
             equity=self.equity,
-            positions={
-                f"{pos.instrument}:{pos.product.value}": pos for pos in self._positions.values()
-            },
+            positions=self._snapshot_positions_cache,
             margin_used=self.margin_used,
         )
 

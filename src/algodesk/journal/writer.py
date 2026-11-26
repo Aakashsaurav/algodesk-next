@@ -48,6 +48,7 @@ class JournalSettings:
     backpressure_timeout_ms: int
     batch_mode: bool = False
     batch_size: int = 1000
+    allowed_events: frozenset[str] | None = None
 
 
 def encode_payload(val: Any) -> Any:
@@ -349,6 +350,9 @@ class Journal:
     ) -> int:
         """Append an event to the journal, returning the sequence number immediately."""
         self._check_writer_error()
+        if self.batch_mode and self.settings.allowed_events is not None:
+            if kind not in self.settings.allowed_events:
+                return self._last_seq
         if not isinstance(kind, str) or not _KIND_REGEX.match(kind):
             raise JournalError(
                 what=f"Invalid event kind '{kind}': must match ^[a-z][a-z0-9_.]*$",
@@ -368,7 +372,8 @@ class Journal:
             encoded = self.scrubber.scrub_obj(encoded)
         canon_json = canonical_json(encoded)
 
-        now_dt = self._clock().astimezone(UTC)
+        raw_dt = self._clock()
+        now_dt = raw_dt if raw_dt.tzinfo is UTC else raw_dt.astimezone(UTC)
         ts_utc = now_dt.isoformat()
         mono_ns = time.monotonic_ns()
         durable_event = threading.Event() if (durable and not self.batch_mode) else None
@@ -403,7 +408,8 @@ class Journal:
             self._queue.append(ev)
             self._last_seq = seq
             self._last_hash = h
-            self._cond.notify_all()
+            if not self.batch_mode or len(self._queue) >= self.batch_size:
+                self._cond.notify_all()
 
         if durable and durable_event is not None:
             durable_event.wait()

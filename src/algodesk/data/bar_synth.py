@@ -10,6 +10,12 @@ from zoneinfo import ZoneInfo
 from algodesk.api.market import Bar, Level, Quote
 
 IST = ZoneInfo("Asia/Kolkata")
+_TD_ZERO = timedelta(0)
+_TD_1MS = timedelta(milliseconds=1)
+_TD_20S = timedelta(seconds=20)
+_TD_40S = timedelta(seconds=40)
+_TD_12H = timedelta(hours=12)
+_TD_20H = timedelta(hours=20)
 
 
 class BarQuoteSynth:
@@ -24,11 +30,19 @@ class BarQuoteSynth:
         self.participation_pct = max(0.01, min(100.0, float(participation_pct)))
         self.price_tick = Decimal(str(price_tick))
         self.calendar = calendar
+        self._daily_ts_cache: dict[tuple[datetime, bool], list[datetime]] = {}
 
     def _daily_timestamps(self, bar: Bar) -> list[datetime]:
         """Compute 4 timestamps for daily bars: session open (09:15 IST), 2 mid, session close."""
+        is_long = (bar.end_ts - bar.start_ts) >= _TD_12H
+        cache_key = (bar.start_ts, is_long)
+        cached = self._daily_ts_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         ts = bar.start_ts if bar.start_ts.tzinfo else bar.start_ts.replace(tzinfo=UTC)
         d = ts.astimezone(IST).date()
+
         s_open: datetime | None = None
         s_close: datetime | None = None
 
@@ -42,7 +56,7 @@ class BarQuoteSynth:
                 pass
 
         if s_open is None or s_close is None:
-            if (bar.end_ts - bar.start_ts) >= timedelta(hours=12):
+            if is_long:
                 s_open = datetime(d.year, d.month, d.day, 3, 45, 0, tzinfo=UTC)
                 s_close = datetime(d.year, d.month, d.day, 10, 0, 0, tzinfo=UTC)
             else:
@@ -50,19 +64,23 @@ class BarQuoteSynth:
                 s_close = bar.end_ts
 
         duration = s_close - s_open
-        if duration > timedelta(0):
+        if duration > _TD_ZERO:
             d_step = duration / 3
-            return [s_open, s_open + d_step, s_open + d_step * 2, s_close]
-        return [s_open, s_open, s_open, s_close]
+            res = [s_open, s_open + d_step, s_open + d_step * 2, s_close]
+        else:
+            res = [s_open, s_open, s_open, s_close]
+        if self.calendar is not None or is_long:
+            self._daily_ts_cache[cache_key] = res
+        return res
 
     def _intraday_timestamps(self, bar: Bar) -> list[datetime]:
         """Compute 4 timestamps inside intraday bar period: open, 2 mid, close (end - 1ms)."""
-        c = bar.end_ts - timedelta(milliseconds=1)
+        c = bar.end_ts - _TD_1MS
         if bar.timeframe == "1m":
             s = bar.start_ts
-            return [s, s + timedelta(seconds=20), s + timedelta(seconds=40), c]
+            return [s, s + _TD_20S, s + _TD_40S, c]
         duration = c - bar.start_ts
-        if duration > timedelta(0):
+        if duration > _TD_ZERO:
             d_step = duration / 3
             return [bar.start_ts, bar.start_ts + d_step, bar.start_ts + d_step * 2, c]
         return [bar.start_ts, bar.start_ts, bar.start_ts, c]
@@ -83,16 +101,24 @@ class BarQuoteSynth:
         depth = max(1, int(vol * self.participation_pct / 100.0))
 
         if bar.close >= bar.open:
-            prices = (bar.open, bar.low, bar.high, bar.close)
+            p0, p1, p2, p3 = (
+                round(float(bar.open), 4),
+                round(float(bar.low), 4),
+                round(float(bar.high), 4),
+                round(float(bar.close), 4),
+            )
         else:
-            prices = (bar.open, bar.high, bar.low, bar.close)
+            p0, p1, p2, p3 = (
+                round(float(bar.open), 4),
+                round(float(bar.high), 4),
+                round(float(bar.low), 4),
+                round(float(bar.close), 4),
+            )
 
-        is_daily = (bar.timeframe == "1d") or ((bar.end_ts - bar.start_ts) >= timedelta(hours=20))
-        timestamps = self._daily_timestamps(bar) if is_daily else self._intraday_timestamps(bar)
+        is_daily = (bar.timeframe == "1d") or ((bar.end_ts - bar.start_ts) >= _TD_20H)
+        t0, t1, t2, t3 = self._daily_timestamps(bar) if is_daily else self._intraday_timestamps(bar)
 
         inst = bar.instrument
-        p0, p1, p2, p3 = (round(float(p), 4) for p in prices)
-        t0, t1, t2, t3 = timestamps
 
         lvl0 = (Level.create_unchecked(price=p0, qty=depth),)
         lvl1 = (Level.create_unchecked(price=p1, qty=depth),)

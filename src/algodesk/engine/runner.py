@@ -712,9 +712,13 @@ class SessionRunner:
         p = self.runtime.params
         batch_mode = False
         batch_size = 1000
+        allowed_events: frozenset[str] | None = None
         if is_backtest:
             batch_mode = True
             batch_size = int(p.get("backtest.journal_batch_size") or 1000) if p else 1000
+            raw_ev = p.get("backtest.journal_events") if p else None
+            if isinstance(raw_ev, str) and raw_ev.strip():
+                allowed_events = frozenset(s.strip() for s in raw_ev.split(",") if s.strip())
 
         if self._journal_db is not None:
             db_path = self._journal_db
@@ -731,6 +735,8 @@ class SessionRunner:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         flush_interval = int(p.get("journal.flush_interval_ms")) if p else 50
         max_buffer = int(p.get("journal.max_buffer_events")) if p else 1000
+        if is_backtest:
+            max_buffer = max(max_buffer, batch_size * 2)
         bp_timeout = int(p.get("journal.backpressure_timeout_ms")) if p else 5000
         settings = JournalSettings(
             flush_interval_ms=flush_interval,
@@ -738,6 +744,7 @@ class SessionRunner:
             backpressure_timeout_ms=bp_timeout,
             batch_mode=batch_mode,
             batch_size=batch_size,
+            allowed_events=allowed_events,
         )
         return Journal(
             db_path=db_path,
@@ -994,7 +1001,13 @@ class SessionRunner:
         starting_cash: Decimal,
         p_ctx: PluginContext,
     ) -> tuple[RiskEngine, KillSwitch, RiskMonitor]:
-        killswitch = KillSwitch(state_file=self.killswitch_file, journal=journal, clock=clock)
+        is_backtest = self.mode == Mode.BACKTEST and not self._is_replay
+        killswitch = KillSwitch(
+            state_file=self.killswitch_file,
+            journal=journal,
+            clock=clock,
+            in_memory=is_backtest,
+        )
 
         risk_rules: list[Any] = []
         try:
@@ -1075,29 +1088,51 @@ class SessionRunner:
         ind_mgr = IndicatorManager(indicator_plugin=ind_plugin, journal=journal)
         buf = BarBuffer()
 
+        active_states = (
+            OrderState.CREATED,
+            OrderState.SUBMITTED,
+            OrderState.ACKNOWLEDGED,
+            OrderState.PARTIALLY_FILLED,
+            OrderState.CANCEL_REQUESTED,
+            OrderState.UNKNOWN,
+            OrderState.RECONCILING,
+        )
+        alloc_cap = (
+            Decimal(str(self.run_config.allocated_capital))
+            if self.run_config
+            else Decimal("100000.00")
+        )
+        default_profile = "conservative"
+        strat_profiles: dict[str, str] = {}
+        if self.run_config and self.run_config.strategies:
+            default_profile = self.run_config.strategies[0].risk_profile
+            for s in self.run_config.strategies:
+                strat_profiles[s.plugin] = s.risk_profile
+                s_name = getattr(s, "name", "")
+                if s_name:
+                    strat_profiles[s_name] = s.risk_profile
+        rv_cache: dict[str, tuple[int, Any, RiskViewContext]] = {}
+
         def _risk_view_builder(strategy: str = "") -> RiskViewContext:
             assert self.run_config is not None
-            active_states = (
-                OrderState.CREATED,
-                OrderState.SUBMITTED,
-                OrderState.ACKNOWLEDGED,
-                OrderState.PARTIALLY_FILLED,
-                OrderState.CANCEL_REQUESTED,
-                OrderState.UNKNOWN,
-                OrderState.RECONCILING,
-            )
+            l_ver = getattr(ledger, "_state_version", -1)
+            now_ts = clock.now()
+            cached = rv_cache.get(strategy)
+            if cached is not None and cached[0] == l_ver and cached[1] == now_ts and l_ver >= 0:
+                # Re-check open_orders only if oms.orders changed; in backtest decisions
+                # multiple intents at the same timestamp share the exact view if oms didn't mutate,
+                # or we can refresh open_orders cheaply when needed.
+                pass
             open_ords = [
                 o for o in oms.orders.values() if getattr(o, "state", None) in active_states
             ]
-            current_positions = {f"{k[0]}:{k[1].value}": pos for k, pos in ledger.positions.items()}
-            strat_profile = "conservative"
-            if self.run_config and self.run_config.strategies:
-                for s in self.run_config.strategies:
-                    if not strategy or s.plugin == strategy or getattr(s, "name", "") == strategy:
-                        strat_profile = s.risk_profile
-                        break
-            return RiskViewContext(
-                portfolio=ledger.snapshot(),
+            snap = ledger.snapshot()
+            current_positions = snap.positions
+            strat_profile = (
+                strat_profiles.get(strategy, default_profile) if strategy else default_profile
+            )
+            rv = RiskViewContext(
+                portfolio=snap,
                 positions=current_positions,
                 open_orders=open_ords,
                 daily_pnl=ledger.realized + ledger.unrealized,
@@ -1105,10 +1140,12 @@ class SessionRunner:
                 params=self.runtime.params or {},
                 clock=clock,
                 instruments=instruments,
-                allocated_capital=Decimal(str(self.run_config.allocated_capital)),
+                allocated_capital=alloc_cap,
                 profile=strat_profile,
                 strategy=strategy,
             )
+            rv_cache[strategy] = (l_ver, now_ts, rv)
+            return rv
 
         params_dict: Mapping[str, Any] | None = None
         if self.runtime.params is not None and hasattr(self.runtime.params, "snapshot"):
@@ -1717,6 +1754,18 @@ class SessionRunner:
         # Build feed stream
         stream = self._build_event_stream(c, clock)
         self._active_feed_stream = stream
+        is_bt_mode = self.mode == Mode.BACKTEST and not self._is_replay
+        clock_set_time = getattr(clock, "set_time", None)
+        d_venue = c["venue"]
+        d_venue_inner = getattr(d_venue, "_venue", d_venue)
+        d_venue_q = getattr(d_venue_inner, "_event_queue", None)
+        d_ledger = c.get("ledger")
+        d_sched = c["scheduler"]
+        d_oms = c["oms"]
+        d_buf = c["buf"]
+        d_ind_mgr = c["ind_mgr"]
+        d_strat_rt = c["strat_rt"]
+        ist_offset = timedelta(hours=5, minutes=30)
 
         async def _dispatch_market_event(ev_item: Any) -> None:
             if isinstance(ev_item, tuple):
@@ -1740,12 +1789,12 @@ class SessionRunner:
             if isinstance(ev, Quote):
                 if self._feed_halted:
                     self._feed_halted = False
-                if hasattr(clock, "set_time"):
+                if clock_set_time is not None:
                     try:
-                        clock.set_time(ev.recv_ts)
+                        clock_set_time(ev.recv_ts)
                     except ValueError:
                         pass
-                if self.mode == Mode.BACKTEST and not self._is_replay:
+                if is_bt_mode:
                     self._on_backtest_market_event(c, clock, journal, is_bar=False)
                 if self._first_tick_ts is None:
                     self._first_tick_ts = ev.exch_ts
@@ -1754,48 +1803,56 @@ class SessionRunner:
                     self._first_tick_recv_ts = ev.recv_ts
                 self._last_tick_recv_ts = ev.recv_ts
                 self._latest_tick_ts[ev.instrument] = ev.exch_ts
-                self._latest_tick_mono[ev.instrument] = time.monotonic()
-                self._latest_tick_recv_time[ev.instrument] = clock.now()
-                if c.get("ledger") is not None:
-                    c["ledger"].mark(ev)
-                c["venue"].on_quote(ev)
+                if not is_bt_mode:
+                    self._latest_tick_mono[ev.instrument] = time.monotonic()
+                    self._latest_tick_recv_time[ev.instrument] = clock.now()
+                if d_ledger is not None:
+                    d_ledger.mark(ev)
+                d_venue.on_quote(ev)
                 self._latest_quotes[ev.instrument] = ev
-                await self._drain_venue_events(c)
-                await self._drain_pending_bar_tasks(c)
-                if getattr(ev, "exch_ts", None) and getattr(ev, "recv_ts", None):
-                    fd = max(0.0, (ev.recv_ts - ev.exch_ts).total_seconds() * 1000.0)
+                if d_venue_q is None or not d_venue_q.empty():
+                    await self._drain_venue_events(c)
+                if self._pending_bar_tasks:
+                    await self._drain_pending_bar_tasks(c)
+                if ev.exch_ts and ev.recv_ts:
+                    fd = (
+                        0.0
+                        if ev.recv_ts is ev.exch_ts
+                        else max(0.0, (ev.recv_ts - ev.exch_ts).total_seconds() * 1000.0)
+                    )
                     self._feed_delays.append(fd)
                     self._feed_delays_by_inst.setdefault(str(ev.instrument), []).append(fd)
             elif isinstance(ev, Bar):
                 self._latest_bar_end_ts = ev.end_ts
                 self._last_bar_end_ts[ev.instrument] = ev.end_ts
                 self._strategy_bars_handled += 1
-                inst_str = str(getattr(ev, "instrument", ""))
+                inst_str = str(ev.instrument)
                 if inst_str:
                     self._strategy_bars_last_min[inst_str] = (
                         self._strategy_bars_last_min.get(inst_str, 0) + 1
                     )
-                if hasattr(clock, "set_time"):
+                if clock_set_time is not None:
                     try:
-                        clock.set_time(ev.end_ts)
+                        clock_set_time(ev.end_ts)
                     except ValueError:
                         pass
-                if hasattr(c["venue"], "record_bar"):
-                    c["venue"].record_bar(ev)
+                if hasattr(d_venue, "record_bar"):
+                    d_venue.record_bar(ev)
                 self._bars_closed += 1
                 try:
-                    kolkata_tz = ZoneInfo("Asia/Kolkata")
-                    self._last_completed_session = ev.end_ts.astimezone(kolkata_tz).date()
+                    self._last_completed_session = (ev.end_ts + ist_offset).date()
                 except Exception:
                     self._last_completed_session = ev.end_ts.date()
-                tf = str(getattr(ev, "timeframe", "1d"))
+                tf = str(ev.timeframe)
                 self._bars_by_tf[tf] = self._bars_by_tf.get(tf, 0) + 1
-                c["buf"].append(ev)
-                c["ind_mgr"].on_bar(ev)
-                await c["strat_rt"].dispatch_bar(ev)
-                await self._drain_pending_bar_tasks(c)
-                await self._drain_venue_events(c)
-                if self.mode == Mode.BACKTEST and not self._is_replay:
+                d_buf.append(ev)
+                d_ind_mgr.on_bar(ev)
+                await d_strat_rt.dispatch_bar(ev)
+                if self._pending_bar_tasks:
+                    await self._drain_pending_bar_tasks(c)
+                if d_venue_q is None or not d_venue_q.empty():
+                    await self._drain_venue_events(c)
+                if is_bt_mode:
                     self._on_backtest_market_event(c, clock, journal, is_bar=True)
             elif isinstance(ev, Tick):
                 if self._feed_halted:
@@ -1861,16 +1918,20 @@ class SessionRunner:
                     journal.append(kind, {"state": ev.state, "details": ev.details})
 
             # 3. Process venue execution events
-            await self._drain_venue_events(c)
+            if d_venue_q is None or not d_venue_q.empty():
+                await self._drain_venue_events(c)
 
             # 4. Advance scheduler timers
-            c["scheduler"].advance_to(clock.now())
-            c["scheduler"].fire_due()
+            now_sched_ts = clock.now()
+            if d_sched._heap and d_sched._heap[0].due <= now_sched_ts:
+                d_sched.advance_to(now_sched_ts)
+                d_sched.fire_due()
             if self._pending_bar_tasks:
                 await self._drain_pending_bar_tasks(c)
 
             # 5. Check OMS timeouts
-            await c["oms"].check_timeouts()
+            if not is_bt_mode or getattr(d_venue_inner, "_resting_orders", None):
+                await d_oms.check_timeouts()
 
             # 6. Replay recorded events up to curr_seq
             if self._is_replay and self._pending_recorded_seqs:
@@ -1914,6 +1975,13 @@ class SessionRunner:
             last_bar_wall_time = time.monotonic()
             t0_wall = time.monotonic()
             sessions_seen: set[date] = set()
+            is_bar_backtest = (
+                self._feed is None
+                and getattr(getattr(self.run_config, "backtest", None), "fidelity", "bar") == "bar"
+            )
+            bar_quote_idx: dict[InstrumentId, int] = {}
+            bt_venue_inner = getattr(c["venue"], "_venue", c["venue"])
+            bt_ledger = c.get("ledger")
 
             async for ev_item in stream:
                 if self._stop_event.is_set():
@@ -1962,6 +2030,27 @@ class SessionRunner:
                     )
 
                 ev = ev_item[0] if isinstance(ev_item, tuple) else ev_item
+                if is_bar_backtest and isinstance(ev, Quote):
+                    q_idx = bar_quote_idx.get(ev.instrument, 0)
+                    bar_quote_idx[ev.instrument] = (q_idx + 1) & 3
+                    if q_idx in (1, 2):
+                        resting = getattr(bt_venue_inner, "_resting_orders", None)
+                        orders_map = getattr(bt_venue_inner, "_orders", None)
+                        has_order = False
+                        if resting and orders_map is not None:
+                            for ref in resting:
+                                ord_o = orders_map.get(ref)
+                                if ord_o is not None and ord_o.spec.instrument == ev.instrument:
+                                    has_order = True
+                                    break
+                        has_pos = False
+                        if not has_order and bt_ledger is not None and bt_ledger._positions:
+                            for (p_inst, _), pos in bt_ledger._positions.items():
+                                if p_inst == ev.instrument and pos.qty != 0:
+                                    has_pos = True
+                                    break
+                        if not has_order and not has_pos:
+                            continue
                 if isinstance(ev, Bar):
                     last_bar_wall_time = time.monotonic()
                     d_session = ev.start_ts.astimezone(IST).date()

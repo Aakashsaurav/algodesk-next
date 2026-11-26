@@ -109,5 +109,14 @@ tighten = "none"
 description = "Action when kill-switch is tripped in backtest: continue blocks new entries and marks positions; stop halts immediately"
 owner = "engine"
 
+[[param]]
+name = "backtest.journal_events"
+type = "str"
+default = "run.start,config.effective,registry.snapshot,instruments.loaded,feed.connected,portfolio.snapshot,signal,risk.decision,intent,order.created,order.event,fill,timer.strategy,market.closing,latency.stats,proc.stats,run.end,error,killswitch.change,strategy.error,strategy.halted,run.warmup_override,run.error,order.rejected,risk.rejected,feed.gap,feed.disconnected,bar.timer_close,market.open,market.close,market.stopped,session.start,session.end,backtest.rebalance"
+scope = "global"
+tighten = "none"
+description = "Comma-separated journal event kinds permitted in backtest batch mode"
+owner = "journal"
+
 
 

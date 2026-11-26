@@ -56,7 +56,7 @@ class SimClock:
 
     def pin_time(self, ts: datetime | None) -> None:
         """Temporarily pin clock time to ts (for timer catch-up / callbacks)."""
-        if ts is not None:
+        if ts is not None and not (type(ts) is datetime and ts.tzinfo is UTC):
             _validate_utc_ts(ts, "ts")
         self._pinned_time = ts
 
@@ -65,7 +65,8 @@ class SimClock:
 
         Raises ValueError if ts is backwards in time or not UTC.
         """
-        _validate_utc_ts(ts, "ts")
+        if not (type(ts) is datetime and ts.tzinfo is UTC):
+            _validate_utc_ts(ts, "ts")
         if ts < self._current:
             msg = (
                 f"SimClock cannot move backwards: attempted {ts.isoformat()} "

@@ -272,6 +272,7 @@ def run_benchmark_measurement(
     symbols_count: int = 100,
     sessions_count: int = 250,
     timeframe: str = "1d",
+    profile: bool = True,
 ) -> BenchmarkReport:
     """Execute synthetic cache backtest measurement in a temp directory outside the repo."""
     root_dir = Path(__file__).resolve().parents[3]
@@ -296,7 +297,7 @@ def run_benchmark_measurement(
 
         # 1. Target run
         bars_1, elapsed_1, peak_mb_1, prof_1 = _run_benchmark_once(
-            project_dir, symbols, sessions, timeframe, with_profile=True
+            project_dir, symbols, sessions, timeframe, with_profile=profile
         )
 
         # 2. Baseline run (smaller size) to separate fixed and per-bar cost

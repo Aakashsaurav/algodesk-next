@@ -23,10 +23,12 @@ class KillSwitch:
         state_file: Path | str | None = None,
         journal: JournalWriter | Any | None = None,
         clock: Clock | None = None,
+        in_memory: bool = False,
     ) -> None:
         self.state_file = Path(state_file or "data/state/killswitch.json")
         self.journal = journal
         self.clock = clock or SystemClock()
+        self.in_memory = in_memory
         self._last_mtime: int | None = None
         self._cached_state: dict[str, Any] = {
             "active": False,
@@ -36,10 +38,13 @@ class KillSwitch:
             "values": {},
             "ts": None,
         }
-        self._sync()
+        if not self.in_memory:
+            self._sync()
 
     def _sync(self) -> None:
         """Check file mtime on disk and reload if updated by another process."""
+        if self.in_memory:
+            return
         if not self.state_file.exists():
             self._last_mtime = None
             if self._cached_state.get("active"):
@@ -86,13 +91,15 @@ class KillSwitch:
             self._last_mtime = None
 
     def is_active(self) -> bool:
-        """Check if kill-switch is active, syncing with disk on every call."""
-        self._sync()
+        """Check if kill-switch is active, syncing with disk on every call (unless in_memory)."""
+        if not self.in_memory:
+            self._sync()
         return bool(self._cached_state.get("active", False))
 
     def status(self) -> dict[str, Any]:
         """Return the current kill-switch state dictionary."""
-        self._sync()
+        if not self.in_memory:
+            self._sync()
         return dict(self._cached_state)
 
     def trip(
@@ -112,6 +119,8 @@ class KillSwitch:
             "values": values or {},
             "ts": now_ts.isoformat(),
         }
+        if self.in_memory:
+            self._cached_state = data
         self._write_atomic(data)
 
         if self.journal is not None and hasattr(self.journal, "append"):
@@ -137,6 +146,8 @@ class KillSwitch:
             "by": by,
             "ts": now_ts.isoformat(),
         }
+        if self.in_memory:
+            self._cached_state = data
         self._write_atomic(data)
 
         if self.journal is not None and hasattr(self.journal, "append"):

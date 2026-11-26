@@ -556,15 +556,26 @@ def backtest_benchmark_cmd(
     symbols: int = typer.Option(100, "--symbols", help="Number of symbols"),
     sessions: int = typer.Option(250, "--sessions", help="Number of sessions"),
     timeframe: str = typer.Option("1d", "--timeframe", help="Timeframe (1d or 1m)"),
+    profile: bool = typer.Option(True, "--profile", help="Enable cProfile profiling"),
+    no_profile: bool = typer.Option(False, "--no-profile", help="Disable cProfile profiling"),
 ) -> None:
     """Benchmark full runner execution speed, throughput, and memory with cProfile."""
     from algodesk.engine.benchmark import run_benchmark_measurement
 
-    rep = run_benchmark_measurement(
-        symbols_count=symbols,
-        sessions_count=sessions,
-        timeframe=timeframe,
-    )
+    use_profile = False if no_profile else profile
+    if use_profile:
+        rep = run_benchmark_measurement(
+            symbols_count=symbols,
+            sessions_count=sessions,
+            timeframe=timeframe,
+        )
+    else:
+        rep = run_benchmark_measurement(
+            symbols_count=symbols,
+            sessions_count=sessions,
+            timeframe=timeframe,
+            profile=False,
+        )
     typer.echo("=== Backtest Benchmark ===")
     typer.echo(f"Configuration: {rep.symbols} symbols x {rep.sessions} sessions ({rep.timeframe})")
     typer.echo(f"Total bars: {rep.total_bars:,}")
@@ -574,5 +585,6 @@ def backtest_benchmark_cmd(
     per_bar_us = rep.per_bar_cost_seconds * 1_000_000
     typer.echo(f"Per-bar cost: {per_bar_us:.1f} µs/bar ({rep.per_bar_cost_seconds:.6f} s/bar)")
     typer.echo(f"Peak memory: {rep.peak_memory_mb:.1f} MB")
-    typer.echo("\nTop 10 functions by internal time (tottime):")
-    typer.echo(rep.profile_stats_text.strip())
+    if rep.profile_stats_text:
+        typer.echo("\nTop 10 functions by internal time (tottime):")
+        typer.echo(rep.profile_stats_text.strip())

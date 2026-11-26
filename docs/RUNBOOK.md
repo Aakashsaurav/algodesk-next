@@ -1022,6 +1022,21 @@ Checklist before and during a paper or live session on macOS:
   1. Run `uv run algodesk session report <run_id>` and check the `Suspended:` line.
   2. Run `uv run algodesk results list --type paper` (automatically indexes any new runs without a manual rebuild).
 
+## Backtest speed: what is optimised and what is not
+
+Summary of M4-8 backtest optimisations (ADR-098) and remaining hot-path costs:
+
+- **What is optimised (backtest-only, byte-identical results)**:
+  1. **Kill-switch (`KillSwitch(in_memory=True)`)**: No `os.stat()` or disk JSON writes per event in backtest; paper, replay, and live keep full disk sync.
+  2. **Intermediate quotes**: Low/high synthetic quotes (`q1`, `q2`) are skipped in bar-mode backtests when the instrument has no resting order and no open position; open and close quotes are always dispatched.
+  3. **Batch journal (`backtest.journal_events`, `backtest.journal_batch_size`)**: Only registry-listed events are recorded; writer thread wakeups occur per batch instead of per append; hash chain remains intact (`journal verify` passes).
+  4. **Ledger & RiskView**: `PortfolioLedger.mark()` touches only held instruments via `_keys_by_instrument`; `margin_used`, `unrealized_pnl`, and `snapshot()` positions are cached and invalidated on fill or mark of a held instrument.
+  5. **Validation & timestamps**: `SimClock` and `Scheduler` skip `_validate_utc_ts` when `type(ts) is datetime and ts.tzinfo is UTC`; `BarQuoteSynth` caches daily timestamps; `BacktestRunner` uses fixed `+05:30` IST offset arithmetic.
+- **What is NOT optimised (kept full-fidelity)**:
+  - External data ingestion, `Bar(...)` / `Quote(...)` constructors, paper/live/replay execution paths, OMS state machine, risk rule logic, fee engine calculations, and Parquet `table_to_bars` decoding.
+- **Benchmarking**:
+  - Use `uv run algodesk backtest benchmark --no-profile` for wall-clock throughput without `cProfile` overhead.
+
 ## Feed outages: what the engine does and what to check
 
 Checklist for handling and verifying feed outages in live or paper trading:

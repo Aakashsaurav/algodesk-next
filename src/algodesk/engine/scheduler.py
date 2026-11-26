@@ -13,7 +13,7 @@ import asyncio
 import heapq
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from algodesk.api.market import _validate_utc_ts
@@ -137,7 +137,8 @@ class Scheduler:
 
     def advance_to(self, ts: datetime) -> int:
         """Advance time to ts and fire all due timers in deterministic order."""
-        _validate_utc_ts(ts, "ts")
+        if not (type(ts) is datetime and ts.tzinfo is UTC):
+            _validate_utc_ts(ts, "ts")
         fired = 0
         set_time_fn = getattr(self._clock, "set_time", None)
         pin_fn = getattr(self._clock, "pin_time", None)
