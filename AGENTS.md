@@ -44,3 +44,11 @@ Never pipe a long command into head.
 2. Run `bash scripts/check.sh`; paste the last line.
 3. Leave repository committable.
 4. Write report in skill `algodesk-evidence` schema.
+
+## Lessons from M3 and M4
+- Never read, write or reset `data/state/killswitch.json`.
+- Never run backtest, replay, data or killswitch commands on the real repo (the owner runs them).
+- Integration tests use the real `DataService` with a fake source.
+- Report `POLLS` as the exact count of `"Checked task"` lines.
+- Every CP0 number is literal command output.
+- Stop and report at the token cap instead of continuing.

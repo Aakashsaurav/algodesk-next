@@ -1,32 +1,44 @@
 # Status
 
-Owner: Aakash · Version: 1.0 · Date: 30 October 2026
+Owner: Aakash · Version: 1.1 · Date: 26 November 2026
 
 ## Summary
 
-Milestones M0-M3 complete; M4 in progress. AlgoDesk Next provides a pluggable trading workbench for Indian markets with layered TOML configuration, parameter registry audit trails, hash-chained journaling, scrubbed JSON logging, deterministic execution engine, and bit-for-bit replay equivalence. Milestone M2 delivers the historical market data layer: RateLimiter, GapPlanner, Fetcher, BarStore, QuarantineManager, BarValidator, CorporateActions, Bhavcopy ingestion, accumulation, tick compare, and vendor import.
+Milestones M0–M4 are complete. AlgoDesk Next provides a layered core and plugin workbench with TOML config, SQLite parameter registry, hash-chained journal, scrubbed logging, deterministic execution engine, historical data layer, indicators/screens, and reproducible backtester with reporting. Next: M5 design (risk and control).
 
 ## Milestones
 
 | M | Name | State |
 |---|---|---|
 | M0 | Foundations | Done |
-| M1 | Walking skeleton | Done (checklist complete) |
-| M2 | Data layer | Done (checklist complete) |
+| M1 | Walking skeleton | Done |
+| M2 | Data layer | Done |
 | M3 | Indicators and screens | Done |
-| M4 | Backtester and reports | In progress (M4-1 to M4-6 complete) |
-| M5 to M9 | Risk, Zerodha, remote, extended paper, live | Not started |
+| M4 | Backtester and reports | Done |
+| M5 to M9 | Risk, Zerodha, remote, extended paper, live | Planned |
 
-## Acceptance checklists
+## M4 Evidence
 
-- **M1**: Accepted on recorded paper sessions with bit-identical signals, orders, fills, and metrics; replay tolerances proven safe; fee vectors verified by hand; p95 latency and memory measured; feed outage resilience, strategy error observability, and deterministic timer catch-up parity on sessions with feed gaps (ADR-099); macOS power/sleep guard, process suspension detection, and automatic results indexing (ADR-100).
-- **M2**: Zero-network identical get; quarantine resilience; `data verify` clean; rebuilt timeframes equal tick-built; corporate actions audit; contract partitions; quality gates pass.
-- **M4**: Multi-instrument backtest engine with exact replay equivalence, tick fidelity, point-in-time screen rotation (`screen_rotation`), fill-verified `rebalances.csv`, daily mark-to-market equity, hardened metrics, multiset equivalence with order counting, order-identity calibration, isolated benchmarking (ADR-089-091), MCX commodity futures declared rates (ADR-092), continue kill-switch policy (ADR-093), linear-time drawdowns (ADR-094), feed settings parity & equivalence cause attribution (ADR-095), study trial counting & OOS reporting (ADR-096), synthetic quote timing for timer alignment (ADR-097), and backtest hot-path optimisations with byte-identical equivalence (ADR-098).
+- **Paper/Replay**: `demo_paper_fast_paper_20261126_071953_9822c5` vs `demo_paper_fast_replay_20261126_101716_3875d9` equal `True`, no duplicate BUY, kill-switch CLEARED (2026-11-22). 25 Nov `demo_paper_fast_paper_20261125_070106_77666d` vs `demo_paper_fast_replay_20261125_105627_187c0d` equal `True`.
+- **Backtest reproducibility**: `sma_1d_bt` and `rotation_1d_bt` reproduce byte-for-byte (`equal: True`, hashes equal `True`).
+- **Bar-fidelity equivalence**: 16 Nov 46/46 equal (`True`); 25 Nov 1/123 differs (ICICIBANK SELL 09:46 UTC flat zero-volume bar vs 09:45 timer exit); 19 Nov 4 signals differ.
+- **Speed (no profiler)**: 100 x 250 (1d) 18–20 s (1,239–1,365 bars/s, ~710 us/bar); 20 x 20 (1m) ~110 s (~707 us/bar); 100 x 250 (1m) ~1.8 hours (calculated).
+- **Calibration**: 19 Nov (16 adverse pairs): median 1.86 bps, 95th 6.21 bps; default `backtest.slippage_bps = 5`.
+- **Charges**: Rates verified 2026-11-20 and 2026-11-21 applied to earlier dates (declared).
 
-## What exists
+## Known Limits
 
-Plugin contracts and manifests; parameter registry; append-only journal; scrubbed logging; full CLI; fee engine; order state machine; risk engine; simulated venue; session runner; deterministic replay; market data store, rate limiter, gap planner, corporate actions reconciler, calendar closures, vendor importer; screens runner, ranking, and point-in-time screen rotation strategy with rebalances reporting.
+1. Survivorship bias (current index list).
+2. Prices split-adjusted, not raw.
+3. Dividends not credited.
+4. Historical fee rates declared constant before verification.
+5. MCX charges declared, not independently verified.
+6. 1m backtests slow (~11 min for 10 symbols x 1 year, calculated).
+7. Bar-fidelity equivalence not exact on flat zero-volume bars at `exit_time`.
+8. Persistent kill-switch trips (daily loss stops entries until cleared).
+9. Paper fills optimistic (no queue priority or market impact).
 
-## Open decisions
+## Optional Work & Next
 
-None blocking.
+- Optional: speed to 3x, per-rebalance membership (M4-9), equivalence on flat bars at `exit_time`.
+- **Next**: M5 design (risk and control).

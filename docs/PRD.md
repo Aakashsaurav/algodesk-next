@@ -1,11 +1,11 @@
-# AlgoDesk Next — Product Requirements Document v2.10 (Platform)
+# AlgoDesk Next — Product Requirements Document v2.11 (Platform)
 
-Owner: Aakash · Version: 2.10 · Date: 29 October 2026
+Owner: Aakash · Version: 2.11 · Date: 26 November 2026
 
 | Field | Value |
 |---|---|
-| **Status** | Draft for owner approval. Not an authorization to write code or place orders. |
-| **Version / date** | 2.10 (repository edition), 29 October 2026. Supersedes v2.9 and earlier. Complexity guidance aligned with ADR-017, ADR-020, and ADR-036; M1 complete. |
+| **Status** | Living requirements document (M0–M4 complete; M5 next). |
+| **Version / date** | 2.11 (repository edition), 26 November 2026. Supersedes v2.10 and earlier. M0–M4 complete; 12–25 Nov decisions recorded. |
 | **Owner** | Aakash (sole human supervisor) |
 | **Author** | Claude, acting as Product Manager and lead architect. AI coding agents report to this role. |
 | **Documentation rule** | This document follows its own rule (§9): summary first, short sections, one home per fact. |
@@ -663,7 +663,7 @@ Measure, do not guess: the probe tool reports each stage, and the platform's own
 | `stale_data_seconds` | 5 | Per feed; strategies may tighten it |
 | `max_unhedged_seconds` | 5 | Order groups with several legs |
 
-Profiles are cheap to add (for example a swing profile with 1% risk per trade). A percentage rule does not guarantee safety: gaps, slippage, rejections and margin calls can exceed it, and reports say so.
+Profiles are cheap to add. The `"swing"` risk profile (Proposed values, 21 Nov 2026, ADR-093) sets `daily_loss_limit_pct = 4.0`, `weekly_loss_limit_pct = 8.0`, and `drawdown_halt_pct = 15.0` for multi-day strategies. A percentage rule does not guarantee safety: gaps, slippage, rejections and margin calls can exceed it, and reports say so.
 
 ### 8.4 Outage policy (per strategy)
 
@@ -786,18 +786,42 @@ Not reused: the duplicate broker clients, the second (live) order path, stub che
 
 **In short:** each milestone starts with a design of 5 or more pages for your approval (DOC-10), then task cards, then evidence. Quality first; dates are aims.
 
-| M | Name | Scope | Exit criteria |
-|---|---|---|---|
-| M0 | Foundations | Repository, `AGENTS.md` and skills, config loading, central parameter registry, minimal plugin registry, `doctor`, `budget`, `docs check`, journal skeleton, CLI skeleton | Checks pass; documents have summaries |
-| M1 | **Walking skeleton** | `yfinance` data plugin (history); `upstox` plugin (instruments, live stream, basic history); minimal data service with tick and bar recording; indicators SMA, EMA, RSI; one demo strategy; order state machine; `sim` venue; core risk (kill-switch, a few rules); minimal fee schedule; journal and `SUMMARY.md`; Telegram notifications; NSE calendar | **One full paper session on live Upstox data**, a saved summary report, no unhandled exceptions, conformance tests for the plugin kinds used |
-| M2 | Data layer | Cache, gap-fill, validation, quarantine, instrument mapping and diffs, accumulation job, `data verify`, BSE and MCX calendars | FR-DAT P1 acceptance passes |
-| M3 | Indicators and screens | Full built-in set, custom-indicator scaffold, TOML and Python screens, saved screen runs | A real screen runs on 500 symbols within budget |
-| M4 | Backtester and reports | Backtest mode (bar and tick level), models, portfolio mode, results store, compare | Replay-equivalence test passes; reports reproducible |
-| M5 | Risk and control | Risk profiles in the registry, monitors, health guards, Telegram commands, outage policies | Failure-injection suite passes |
-| M6 | Zerodha plugin and shadow | Zerodha venue (disabled by default), all order types, reconciliation, fee schedules, shadow mode | Conformance suite passes; shadow run reviewed |
-| M7 | Remote runner | Profile B on the static-IP host, login ceremony, probe, supervisor, backups | Latency numbers measured; recovery drills pass |
-| M8 | Extended paper | Campaign per promoted strategy | Plan criteria met |
-| M9 | Micro-live | Live gates §8.5, smallest size, supervised (L1) | Your written approval |
+| M | Name | Scope | Exit criteria | Status |
+|---|---|---|---|---|
+| M0 | Foundations | Repository, `AGENTS.md` and skills, config loading, central parameter registry, minimal plugin registry, `doctor`, `budget`, `docs check`, journal skeleton, CLI skeleton | Checks pass; documents have summaries | Done |
+| M1 | **Walking skeleton** | `yfinance` data plugin (history); `upstox` plugin (instruments, live stream, basic history); minimal data service with tick and bar recording; indicators SMA, EMA, RSI; one demo strategy; order state machine; `sim` venue; core risk (kill-switch, a few rules); minimal fee schedule; journal and `SUMMARY.md`; Telegram notifications; NSE calendar | **One full paper session on live Upstox data**, a saved summary report, no unhandled exceptions, conformance tests for the plugin kinds used | Done |
+| M2 | Data layer | Cache, gap-fill, validation, quarantine, instrument mapping and diffs, accumulation job, `data verify`, BSE and MCX calendars | FR-DAT P1 acceptance passes | Done |
+| M3 | Indicators and screens | Full built-in set, custom-indicator scaffold, TOML and Python screens, saved screen runs | A real screen runs on 500 symbols within budget | Done |
+| M4 | Backtester and reports | Backtest mode (bar and tick level), models, portfolio mode, results store, compare | Replay-equivalence test passes; reports reproducible | Done |
+| M5 | Risk and control | Risk profiles in the registry, monitors, health guards, Telegram commands, outage policies | Failure-injection suite passes | Planned |
+| M6 | Zerodha plugin and shadow | Zerodha venue (disabled by default), all order types, reconciliation, fee schedules, shadow mode | Conformance suite passes; shadow run reviewed | Planned |
+| M7 | Remote runner | Profile B on the static-IP host, login ceremony, probe, supervisor, backups | Latency numbers measured; recovery drills pass | Planned |
+| M8 | Extended paper | Campaign per promoted strategy | Plan criteria met | Planned |
+| M9 | Micro-live | Live gates §8.5, smallest size, supervised (L1) | Your written approval | Planned |
+
+### M4 Requirement Status
+
+| ID | Status | Evidence / Notes |
+|---|---|---|
+| FR-BKT-1 | Done | `tests/core/engine/test_m4_4_causality_and_architecture.py`, `tests/core/engine/test_m4_backtest_runner.py` |
+| FR-BKT-2 | Done | `tests/core/engine/test_m4_2_backtest_readiness.py` |
+| FR-BKT-3 | Done | `tests/core/engine/test_m4_backtest_runner.py`, `tests/core/fees/test_m4_1d_dated_fees.py` |
+| FR-BKT-4 | Done | `tests/core/engine/test_m4_4_causality_and_architecture.py` (open-quote fill rule, `backtest.delay_bars >= 1`) |
+| FR-BKT-5 | Done | `tests/core/engine/test_m4_5_rotation_integration_and_properties.py` |
+| FR-BKT-6 | Done | `tests/core/results/test_result_hash_and_manifest.py`; `sma_1d_bt` and `rotation_1d_bt` hashes equal `True` |
+| FR-BKT-7 | Partial | Market, limit, stop, stop-market Done (`plugins/venues/sim/plugin.toml`, `tests/core/engine/test_m4_backtest_runner.py`); P2 order types Later (M6) |
+| FR-BKT-8 | Partial | Study trial count and `backtest.oos_from` split Done (`tests/core/results/test_m4_5d_trials_and_oos.py`, `tests/core/results/test_trials_and_oos.py`); automated sweeps/walk-forward Later |
+| FR-BKT-9 | Done | `tests/core/engine/test_m4_4_tick_fidelity_and_equivalence.py`; `TickBarFeed` |
+| FR-BKT-10 | Partial | 100x250 1d passes in 18–20 s (`tests/core/engine/test_m4_8_backtest_speed.py`); 100x250 1m ~1.8 h calculated (exceeds 10 min target) |
+| FR-RPT-1 | Done | `tests/core/results/test_results_bundle_m4_3.py`, `tests/core/results/test_summary_and_assumptions.py` |
+| FR-RPT-2 | Done | `tests/core/results/test_results_index_and_cli.py`, `tests/core/results/test_results_compare.py` |
+| FR-RPT-3 | Done | `tests/core/results/test_metrics_pure_functions.py`, `tests/core/results/test_drawdown_tracker.py` |
+| FR-RPT-4 | Done | `tests/core/results/test_summary_and_assumptions.py` |
+| FR-RPT-5 | Later | Offline HTML report deferred beyond M4 |
+| FR-RPT-6 | Partial | Backtest/paper compare Done (`tests/core/results/test_results_compare.py`); live drift Later (M6+) |
+| FR-SCR-6 | Done | `tests/core/screens/test_m3_4_screens_integration.py`, `tests/core/engine/test_m4_5_screen_context_and_service.py` |
+| FR-FEE-2 | Done | `tests/core/fees/test_m4_1d_dated_fees.py`, `tests/core/fees/test_m4_6_mcx_commodity_fees.py` |
+| FR-OPS | Partial | `FR-OPS-1,3,6,7` Done (`tests/core/ops/test_m1_20_power_and_suspend.py`, `tests/core/ops/test_doctor.py`, `tests/core/devtools/test_docs.py`); `FR-OPS-2,4,5` Later (M7) |
 
 **Schedule.** Today is Saturday 17 October 2026. My earlier drafts had the date wrong (they said 12 and 13 October), so the "Friday 16 October" aim had already passed; it is dropped. Quality comes first and dates are aims, not promises. Aims: the M0 design was approved on Sat 17 Oct and T0-1 starts now; M0 is done about Fri 23 Oct; the M1 walking skeleton about Fri 30 Oct. NSE holidays in this window must be checked (N-7). M0 plus M1 is roughly 8–10 working days with AI agents.
 
@@ -916,6 +940,10 @@ Rule (D-14): nothing paid without your explicit approval after verified results.
 | D-33 | Order types are built in stages and bracket orders are platform-emulated (Zerodha has no native bracket order today). |
 | D-34 | The Oracle Cloud account is created only at the stage it is needed (M7). |
 | D-36 | Everything stays local: all libraries, Python and caches live only in the project folder and its virtual environment; nothing is installed globally; the MacBook's system folders must never install or load anything from the project; testing only in the virtual environment (17 Oct). |
+| D-37 | Swing risk profile (`risk.swing.*`, Proposed values, 21 Nov, ADR-093): `daily_loss_limit_pct = 4.0`, `weekly_loss_limit_pct = 8.0`, `drawdown_halt_pct = 15.0` for multi-day strategies. |
+| D-38 | MCX commodity futures charges (21 Nov, ADR-092): declared effective 2020-01-01 from `zerodha.com/charges` commodities tab (`com:NRML`/`com:MIS`), not independently verified for earlier dates. |
+| D-39 | Fee fallback policy (18 Nov, ADR-081/ADR-086): pre-verified trade dates fail closed with `FeeScheduleError` unless `fees.fallback = "earliest"` is configured and disclosed in `metrics.json` and `SUMMARY.md`. |
+| D-40 | Backtest kill-switch continue policy (21 Nov, ADR-093): backtests isolate state in `results/<run_id>/killswitch.json`; default `backtest.on_kill_switch = "continue"` blocks new entries on breach while allowing reducing exits. |
 
 ---
 
@@ -1097,7 +1125,16 @@ heartbeat_minutes = 15
 
 ---
 
-## Appendix F — Changes from v2.9
+## Appendix F — Changes from v2.10
+
+| Topic | v2.10 | v2.11 |
+|---|---|---|
+| Milestone table (§12) | No Status column | Added Status column: M0–M4 `Done`, M5–M9 `Planned` |
+| M4 requirement status (§12) | Not present | Added M4 requirement status table (`FR-BKT-1..10`, `FR-RPT-1..6`, `FR-SCR-6`, `FR-FEE-2`, `FR-OPS`) with `Done`/`Partial`/`Later` and test evidence |
+| Swing risk profile (§8.3, D-37) | Example only | Recorded `"swing"` profile Proposed values (`4.0%` daily, `8.0%` weekly, `15.0%` drawdown) |
+| 12–25 Nov decisions (Appendix A) | Ended at D-36 | Added D-37 to D-40 (swing profile, MCX gold charges, fee fallback policy, backtest kill-switch continue policy) |
+
+### Previous changes (from v2.9 to v2.10)
 
 | Topic | v2.9 | v2.10 |
 |---|---|---|

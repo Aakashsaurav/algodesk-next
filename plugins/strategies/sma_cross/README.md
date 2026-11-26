@@ -1,7 +1,7 @@
 # SMA Cross Strategy Plugin
 
 ## Summary
-The `strategies/sma_cross` plugin implements a deterministic long-only Simple Moving Average crossover strategy for paper trading and backtesting in AlgoDesk Next. It evaluates completed bars, entering a long position when the fast SMA crosses strictly above the slow SMA, and exiting when the fast SMA crosses below the slow SMA, upon reaching the intraday exit time, or when a configured stop-loss percentage is breached.
+The `strategies/sma_cross` plugin implements a deterministic long-only Simple Moving Average crossover strategy for `research`, `backtest`, and `paper` modes in AlgoDesk Next. It evaluates completed bars, entering a long position when the fast SMA crosses strictly above the slow SMA, and exiting when the fast SMA crosses below the slow SMA, upon reaching the intraday `exit_time`, or when a configured `stop_pct` stop-loss is breached.
 
 > [!NOTE]
 > This strategy is a demonstration designed solely to test the workbench pipeline. It is not investment advice or a recommendation to trade.
@@ -16,3 +16,7 @@ The `strategies/sma_cross` plugin implements a deterministic long-only Simple Mo
 - `product`: Order product type, either `"cnc"` or `"mis"` (default `"mis"`).
 - `exit_time`: Intraday square-off time string (default `"15:15"`).
 - `stop_pct`: Optional stop-loss percentage from entry price (e.g. `0.02` for 2%).
+
+## Verification
+- `verified_on = 2026-10-27`
+- Source: AlgoDesk Next Walking Skeleton Design Section 5.3

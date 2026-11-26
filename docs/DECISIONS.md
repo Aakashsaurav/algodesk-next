@@ -458,3 +458,10 @@ Short decision records (context, decision, reason) in the order they were taken.
 4. *Automatic Results Indexing*: `ResultsWriter.write` and `write_screen_results` upsert `results_index.db` on finalisation (including interrupt/error runs), and `results list [--type ...] [--limit N]` (default 20 newest first) runs `sync_missing` first (printing `indexed N new runs`) while skipping corrupt folders with a warning.
 
 
+
+ADR-072 not used (numbering gap).
+
+**ADR-101 M4 close.**
+1. *Scope delivered*: Multi-instrument bar- and tick-fidelity backtester (`BacktestRunner`, `BarQuoteSynth`, `TickBarFeed`), open-quote fill causality, date-bounded `zerodha_nse` equity/F&O and declared MCX commodity fees, point-in-time `screen_rotation` with two-step rebalance and `rebalances.csv`, SQLite `ResultsIndex`, `SUMMARY.md`/OOS/trial reporting, equivalence/calibration/benchmark CLI, per-run kill-switch isolation, and hot-path optimisations.
+2. *Evidence*: Live paper/replay sessions (25 & 26 Nov) compare equal `True` with no duplicate BUY; `sma_1d_bt` and `rotation_1d_bt` reproduce byte-for-byte; 16 Nov equivalence 46/46; 100x250 1d benchmark 18–20 s (~710 us/bar); 19 Nov calibration median 1.86 bps (95th 6.21 bps).
+3. *Known limits*: Current-list survivorship, split-adjusted prices, uncredited dividends, declared pre-verification/MCX fees, slow 1m backtests (~1.8h for 100x250 calculated), flat-bar `exit_time` equivalence diffs, persistent daily-loss kill-switch trips, optimistic paper fills.

@@ -1,10 +1,10 @@
 # Architecture
 
-Owner: Aakash · Version: 1.0 · Date: 29 October 2026
+Owner: Aakash · Version: 1.1 · Date: 26 November 2026
 
 ## Summary
 
-AlgoDesk Next is a small core plus plugins. The core is organized in strict layers: `api` at the bottom; foundation packages (`fees`, `config`, `params`, `registry`, `journal`, `logs`, `data`); trading execution layers (`oms`, `portfolio`, `risk`, `results`); `ops` and `devtools`; runtime `engine`; and `cli` on top. Plugins import only `algodesk.api`; the core never imports a plugin. Every adjustable number lives in the parameter registry, every event in a hash-chained journal, and every plugin load passes mode, capability and conformance gates. Orders follow a strict state machine with write-ahead journaling. Risk checks evaluate without short-circuiting, backed by an atomic persistent kill-switch. Import rules are enforced by tests. Market data, strategies, orders, notifiers, and brokers arrive as plugins.
+AlgoDesk Next is a small core plus plugins. The core is organized in strict layers: `api` at the bottom; foundation packages (`fees`, `config`, `params`, `registry`, `journal`, `logs`, `data`, `screens`); trading execution layers (`oms`, `portfolio`, `risk`, `results`); `ops` and `devtools`; runtime `engine`; and `cli` on top. Plugins import only `algodesk.api`; the core never imports a plugin. Every adjustable number lives in the parameter registry, every event in a hash-chained journal, and every plugin load passes mode, capability and conformance gates. Orders follow a strict state machine with write-ahead journaling. Risk checks evaluate without short-circuiting, backed by an atomic persistent kill-switch. Import rules are enforced by tests. Market data, strategies, orders, notifiers, and brokers arrive as plugins.
 
 ## 1. Layers
 
@@ -13,8 +13,8 @@ cli
 engine
 ops | devtools
 oms | portfolio | risk | results
-fees | config | params | registry | journal | logs | data   (independent of each other)
-api                                                           (imports no other algodesk package)
+fees | config | params | registry | journal | logs | data | screens   (independent of each other)
+api                                                                     (imports no other algodesk package)
 plugins/  ->  algodesk.api only
 ```
 Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.sh`) and by `algodesk lint`.
@@ -24,111 +24,99 @@ Enforced by `import-linter` contracts in `.importlinter` (run by `scripts/check.
 | Package | Purpose | Main public names |
 |---|---|---|
 | `api` | Contracts, domain types and protocols | `Instrument`, `Quote`, `Bar`, `Order`, `Fill`, `Position`, `Portfolio`, `Indicator`, `Calendar`, `Clock`, `PluginBase`, error classes |
-| `fees` | Deterministic fee calculation and schedules | `FeeEngine`, `Schedule`, `charges_for_fills` |
+| `fees` | Deterministic fee calculation and schedules | `FeeEngine`, `Schedule`, `charges_for_fills`, `resolve_fee_segment_and_product` |
 | `config` | Layered TOML configuration, validated | `PlatformConfig`, `RunConfig`, `load_platform`, `load_run`, `build_effective`, `render_effective`, `resolve_paths`, `ensure_dirs` |
 | `params` | Central parameter registry (SQLite) | `ParamRegistry`, `ParamSpec`, `load_defaults`, `ChangeResult` |
 | `registry` | Plugin discovery, validation, gating, loading | `PluginRegistry`, `discover`, `code_hash`, `ConformanceStore`, `scaffold_plugin`, `base_contract_problems` |
 | `journal` | Append-only hash-chained event log (SQLite) | `Journal`, `JournalSettings`, `verify_journal` |
 | `logs` | JSON logging with secret scrubbing | `setup_logging`, `get_logger` |
-| `data` | Bar & tick store, day coverage, validation, quarantine, resampler, catalog, groups, rate limiter, gap planner, parallel fetcher, data service, historical feed, quote synthesizer | `BarStore`, `BarValidator`, `RateLimiter`, `GapPlanner`, `Fetcher`, `DataService`, `CoverageIndex`, `QuarantineManager`, `SessionBarStore`, `resample`, `DataManifest`, `DataCatalog`, `HistoricalFeed`, `BarQuoteSynth` |
-| `screens` | Market screening engine: TOML rules, feature extraction, cross-sectional ranking, reproducible run bundles | `ScreenRunner`, `TomlScreenModel`, `load_toml_screen`, `build_feature_view`, `compute_percentile_ranks`, `compute_result_hash` |
-| `engine` | Deterministic event bus, clocks, scheduler, bars, runner, backtest runner, and strategy runtime | `EventBus`, `WallClock`, `SimClock`, `Scheduler`, `BarBuilder`, `SessionManager`, `SessionRunner`, `BacktestRunner`, `StrategyRuntime`, `IndicatorManager`, `NotifyBridge` |
+| `data` | Bar & tick store, coverage, validation, quarantine, resampler, catalog, rate limiter, gap planner, fetcher, data service, historical & tick feeds, quote synth | `BarStore`, `BarValidator`, `RateLimiter`, `GapPlanner`, `Fetcher`, `DataService`, `CoverageIndex`, `QuarantineManager`, `SessionBarStore`, `resample`, `DataManifest`, `DataCatalog`, `HistoricalFeed`, `TickBarFeed`, `BarQuoteSynth` |
+| `screens` | Market screening engine: TOML/Python rules, feature extraction, cross-sectional ranking, reproducible run bundles | `ScreenRunner`, `TomlScreenModel`, `load_toml_screen`, `build_feature_view`, `compute_percentile_ranks`, `compute_result_hash` |
+| `engine` | Deterministic event bus, clocks, scheduler, bars, runner, backtest runner, replay, and strategy runtime | `EventBus`, `WallClock`, `SimClock`, `Scheduler`, `BarBuilder`, `SessionManager`, `SessionRunner`, `BacktestRunner`, `StrategyRuntime`, `IndicatorManager`, `NotifyBridge` |
 | `oms` | Order lifecycle, state machine, write-ahead journaling | `OrderManager` |
 | `portfolio` | Realized/unrealized accounting, mark-to-market, snapshots | `PortfolioLedger` |
-| `risk` | Pre-trade evaluation, persistent kill-switch, loss monitor | `RiskEngine`, `KillSwitch`, `RiskMonitor`, `RiskViewContext` |
-| `results` | Execution performance metrics and artifact report generator | `ResultsWriter`, `compute_max_drawdown` |
+| `risk` | Pre-trade evaluation, persistent kill-switch, loss monitor | `RiskEngine`, `KillSwitch`, `RiskMonitor`, `RiskViewContext`, `DrawdownTracker` |
+| `results` | Execution performance metrics, SQLite results index, and artifact report generator | `ResultsWriter`, `ResultsIndex`, `compute_max_drawdown` |
 | `ops` | Wiring and diagnostics | `open_runtime`, `Runtime`, `DoctorRegistry`, `build_core_checks` |
 | `devtools` | Automatic fences | budget, docs, archlint, secretscan, `build_tool_checks` |
 | `cli` | The `algodesk` command | Typer app |
 
 ## 3. Start-up sequence (`open_runtime`)
 
-1. Find the project root; read `config/platform.toml` and the other layers (platform, profile, run, environment, command line); validate; stop with a three-line error on any problem.
-2. Resolve paths; they must stay inside the project folder. Directories are created only when asked.
-3. Open the parameter registry (only if its database exists or creation is requested) and load defaults from `config/params/*.toml`.
-4. Discover plugin manifests without importing any plugin code.
-5. Commands then run; long-running processes (from M1) also open the journal and start logging.
+1. Find the project root; read `config/platform.toml` and layers (platform, profile, run, environment, CLI); validate; stop with a three-line error on any problem.
+2. Resolve paths inside the project folder; create directories only when asked.
+3. Open the parameter registry (if DB exists or creation requested) and load defaults from `config/params/*.toml`.
+4. Discover plugin manifests without importing plugin code.
+5. Long-running processes open the journal and start scrubbed JSON logging.
 
 ## 4. Where things live
 
 | Path | Content |
 |---|---|
-| `config/` | `platform.toml`, `profiles/`, `runs/`, `params/*.toml` defaults, `groups/*.toml`, `screens/*.toml`, lint and scan rules |
-| `data/state/params.db`, `data/state/journal.db` | Parameter overrides and history; journal (git-ignored) |
-| `data/state/killswitch.json` | Persistent emergency trading kill-switch state (git-ignored) |
-| `data/state/data_manifest.db` | Market data manifest SQLite DB (schema v2: datasets, parts, coverage_days, quarantine) |
-| `data/bars/source=S/timeframe=1m/exchange=E/segment=G/symbol=X/adj=A/year=YYYY/YYYY-MM.parquet` | 1-minute historical bars partitioned by year and month (Zstandard compressed) |
-| `data/bars/source=S/timeframe=1d/exchange=E/segment=G/symbol=X/adj=A/daily.parquet` | Daily bars stored in a single consolidated file per instrument/adjustment |
-| `data/session_bars/date=YYYY-MM-DD/` | Ephemeral live intraday session bars separated from history and purged automatically |
-| `data/ticks/exchange=E/segment=S/symbol=X/date=D/` | Hive-partitioned parquet part and compacted day files |
-| `data/.quarantine/<timestamp>/` | Quarantined invalid data chunks with validation `report.json` and raw payload |
-| `data/.trash/<timestamp>/` | Two-stage soft deletion safety trash awaiting purge |
-| `results/<run_id>/` | Session execution artifacts (`SUMMARY.md`, `metrics.json`, `trades.csv`, `equity.csv`, configs) |
-| `logs/algodesk.log` | JSON log lines, rotated daily (git-ignored) |
+| `config/` | `platform.toml`, `profiles/`, `runs/`, `params/*.toml`, `groups/*.toml`, `screens/*.toml`, lint/scan rules |
+| `data/state/` | `data/state/params.db`, `data/state/journal.db`, `data/state/killswitch.json`, `data/state/data_manifest.db`, `data/state/results_index.db` (git-ignored) |
+| `data/bars/` | Historical 1m (year/month Parquet) and 1d (consolidated `daily.parquet`) bars |
+| `data/session_bars/` | Ephemeral live intraday session bars (`date=YYYY-MM-DD/`) |
+| `data/ticks/` | Hive-partitioned Parquet tick parts and compacted `day.parquet` files |
+| `data/.quarantine/`, `data/.trash/` | Quarantined invalid chunks and soft-deleted data awaiting purge |
+| `results/<run_id>/` | Execution artifacts (`SUMMARY.md`, `metrics.json`, `trades.csv`, `equity.csv`, `equity_daily.csv`, `round_trips.csv`, `orders.csv`, `manifest.json`, `session.md`) |
+| `logs/algodesk.log` | Daily-rotating scrubbed JSON logs (git-ignored) |
 | `.algodesk/conformance.json` | Conformance pass records keyed by plugin code hash |
-| `.venv/`, `.local/` | Virtual environment, project-local Python and caches (isolation rule) |
-| `_workbench/` | Scratch: task cards, handoff file, design drafts (never in docs) |
+| `.venv/`, `.local/` | Isolated virtual environment, Python caches, and instrument master cache |
+| `_workbench/` | Scratch: task cards, handoff file, design docs (never in `docs/`) |
 
 ## 5. Safety rules already implemented
 
-- An order-capable plugin is refused in research, backtest and paper **before its code is imported**; in live it needs a current conformance record.
+- Order-capable plugins are refused in research, backtest, and paper **before import**; live requires a current conformance record.
 - Paper and live loads require a conformance record for the plugin's current code hash.
-- Undeclared capabilities raise `NotSupported`; there are no stubs that return success (checked by `algodesk lint`).
-- The journal forbids updates and deletes, chains every event by hash, and `journal verify` detects edits, removals and broken links.
-- Secrets are references (`secret:<name>`); plain secrets in configuration are rejected; logs and journal payloads pass through the scrubber.
-- Parameter changes need a reason; tightening applies at once; loosening while a live strategy is armed needs a typed confirmation and waits for the next session.
-- The environment must be isolated: `doctor` and `check.sh` fail if Python, caches or packages come from outside the project folder.
+- Undeclared capabilities raise `NotSupported`; no stubs return success (`algodesk lint`).
+- The journal forbids updates/deletes, chains every event by hash, and `journal verify` detects tampering.
+- Secrets use `secret:<name>` references; plain secrets are rejected; logs and journal payloads pass through `Scrubber`.
+- Parameter changes require a reason; tightening applies immediately; loosening while armed requires typed confirmation and waits for next session.
+- Environment isolation: `doctor` and `check.sh` fail if Python, caches, or packages come from outside the project folder.
 
 ## 6. Plugin loading
 
-`PluginRegistry.create(kind, name, config=..., ctx=...)` checks, in order: the plugin exists; the mode is allowed by its manifest; order-capable plugins only in live (before import); a current conformance record for paper and live; the configuration against the plugin's `ConfigSchema`; then a lazy import under a unique module name, instantiation with `(manifest, config, ctx)`, and a final check that the object satisfies the `Plugin` contract.
+`PluginRegistry.create(kind, name, config=..., ctx=...)` verifies: existence, `modes_allowed`, order-capable gate (before import), conformance record (paper/live), `ConfigSchema`, lazy import under a unique module name, instantiation with `(manifest, config, ctx)`, and `Plugin` contract compliance.
 
 ## 7. Quality gates (`bash scripts/check.sh`)
 
-isolation, ruff check, ruff format check, mypy (strict), pytest, import-linter contracts, budget (size advisory, dependencies hard), docs check, architecture lint, secret scan. The last line is `CHECK: PASS` or `CHECK: FAIL (n)`.
+Isolation, `ruff check`, `ruff format --check`, `mypy` (strict), `pytest`, `import-linter` contracts, `budget` (size advisory, dependencies hard), `docs check`, architecture lint, secret scan. Ends with `CHECK: PASS` or `CHECK: FAIL (n)`.
 
-## 8. Data Architecture (Limiter, Gap Planner, Parallel Fetcher & DataService)
+## 8. Data Layer
 
-Historical market data flows through a pure planner, central rate limiter, worker fetcher, and transactional bar store:
-- **Central Rate Limiter (`RateLimiter`)**: Centralized multi-window sliding limiter enforcing requests-per-second, per-minute, and per-30-minute caps keyed to `(source, endpoint)`. Thresholds are initialized from plugin manifests and can be overridden dynamically in the parameter registry. HTTP 429 or upstream rate errors trigger synchronized backoff across all worker threads with exponential backoff and jitter, logged directly to the journal.
-- **Pure Gap Planner (`GapPlanner`)**: Deterministically maps arbitrary requested timeframes to base series `1m` or `1d`. Consults `Calendar` to identify expected trading sessions not marked `COMPLETE`, `CLOSED`, or `UNAVAILABLE`. Requests are chunked within plugin `max_span` and `data.fetch_chunk_days`. Sessions older than plugin retention limits are marked `UNAVAILABLE`.
-- **Worker Fetcher (`Fetcher`)**: Thread pool executing chunk fetch plans. For each chunk, the worker acquires the rate limiter, invokes the broker plugin's `history()`, validates candlestick monotonicity and integrity with `BarValidator`, and commits validated bars to `BarStore` or quarantines corrupt records via `QuarantineManager`. Retries up to `data.fetch_retries` before recording `EMPTY` with error details in `fetch_log`. Interrupted fetches cleanly resume from already committed chunks.
-- **Unified Query Service (`DataService.get`)**: Unified entrypoint orchestrating planning, rate-limited fetching, Parquet storage retrieval, dynamic backward adjustment, and on-the-fly resampling to the requested timeframe. Supports `download=raw` and `download=adjusted` across `adjust=none|splits|total` (default for raw is `total`). `AdjustmentView` computes backward cumulative adjustment factors and volume divisors across all timeframes (1m, 5m, 1h, 1d, 1w). Refuses series with unresolved `conflict` or `manual_required` actions naming symbol and date; requires `--accept-unverified` to proceed with unverified actions. Returns `DataSlice` with complete provenance (`dataset_ids`, SHA-256 `checksums`, `source`, `adjustment`, `fetched_at`, applied action IDs and hash). `--fill-only` mode fetches and stores data without materializing memory slices. Strategy indicator warm-up is pinned to the run's primary `live_suitable` broker (Upstox), recording explicit overrides to the journal and results manifest.
-- **Corporate Actions Architecture (`ActionsStore`, `Reconciler`, `AdjustmentView`)**: Dedicated actions store managing partitioned Parquet datasets (`data/actions/exchange=E/symbol=X/actions.parquet`) tracked in manifest as `kind="actions"`. Independent readers ingest events from Upstox (ISIN-keyed) and yfinance. Multi-source reconciler cross-checks type, ex-date, and ratios, classifying events into `confirmed`, `unverified`, `conflict`, or `manual_required`. Price-based jump detector flags price jumps exceeding `corp.detect_jump_pct` with no action within 1 trading day. Operator overrides in `config/corporate_actions_overrides.toml` strictly take precedence over broker data. Staleness detection triggers full 1d refetch or backward 1m factor update with sample-month audit whenever newer ex-dates arrive.
-- **Diagnostic & Audit Tools (`algodesk data actions audit`, `algodesk spike`)**: Audit commands verify derived adjusted series against source-adjusted series within `corp.audit_tolerance_pct`. Diagnostic spikes (`upstox-history`, `yfinance-history`, `upstox-actions`, `compare-adjustment`) compare price ratios and steps around corporate action ex-dates to verify adjustment basis without exposing secrets or tokens.
-- **Data Accumulation & Lag Diagnostics (`algodesk data accumulate`, `data.accumulation_lag`)**: Deterministic group accumulation fetches completed historical sessions for configured universes across 1m and 1d base timeframes, journals `data.accumulate`, and tracks days lost beyond broker retention horizons. Diagnostic health check warns when missing sessions exceed `data.accumulate_lag_warn_days`.
-- **In-Memory Bar Reconstruction & Cross-Source Comparison (`algodesk data compare`)**: Rebuilds 1m bars from recorded ticks using `BarBuilder` and compares them against primary/secondary sources across close and volume tolerances without mutating stored records.
-- **Safe Irreplaceable Tick Deletion (`algodesk data delete --kind ticks`)**: Enforces explicit typed confirmation phrases (`DELETE <N> files`) and moves records to timestamped trash directories (`.trash/<timestamp>`), permanently blocking `--purge` bypassing trash for tick data.
-- **Vendor File Ingestion (`plugins/brokers/importer`, `algodesk data import`)**: Reads external CSV and Parquet files with column mapping specs, parses timestamps with timezone handling, validates against `InstrumentId` identity, and commits through `BarValidator` and `BarStore`.
-- **Live Data Smoke Verification (`algodesk data smoke`)**: End-to-end smoke command executing sequential 1d and 1m queries, asserting that the second pass generates zero network calls (100% cache hit), evaluates gap detection, tests manifest integrity, and checks cross-source close price divergence.
+Historical market data flows through `GapPlanner`, `RateLimiter`, `Fetcher`, `BarValidator`, `BarStore`, `QuarantineManager`, `ActionsStore`/`Reconciler`, and `DataService.get`. `DataService` supports `raw`/`adjusted` downloads, dynamic corporate-action adjustment (`none`, `splits`, `total`), on-the-fly resampling, and `DataSlice` provenance. For operational workflows and detailed design, see [Runbook](RUNBOOK.md#data-routine) and `_workbench/M2 — Data Layer Module Design.md`.
 
 ## 9. Market Sessions & Calendars
 
-Market sessions (open, close, square-off, weekdays) are centralized as parameters under `market.<exchange>.<segment>` in the parameter registry (`config/params/markets.toml`). Calendar plugins read registry parameters for timing while supplying exchange-specific trading days, holidays, per-session closures (closed = all, morning, evening; MCX has two sessions), and special session timings from data files.
+Market sessions (open, close, square-off, weekdays) live under `market.<exchange>.<segment>` in `config/params/markets.toml`. Calendar plugins supply trading days, holidays, per-session closures (NSE, BSE, MCX), and special session timings.
 
 ## 10. Secrets & Broker Ingestion
 
-Secrets providers (`keychain`, `env`) expose name-based lookup through `SecretReader`. In `build_context`, all retrieved secret values are registered with `Scrubber` to guarantee redaction in logs and journals. Broker plugins implement `DataSource` (historical bars, real-time tick/quote feeds) and `AuthFlow` (interactive browser login or analytics tokens).
+Secrets providers (`keychain`, `env`) expose name-based lookup via `SecretReader`, registering retrieved values with `Scrubber`. Broker plugins implement `DataSource` and `AuthFlow`.
 
 ## 11. Strategy Runtime, Runner, Replay & Reporting
 
-`SessionRunner` coordinates event streaming, bar building, strategy execution, order routing, risk evaluation, simulated matching, and portfolio ledgering. `BacktestRunner` composes `SessionRunner` directly without duplicating trading logic, orchestrating historical bar playback via `HistoricalFeed` and `BarQuoteSynth` with zero look-ahead (`backtest.delay_bars >= 1`), STOP and STOP_MARKET orders, and batched SQLite journaling. `StrategyRuntime` provides strategies with a read-only `StrategyContext` (completed bars, incremental indicators, position and portfolio snapshots), dispatches lifecycle hooks (`on_start`, `on_bar`, `on_fill`, `on_timer`, `on_stop`), and isolates strategy exceptions so failed strategies are halted without interrupting the session. `ResultsWriter` produces an 8-file artifact bundle in `results/<run_id>/` (`SUMMARY.md`, `metrics.json`, `trades.csv`, `equity.csv`, `config.effective.txt`, `registry.snapshot.json`, `manifest.json`, and `session.md`). Telegram alerts are delivered out-of-band via `NotifyBridge`.
+`SessionRunner` coordinates event streaming, bar building, strategy execution, order routing, risk evaluation, simulated matching, and portfolio ledgering. `StrategyRuntime` provides a read-only `StrategyContext`, dispatches lifecycle hooks, and isolates strategy exceptions. `ResultsWriter` writes the artifact bundle in `results/<run_id>/` and upserts `results_index.db`. Historical replay uses `SimClock` and `ReplayFeed` with `compare_runs` validating bit-for-bit equivalence.
 
-Run preparation (`algodesk run --prepare`) runs conformance suites for all run plugins, refreshes the instrument master, and runs pre-start doctor checks before execution. Historical replay uses `SimClock` and `ReplayFeed` to replay recorded ticks through the exact production engine wiring. `compare_runs` validates bit-for-bit replay equivalence by checking performance metrics and the ordered journal event sequences (signals, risk decisions, orders, fills). Hermetic test isolation fixture (`tmp_project`) and conftest session guards guarantee tests never mutate repository data or results state.
+## 12. Backtest mode
 
-## 12. Structured Logging & Observability
+`BacktestRunner` composes `SessionRunner` directly (one engine, zero duplicated trading logic):
+- **Components**: `SimClock` (event-driven time), `HistoricalFeed` (offline `cache_only=True` bars) or `TickBarFeed` (tick-fidelity 1m reconstruction), `BarQuoteSynth`, `venues/sim`, `FeeEngine` (date-bounded schedules), and `ResultsWriter`.
+- **Quote path rule**: `BarQuoteSynth` emits 4 synthetic quotes per bar: `O -> L -> H -> C` for up bars ($C \ge O$) and `O -> H -> L -> C` for down bars ($C < O$). Daily bars align to NSE 09:15–15:30 IST; intraday closing quotes sit at `end_ts - 1ms` so boundary timers see $\le 1\text{ms}$ quote age. Intermediate L/H quotes are skipped when an instrument has no open position or resting order.
+- **Open-quote fill rule**: Orders decided on bar $t$ arrive at the Open quote timestamp of bar $t+1$ (`backtest.delay_bars >= 1`, `backtest.sim_latency_ms = 0`). Market orders fill at `round_to_tick(open(t+1) +/- slippage)` independent of bar direction; resting stops crossed at open fill at open.
+- **Kill-switch isolation**: Backtests use an in-memory / run-local `results/<run_id>/killswitch.json` and never read or mutate `data/state/killswitch.json`. Default `backtest.on_kill_switch = "continue"` blocks new entries on breach while allowing reducing exits.
+- **Journal batch mode**: Events write to `journal_bt_<run_id>.db` filtered by `backtest.journal_events` and flushed in batches of `backtest.journal_batch_size`, preserving the hash chain.
+- **Result hash**: `manifest.json` records an 8-component canonical SHA-256 `result_hash` (universe, datasets, corporate actions, fees, strategy, params, model settings/seed, code version) for bitwise reproducibility.
 
-AlgoDesk Next enforces strict session observability across file logging, write-ahead journaling, console feedback, and post-session audits:
-- **File Logging (`logs/algodesk.log`)**: `run`, `replay`, and `feed probe` initialize daily-rotating structured JSON logs via `setup_logging`. All log records pass through `Scrubber` to guarantee credential and token redaction. Log retention is governed by `logs.retention_days`.
-- **Session Lifecycle Journal Events (M1 Design 8.1)**: Paper and replay runs record comprehensive execution events into SQLite journal storage: `run.start`, `config.effective`, `registry.snapshot`, `instruments.loaded`, `feed.connected`, per-minute `tick.stats`, `bar.stats`, and `proc.stats` (peak RSS via `resource`, journal bytes, recorder rows and bytes), `signal`, `intent`, `risk.decision`, `order.created`, `order.event`, `fill`, `portfolio.snapshot`, `error`, end-of-run `latency.stats` (tick-to-intent p50 and p95), and `run.end`.
-- **Console Status Line**: Periodic status updates emit every `run.status_seconds` (default 30s; silenced with `--quiet`) displaying IST time, state, total ticks, oldest tick age, closed bars, signals, orders, fills, kill-switch status, and RSS.
-- **Session Observability Report**: `algodesk session report [RUN_ID]` prints first/last tick in IST, session coverage % against the NSE calendar session, feed gaps, bars per timeframe, signals, orders, fills, rule rejects, p95 latency, peak RSS, recorder rows/bytes, journal growth, and failure reasons. Runs starting after session open are tagged `partial`.
+## 13. Structured Logging & Observability
 
-## 13. Not built yet
+`run`, `replay`, and `feed probe` initialize daily-rotating scrubbed JSON logs (`logs/algodesk.log`), record lifecycle/latency/resource events in SQLite, emit periodic console status lines, and generate `algodesk session report` summaries. In paper/live on macOS, `ops.keep_awake` spawns `caffeinate -i -w <pid>` and `SuspendWatcher` detects sleep jumps.
 
-- **M4 Backtester and reports**: M4-1 backtester core mode, bar quote synth, stop orders, batch journaling complete. Remaining: multi-fidelity/tick-level, parameter sweep/study, report generator.
-- **M5 Risk and control**: Risk profiles in the parameter registry, monitors, health guards, Telegram commands, outage policies.
-- **M6 Zerodha plugin and shadow**: Zerodha venue (disabled by default), all order types, reconciliation, fee schedules, shadow mode.
-- **M7 Remote runner**: Profile B on the static-IP host, login ceremony, probe, supervisor, backups.
-- **M8 Extended paper**: Campaign per promoted strategy.
-- **M9 Micro-live**: Live gates §8.5, smallest size, supervised execution.
+## 14. Current state & planned milestones
+
+Milestones **M0–M4 are complete** (foundations, walking skeleton, data layer, indicators/screens, backtester/reports). Remaining milestones:
+- **M5 Risk and control**: Risk profiles in registry, monitors, health guards, Telegram commands, outage policies.
+- **M6 Zerodha plugin and shadow**: Zerodha venue (disabled by default), full order types, reconciliation, shadow mode.
+- **M7 Remote runner**: Profile B on static-IP host, login ceremony, supervisor, backups.
+- **M8 Extended paper** & **M9 Micro-live**: Multi-day paper campaigns and supervised live gates (§8.5).

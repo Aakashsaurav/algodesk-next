@@ -1,6 +1,6 @@
 # Writing a plugin
 
-Owner: Aakash · Version: 1.0 · Date: 29 October 2026
+Owner: Aakash · Version: 1.1 · Date: 26 November 2026
 
 ## Summary
 
@@ -33,13 +33,13 @@ Plugins implement domain protocols defined in `algodesk.api.protocols` (re-expor
 | `brokers/yfinance` | `broker` | `history`, `actions`, `fundamentals`, `info`, `options` | Historical equity data from Yahoo Finance with NSE/BSE mappings, raw/adjusted OHLCV, and rate limits. |
 | `brokers/upstox` | `broker` | `auth`, `instruments`, `history`, `stream` | Official Upstox v2/v3 thin client for OAuth/analytics auth, daily instrument master, history, and Protobuf feed. |
 | `calendars/exchange` | `calendar` | `holidays`, `sessions`, `special_sessions` | Exchange trading calendar providing market session timing, holiday schedules, and special session handling for NSE, BSE, and MCX. |
-| `fees/zerodha_nse` | `fees` | `equity_delivery`, `equity_intraday`, `futures` | Verified dated fee and tax schedule for Zerodha trading on NSE across delivery, intraday, and equity futures. |
+| `fees/zerodha_nse` | `fees` | `equity_delivery`, `equity_intraday`, `futures`, `commodity_futures` | Dated fee/tax schedule for Zerodha on NSE/BSE (`verified_on = 2026-11-20`) and MCX commodity futures (`com:NRML`/`com:MIS`, declared `2026-11-21`: brokerage 0.03% cap ₹20, CTT 0.01% sell, MCX txn 0.0021%, SEBI ₹10/cr, stamp 0.002% buy, 18% GST). |
 | `indicators/builtin` | `indicator` | `sma`, `ema`, `rsi`, `atr`, `vwap`, `bollinger`, `macd`, `rolling_hl`, `volume_avg`, `roc` | Built-in mathematical indicators supporting batch calculation and streaming updates with golden vectors. |
 | `screens/sma_trend_py` | `screen` | `default` | Reference Python screen evaluating SMA(50) > SMA(200) across daily completed bars. |
 | `risk_rules/builtin` | `risk_rule` | `pre_trade`, `limits`, `capital_checks` | Pre-trade risk rule plugin evaluating 9 safety controls (cash, exposure, orders/min, daily loss) from registry. |
-| `venues/sim` | `venue` | `market_orders`, `limit_orders`, `stop_orders`, `stop_market_orders`, `depth_matching`, `failure_injection` | Simulated execution venue with latency, seeded jitter, depth walking, trade-through limit fills, stop orders, slippage, and ambiguous bar tracking. |
-| `strategies/sma_cross` | `strategy` | `signals`, `lifecycle`, `intraday_exit`, `daily_1d` | Demo dual moving-average crossover strategy exercising bar processing, warmup, signals, exit timers, and daily 1d execution with Product CNC. |
-| `strategies/screen_rotation` | `strategy` | `screen_rotation`, `rebalances`, `daily_1d`, `ranking` | Long-only screen-driven rotation strategy evaluating quantitative screens point-in-time and rotating holdings into top N ranked symbols. |
+| `venues/sim` | `venue` | `market_orders`, `limit_orders`, `stop_orders`, `stop_market_orders`, `depth_matching`, `failure_injection` | Simulated venue (`order_capable = false`, `verified_on = 2026-10-27`): depth walking, trade-through limits, `STOP`/`STOP_MARKET` triggers (filling at open if crossed on bar open), bar-mode open-quote fills with `backtest.slippage_bps`, and seeded latency/jitter. |
+| `strategies/sma_cross` | `strategy` | `signals`, `lifecycle`, `intraday_exit`, `daily_1d` | Demo dual-SMA crossover strategy (`research`, `backtest`, `paper`; `verified_on = 2026-10-27`) exercising bar processing, warmup, exit timers, stop-loss, and daily `1d` CNC execution. |
+| `strategies/screen_rotation` | `strategy` | `screen_rotation`, `rebalances`, `daily_1d`, `ranking` | Long-only screen rotation strategy (`research`, `backtest`; `verified_on = 2026-11-21`): evaluates `ctx.screen()` point-in-time every `rebalance_every` sessions, executes two-step rebalance (sell departing at close, buy top `top_n` from freed cash on next bar), and logs `rebalances.csv`. |
 | `notifiers/telegram` | `notifier` | `alerts`, `heartbeats`, `rate_limiting` | Asynchronous Telegram operational notifier with leaky-bucket rate limiting, circuit breaking, and retry jitter. |
 
 ## Manifest (`plugin.toml`)
