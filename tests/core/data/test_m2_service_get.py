@@ -26,6 +26,18 @@ from algodesk.results.writer import ResultsWriter
 _IST = ZoneInfo("Asia/Kolkata")
 
 
+def _recent_weekdays(count: int = 2) -> list[date]:
+    """Return `count` recent weekday dates (oldest first) within 30-day 1m retention."""
+    days: list[date] = []
+    cur = datetime.now(UTC).date() - timedelta(days=1)
+    while len(days) < count:
+        if cur.weekday() < 5:
+            days.append(cur)
+        cur -= timedelta(days=1)
+    days.reverse()
+    return days
+
+
 class FakeCalendar(Calendar):
     def __init__(self, holidays: set[date] | None = None) -> None:
         self.holidays = holidays or set()
@@ -190,9 +202,9 @@ def test_second_identical_get_makes_zero_network_calls(test_setup: dict[str, Any
         adjustment="adjusted",
         source="yfinance",
     )
-    # Session: Monday 2026-10-26
-    start = datetime(2026, 10, 26, 4, 0, tzinfo=UTC)
-    end = datetime(2026, 10, 26, 10, 0, tzinfo=UTC)
+    d = _recent_weekdays(1)[0]
+    start = datetime(d.year, d.month, d.day, 4, 0, tzinfo=UTC)
+    end = datetime(d.year, d.month, d.day, 10, 0, tzinfo=UTC)
 
     # First get -> fetches from broker
     slice1 = ds.get(key, start, end)
@@ -217,14 +229,13 @@ def test_extend_by_one_session_fetches_one_session(test_setup: dict[str, Any]) -
         adjustment="adjusted",
         source="yfinance",
     )
-    # Session 1: Monday 2026-10-26
-    s1_start = datetime(2026, 10, 26, 4, 0, tzinfo=UTC)
-    s1_end = datetime(2026, 10, 26, 10, 0, tzinfo=UTC)
+    d1, d2 = _recent_weekdays(2)
+    s1_start = datetime(d1.year, d1.month, d1.day, 4, 0, tzinfo=UTC)
+    s1_end = datetime(d1.year, d1.month, d1.day, 10, 0, tzinfo=UTC)
     ds.get(key, s1_start, s1_end)
     calls_after_s1 = broker.call_count
 
-    # Session 2: Tuesday 2026-10-27
-    s2_end = datetime(2026, 10, 27, 10, 0, tzinfo=UTC)
+    s2_end = datetime(d2.year, d2.month, d2.day, 10, 0, tzinfo=UTC)
     # Query spanning both sessions [s1_start, s2_end]
     slice_both = ds.get(key, s1_start, s2_end)
     assert len(slice_both.bars) > 0
@@ -250,8 +261,9 @@ def test_5m_request_equals_resampled_1m(test_setup: dict[str, Any]) -> None:
         adjustment="adjusted",
         source="yfinance",
     )
-    start = datetime(2026, 10, 26, 4, 0, tzinfo=UTC)
-    end = datetime(2026, 10, 26, 6, 0, tzinfo=UTC)
+    d = _recent_weekdays(1)[0]
+    start = datetime(d.year, d.month, d.day, 4, 0, tzinfo=UTC)
+    end = datetime(d.year, d.month, d.day, 6, 0, tzinfo=UTC)
 
     slice_1m = ds.get(key_1m, start, end)
     slice_5m = ds.get(key_5m, start, end)
@@ -279,8 +291,9 @@ def test_fill_only_fetches_without_returning_bars(test_setup: dict[str, Any]) ->
         adjustment="adjusted",
         source="yfinance",
     )
-    start = datetime(2026, 10, 26, 4, 0, tzinfo=UTC)
-    end = datetime(2026, 10, 26, 10, 0, tzinfo=UTC)
+    d = _recent_weekdays(1)[0]
+    start = datetime(d.year, d.month, d.day, 4, 0, tzinfo=UTC)
+    end = datetime(d.year, d.month, d.day, 10, 0, tzinfo=UTC)
 
     slice_filled = ds.get(key, start, end, fill_only=True)
     assert len(slice_filled.bars) == 0
@@ -315,8 +328,9 @@ def test_yfinance_separate_series_adjusted_and_raw(test_setup: dict[str, Any]) -
     broker: CountingFakeBroker = test_setup["yf_broker"]
 
     inst = InstrumentId("NSE:EQ:SBIN")
-    start = datetime(2026, 10, 26, 4, 0, tzinfo=UTC)
-    end = datetime(2026, 10, 26, 10, 0, tzinfo=UTC)
+    d = _recent_weekdays(1)[0]
+    start = datetime(d.year, d.month, d.day, 4, 0, tzinfo=UTC)
+    end = datetime(d.year, d.month, d.day, 10, 0, tzinfo=UTC)
 
     # Fetch adjusted
     slice_adj = ds.get(inst, start, end, download="adjusted")
